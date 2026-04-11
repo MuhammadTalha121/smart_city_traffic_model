@@ -126,7 +126,7 @@ def generate_training_data(n_days=90, seed=42):
             sp = max(5, sl * WEATHER_SPEED_MULTIPLIERS[weather] + np.random.normal(0, 10))
             rush = int(hour in [7, 8, 9, 16, 17, 18] and not is_weekend)
             ln = int(hour in [21, 22, 23])
-            fp = int(hour == 12 and dow == 4)
+            fp = int(hour in [12, 13, 14] and dow == 4)
             ev = int(np.random.random() < 0.02)
             cong = min(1.0, max(0.0,
                 0.4 * (vc / (base * 1.5))
@@ -258,7 +258,7 @@ async def predict_batch(batch: BatchInput):
 
 def _recommend(zone, level, weather):
     sandstorm = weather == "sandstorm"
-    if level == "Critical":
+        if level == "Critical":
         r = f"ALERT: {zone} is critically congested."
         if sandstorm:
             r += " Sandstorm protocol active. Initiate emergency traffic management."
@@ -271,3 +271,4 @@ def _recommend(zone, level, weather):
     else:
         r = f"{zone} traffic is flowing normally. No action needed."
     return r
+
