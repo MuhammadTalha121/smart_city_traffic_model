@@ -258,7 +258,7 @@ async def predict_batch(batch: BatchInput):
 
 def _recommend(zone, level, weather):
     sandstorm = weather == "sandstorm"
-        if level == "Critical":
+    if level == "Critical":
         r = f"ALERT: {zone} is critically congested."
         if sandstorm:
             r += " Sandstorm protocol active. Initiate emergency traffic management."
