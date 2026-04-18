@@ -3,19 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TrafficIQ — Vision 2030 | ML-Powered Traffic Prediction</title>
-
+  <title>TrafficIQ — Vision 2030</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="lib/leaflet.css" />
+  <script src="lib/leaflet.js"></script>
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
 
+  <!-- Sidebar -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar__logo">
       <div class="sidebar__logo-icon">
@@ -23,355 +21,206 @@
       </div>
       <div>
         <div class="sidebar__logo-title">TrafficIQ</div>
-        <div class="sidebar__logo-sub">XGBoost Engine • R² = 0.8958</div>
+        <div class="sidebar__logo-sub">Vision 2030</div>
       </div>
     </div>
-
     <nav class="sidebar__nav">
       <a class="nav-item active" data-section="predict" href="#">
-        <span class="nav-icon">◈</span>
-        <span>Predict</span>
-      </a>
-      <a class="nav-item" data-section="realtime" href="#">
-        <span class="nav-icon">●</span>
-        <span>Real-Time</span>
-        <span class="nav-badge live">LIVE</span>
+        <span class="nav-icon">🗺️</span> Predict
       </a>
       <a class="nav-item" data-section="batch" href="#">
-        <span class="nav-icon">⊞</span>
-        <span>Batch</span>
-      </a>
-      <a class="nav-item" data-section="model" href="#">
-        <span class="nav-icon">▲</span>
-        <span>Model Ops</span>
+        <span class="nav-icon">📊</span> Batch
       </a>
       <a class="nav-item" data-section="status" href="#">
-        <span class="nav-icon">◉</span>
-        <span>System</span>
+        <span class="nav-icon">⚙️</span> System
       </a>
     </nav>
-
     <div class="sidebar__footer">
-      <div class="connection-status" id="connStatus">
+      <div class="connection-status">
         <span class="status-dot" id="statusDot"></span>
-        <span id="statusText">Connecting to ML API...</span>
+        <span id="statusText">Connecting…</span>
       </div>
-      <div class="model-info">
-        <span>Model: XGBoost 500 estimators</span>
-        <span>Depth: 6 | Features: 12</span>
-      </div>
+      <div class="model-info" id="modelInfo"></div>
     </div>
   </aside>
 
+  <!-- Mobile Toggle -->
   <button class="mobile-toggle" id="mobileToggle">☰</button>
 
-  <!-- Detail Panel -->
-  <div class="detail-panel" id="detailPanel">
-    <div class="detail-panel__header">
-      <button class="detail-panel__close" id="detailClose">← Back to Map</button>
-      <h2 class="detail-panel__title" id="detailTitle">District</h2>
-      <p class="detail-panel__subtitle" id="detailSubtitle">ML-Powered Analysis</p>
-    </div>
-
-    <div class="detail-panel__content">
-      <!-- ML Confidence Indicator -->
-      <div class="ml-confidence">
-        <span>Model Confidence</span>
-        <div class="confidence-bar">
-          <div class="confidence-fill" id="confidenceFill" style="width: 89%"></div>
-        </div>
-        <span id="confidenceText">89.6%</span>
-      </div>
-
-      <!-- Congestion Gauge -->
-      <div class="gauge-container">
-        <div class="gauge" id="gauge">
-          <svg viewBox="0 0 120 120">
-            <circle class="gauge__track" cx="60" cy="60" r="54"/>
-            <circle class="gauge__fill" id="gaugeFill" cx="60" cy="60" r="54" 
-                    stroke-dasharray="339.292" stroke-dashoffset="339.292"/>
-          </svg>
-          <div class="gauge__value">
-            <span class="gauge__number" id="gaugeNumber">0%</span>
-            <span class="gauge__label">Congestion Score</span>
-          </div>
-        </div>
-        <div class="congestion-badge" id="congestionBadge">Low</div>
-      </div>
-
-      <!-- ML Features Used -->
-      <div class="ml-features">
-        <h4>Features in Prediction</h4>
-        <div class="feature-tags" id="featureTags">
-          <span class="feature-tag">hour</span>
-          <span class="feature-tag">vehicle_count</span>
-          <span class="feature-tag">avg_speed</span>
-          <span class="feature-tag">weather</span>
-          <span class="feature-tag">road_type</span>
-          <span class="feature-tag active">friday_prayer</span>
-        </div>
-      </div>
-
-      <!-- Metrics Grid -->
-      <div class="metrics-grid">
-        <div class="metric-card">
-          <div class="metric-card__icon">🚗</div>
-          <div class="metric-card__value" id="metricVehicles">0</div>
-          <div class="metric-card__label">Predicted Vehicles</div>
-          <div class="metric-card__delta" id="deltaVehicles">—</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card__icon">⚡</div>
-          <div class="metric-card__value" id="metricSpeed">0<span>km/h</span></div>
-          <div class="metric-card__label">ML-Predicted Speed</div>
-          <div class="metric-card__delta" id="deltaSpeed">—</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card__icon" id="weatherIcon">☀️</div>
-          <div class="metric-card__value" id="metricWeather">Clear</div>
-          <div class="metric-card__label">Weather Input</div>
-          <div class="metric-card__delta" id="deltaWeather">Feature weight: 0.15</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card__icon">🕌</div>
-          <div class="metric-card__value" id="metricFriday">No</div>
-          <div class="metric-card__label">Friday Prayer</div>
-          <div class="metric-card__delta" id="deltaFriday">Drop factor: 0.0</div>
-        </div>
-      </div>
-
-      <!-- 24h Forecast -->
-      <div class="forecast-section">
-        <h3 class="section-title">ML 24-Hour Forecast</h3>
-        <div class="forecast-chart" id="forecastChart"></div>
-        <div class="forecast-legend">
-          <span>Now</span><span>+6h</span><span>+12h</span><span>+18h</span><span>+24h</span>
-        </div>
-      </div>
-
-      <!-- XGBoost SHAP Explanation -->
-      <div class="shap-card">
-        <h4>🧠 XGBoost Explanation</h4>
-        <div class="shap-bars" id="shapBars">
-          <div class="shap-bar"><span>hour</span><div class="bar positive" style="width: 80%"></div></div>
-          <div class="shap-bar"><span>rush_hour</span><div class="bar positive" style="width: 65%"></div></div>
-          <div class="shap-bar"><span>vehicle_count</span><div class="bar positive" style="width: 45%"></div></div>
-          <div class="shap-bar"><span>friday_prayer</span><div class="bar negative" style="width: 30%"></div></div>
-        </div>
-      </div>
-
-      <!-- ML Recommendation -->
-      <div class="recommendation-card">
-        <h3 class="recommendation-card__title">🤖 XGBoost Recommendation</h3>
-        <p class="recommendation-card__text" id="recommendationText">Loading ML prediction...</p>
-        <div class="recommendation-meta">
-          <span>Inference time: <b id="inferenceTime">12ms</b></span>
-          <span>Model version: <b>v2.0.0</b></span>
-        </div>
-      </div>
-
-      <!-- Simulation -->
-      <div class="simulation-controls">
-        <label class="toggle-control">
-          <input type="checkbox" id="simToggle" checked>
-          <span class="toggle-control__slider"></span>
-          <span class="toggle-control__label">Visualize Prediction</span>
-        </label>
-        <div class="simulation-stats">
-          <span id="activeCars">0</span> vehicles (simulated from ML prediction)
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Main -->
-  <main class="main" id="main">
+  <main class="main" id="mainContent">
     <div class="loading-overlay" id="loadingOverlay">
       <div class="loading-card">
         <div class="loading-spinner"></div>
-        <h3>Loading XGBoost Model</h3>
-        <p>Initializing 500 estimators, depth 6...</p>
-        <div class="loading-progress">
-          <div class="loading-progress__bar" id="loadingBar"></div>
-        </div>
-        <div class="model-metrics" id="loadingMetrics">
-          <span>R² = --</span>
-          <span>RMSE = --</span>
-        </div>
+        <h3>Initializing TrafficIQ</h3>
+        <p>Training XGBoost model on Saudi-calibrated data</p>
+        <div class="loading-progress"><div class="loading-progress__bar" id="loadBar"></div></div>
+        <div class="model-metrics" id="loadMetrics"></div>
       </div>
     </div>
 
     <!-- Predict Section -->
     <section class="section active" id="section-predict">
-      <header class="section-header">
-        <h1>ML Traffic Prediction</h1>
-        <p class="section-header__desc">XGBoost-powered congestion forecasting for Riyadh districts</p>
-      </header>
-
+      <div class="section-header">
+        <h1>Traffic Prediction</h1>
+        <p class="section-header__desc">Click any district on the map to analyze real-time congestion</p>
+      </div>
       <div class="predict-layout">
         <div class="map-wrapper">
-          <div id="map" class="map"></div>
+          <div class="map" id="map"></div>
           <div class="map-controls">
-            <button class="map-btn" id="resetView">Reset View</button>
-            <button class="map-btn" id="toggleLabels">Toggle Labels</button>
+            <button class="map-btn" id="resetViewBtn">Reset View</button>
           </div>
           <div class="map-legend">
-            <div class="legend-item"><span class="legend-dot" style="background:#00ff88"></span>Low</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#ffcc00"></span>Moderate</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#ff8844"></span>High</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#ff4444"></span>Critical</div>
+            <span class="legend-item"><span class="legend-dot" style="background:var(--cong-low)"></span>Low</span>
+            <span class="legend-item"><span class="legend-dot" style="background:var(--cong-moderate)"></span>Moderate</span>
+            <span class="legend-item"><span class="legend-dot" style="background:var(--cong-high)"></span>High</span>
+            <span class="legend-item"><span class="legend-dot" style="background:var(--cong-critical)"></span>Critical</span>
           </div>
         </div>
-
         <div class="control-panel">
           <div class="panel-card">
-            <h3 class="panel-card__title">ML Prediction Parameters</h3>
-            <form id="predictForm" class="form">
+            <div class="panel-card__title">Quick Prediction</div>
+            <div class="form-group">
+              <label>District</label>
+              <select class="form-control" id="pZone">
+                <option value="Olaya">Olaya</option>
+                <option value="Al-Malaz">Al-Malaz</option>
+                <option value="Sulaimaniyah">Sulaimaniyah</option>
+                <option value="Al-Rawdah">Al-Rawdah</option>
+                <option value="Al-Naseem">Al-Naseem</option>
+                <option value="Al-Shemaysi">Al-Shemaysi</option>
+                <option value="Diriyah">Diriyah</option>
+                <option value="Al-Batha">Al-Batha</option>
+                <option value="King Abdullah Financial Dist">KAFD</option>
+                <option value="Diplomatic Quarter">Diplomatic Quarter</option>
+              </select>
+            </div>
+            <div class="form-row">
               <div class="form-group">
-                <label for="pZone">District (Zone)</label>
-                <select id="pZone" class="form-control">
-                  <option value="Olaya">Olaya</option>
-                  <option value="Al-Malaz">Al-Malaz</option>
-                  <option value="Sulaimaniyah">Sulaimaniyah</option>
-                  <option value="Al-Rawdah">Al-Rawdah</option>
-                  <option value="Al-Naseem">Al-Naseem</option>
-                  <option value="Al-Shemaysi">Al-Shemaysi</option>
-                  <option value="Diriyah">Diriyah</option>
-                  <option value="Al-Batha">Al-Batha</option>
-                  <option value="King Abdullah Financial Dist">KAFD</option>
-                  <option value="Diplomatic Quarter">Diplomatic Quarter</option>
+                <label>Hour <span class="badge" id="hourBadge">08:00</span></label>
+                <input type="range" class="form-range" id="pHour" min="0" max="23" value="8" />
+              </div>
+              <div class="form-group">
+                <label>Weather</label>
+                <select class="form-control" id="pWeather">
+                  <option value="clear">Clear</option>
+                  <option value="rain">Rain</option>
+                  <option value="fog">Fog</option>
+                  <option value="sandstorm">Sandstorm</option>
                 </select>
               </div>
-
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="pHour">Hour <span class="badge" id="hourBadge">08:00</span></label>
-                  <input type="range" id="pHour" min="0" max="23" value="8" class="form-range">
-                </div>
-                <div class="form-group">
-                  <label for="pMultiplier">Hour Multiplier</label>
-                  <input type="number" id="pMultiplier" value="1.40" step="0.05" min="0" max="2" class="form-control">
-                </div>
-              </div>
-
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="pVehicles">Vehicle Count</label>
-                  <input type="number" id="pVehicles" value="320" min="0" max="2000" class="form-control">
-                </div>
-                <div class="form-group">
-                  <label for="pSpeed">Avg Speed (km/h)</label>
-                  <input type="number" id="pSpeed" value="35" min="0" max="200" class="form-control">
-                </div>
-              </div>
-
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="pWeather">Weather Condition</label>
-                  <select id="pWeather" class="form-control">
-                    <option value="clear">☀️ Clear</option>
-                    <option value="rain">🌧️ Rain</option>
-                    <option value="fog">🌫️ Fog</option>
-                    <option value="sandstorm">🌪️ Sandstorm</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label for="pRoad">Road Type</label>
-                  <select id="pRoad" class="form-control">
-                    <option value="highway">Highway</option>
-                    <option value="arterial" selected>Arterial</option>
-                    <option value="collector">Collector</option>
-                    <option value="residential">Residential</option>
-                  </select>
-                </div>
-              </div>
-
-              <!-- SAUDI-SPECIFIC: Friday Prayer -->
-              <div class="form-row saudi-features">
-                <div class="form-group form-group--checkbox">
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="pRush" checked>
-                    <span>Rush Hour</span>
-                  </label>
-                </div>
-                <div class="form-group form-group--checkbox">
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="pWeekend">
-                    <span>Weekend</span>
-                  </label>
-                </div>
-                <div class="form-group form-group--checkbox">
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="pLateNight">
-                    <span>Late Night</span>
-                  </label>
-                </div>
-                <div class="form-group form-group--checkbox friday-prayer">
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="pFridayPrayer">
-                    <span>🕌 Friday Prayer</span>
-                    <small>Reduces congestion 40-60%</small>
-                  </label>
-                </div>
-                <div class="form-group form-group--checkbox">
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="pEvent">
-                    <span>Special Event</span>
-                  </label>
-                </div>
-              </div>
-
-              <button type="submit" class="btn btn--primary btn--block" id="predictBtn">
-                <span class="btn__text">Run XGBoost Prediction</span>
-                <span class="btn__loader"></span>
-              </button>
-            </form>
+            </div>
+            <div class="saudi-features">
+              <label class="checkbox-label form-group--checkbox"><input type="checkbox" id="pRush" checked /><span>Rush Hour</span></label>
+              <label class="checkbox-label form-group--checkbox"><input type="checkbox" id="pWeekend" /><span>Weekend</span></label>
+              <label class="checkbox-label form-group--checkbox"><input type="checkbox" id="pLateNight" /><span>Late Night</span></label>
+              <label class="checkbox-label form-group--checkbox"><input type="checkbox" id="pEvent" /><span>Event</span></label>
+              <label class="checkbox-label form-group--checkbox friday-prayer"><input type="checkbox" id="pFridayPrayer" /><span>Friday Prayer</span><small>12:00 – 14:30</small></label>
+            </div>
+            <button class="btn btn--primary btn--block" id="predictBtn">
+              <span class="btn__text">Analyze District</span>
+              <span class="btn__loader"></span>
+            </button>
           </div>
-
           <div class="info-card">
-            <div class="info-card__icon">🧠</div>
-            <p><strong>XGBoost Engine:</strong> Click any district marker for instant ML prediction with animated traffic visualization based on model output.</p>
+            <div class="info-card__icon">💡</div>
+            <p><strong>Tip:</strong> Click directly on any district marker on the map to see detailed real-time analysis with animated traffic flow.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Real-Time Section -->
-    <section class="section" id="section-realtime">
-      <header class="section-header">
-        <h1>Real-Time ML Inference</h1>
-        <p class="section-header__desc">Live sensor feed with continuous model updates</p>
-      </header>
-      <!-- ... same as before ... -->
-    </section>
-
     <!-- Batch Section -->
     <section class="section" id="section-batch">
-      <header class="section-header">
-        <h1>Batch ML Prediction</h1>
-        <p class="section-header__desc">XGBoost inference across all Riyadh districts</p>
-      </header>
-      <!-- ... same structure, calls /predict/batch ... -->
-    </section>
-
-    <!-- Model Ops Section -->
-    <section class="section" id="section-model">
-      <header class="section-header">
-        <h1>XGBoost Model Operations</h1>
-        <p class="section-header__desc">Retraining, feature engineering, and Saudi-specific optimization</p>
-      </header>
-      <!-- ... with Friday Prayer feature importance ... -->
+      <div class="section-header">
+        <h1>Batch Prediction</h1>
+        <p class="section-header__desc">City-wide congestion across all Riyadh districts</p>
+      </div>
+      <div class="map-wrapper" style="height:400px;margin-bottom:24px">
+        <div class="map" id="batchMap"></div>
+      </div>
+      <div class="panel-card">
+        <div class="form-row" style="margin-bottom:16px">
+          <div class="form-group">
+            <label>Hour</label>
+            <input type="number" class="form-control" id="bHour" value="8" min="0" max="23" />
+          </div>
+          <div class="form-group">
+            <label>Weather</label>
+            <select class="form-control" id="bWeather">
+              <option value="clear">Clear</option>
+              <option value="rain">Rain</option>
+              <option value="fog">Fog</option>
+              <option value="sandstorm">Sandstorm</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn--primary" id="batchBtn">
+          <span class="btn__text">Run All Districts</span>
+          <span class="btn__loader"></span>
+        </button>
+        <div id="batchResults" style="margin-top:20px"></div>
+      </div>
     </section>
 
     <!-- Status Section -->
     <section class="section" id="section-status">
-      <header class="section-header">
-        <h1>ML System Status</h1>
-        <p class="section-header__desc">XGBoost performance and API health</p>
-      </header>
-      <!-- ... -->
+      <div class="section-header">
+        <h1>System Status</h1>
+        <p class="section-header__desc">API health and model performance</p>
+      </div>
+      <div class="metrics-grid" id="statusGrid"></div>
     </section>
   </main>
+
+  <!-- Detail Panel -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-panel__header">
+      <button class="detail-panel__close" id="detailClose">← Back to Map</button>
+      <div class="detail-panel__title" id="detailTitle">Olaya</div>
+      <div class="detail-panel__subtitle" id="detailSubtitle">Real-time Traffic Analysis</div>
+    </div>
+    <div class="detail-panel__content" id="detailContent">
+      <div class="gauge-container">
+        <div class="gauge">
+          <svg viewBox="0 0 160 160">
+            <circle class="gauge__track" cx="80" cy="80" r="62" />
+            <circle class="gauge__fill" id="gaugeFill" cx="80" cy="80" r="62" />
+          </svg>
+          <div class="gauge__value">
+            <span class="gauge__number" id="gaugeNumber">0</span>
+            <span class="gauge__label">Congestion</span>
+          </div>
+        </div>
+        <div class="congestion-badge" id="congestionBadge">Low</div>
+      </div>
+
+      <div class="metrics-grid" id="detailMetrics"></div>
+
+      <div class="ml-features">
+        <h4>Active Features</h4>
+        <div class="feature-tags" id="featureTags"></div>
+      </div>
+
+      <div class="forecast-section">
+        <h4 class="section-title">24-Hour Forecast</h4>
+        <div class="forecast-chart" id="forecastChart"></div>
+        <div class="forecast-legend">
+          <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:00</span>
+        </div>
+      </div>
+
+      <div class="recommendation-card" id="recCard" style="display:none">
+        <div class="recommendation-card__title">⚡ Recommendation</div>
+        <div class="recommendation-card__text" id="recText"></div>
+        <div class="recommendation-meta">
+          <span>Model: <b>XGBoost</b></span>
+          <span>R²: <b id="recR2">0.89</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="js/app.js"></script>
 </body>
