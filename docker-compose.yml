@@ -1,23 +1,29 @@
+version: '3.9'
+
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: traffic-backend
+
+  api:
+    build: .
+    container_name: traffic_api
     ports:
       - "8000:8000"
+    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - model-data:/app/saved_model
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
 
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: traffic-frontend
+  dashboard:
+    build: .
+    container_name: traffic_dashboard
     ports:
-      - "3000:80"
+      - "8501:8501"
+    command: streamlit run streamlit_app/dashboard.py --server.port 8501 --server.address 0.0.0.0
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
     depends_on:
-      - backend
-
-volumes:
-  model-data:
+      - api
+    restart: unless-stopped
