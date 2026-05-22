@@ -193,6 +193,7 @@ Adding a new city requires one dictionary entry in `src/config.py`.
 - [x] City-agnostic data generation pipeline
 - [x] Saudi-specific hourly patterns (prayer, late-night, Ramadan)
 - [x] Weather impact analysis with sandstorm modeling
+- [x] Core Statistical Foundation Validation (PROMPT 001)
 - [x] Professional visualization suite
 - [x] XGBoost feature importance with business interpretation
 - [x] Multi-model evaluation and comparison
@@ -201,7 +202,6 @@ Adding a new city requires one dictionary entry in `src/config.py`.
 - [x] Docker containerization
 - [ ] Real IoT data integration layer
 - [ ] Automated retraining pipeline
-- [ ] Multi-city comparative dashboard
 
 ---
 
