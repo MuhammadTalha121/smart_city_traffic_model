@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import sklearn
+from sklearn import *
 from src.config import (
     CITY_PROFILES, HOURLY_MULTIPLIERS, WEATHER_SPEED_IMPACT,
     FRIDAY_PRAYER_HOURS, SAUDI_CITIES
@@ -106,3 +108,81 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
     ).clip(0, 1)
 
     return df
+
+
+def validate_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
+    """
+    Run statistical validation checks on synthetic traffic data.
+
+    Returns
+    -------
+    pd.DataFrame with columns: Check | Expected | Actual | Status
+    """
+    from scipy import stats
+
+    df = generate_traffic_data(city=city, n_days=n_days)
+    df = apply_hourly_patterns(df, city=city)
+
+    results = []
+
+    def record(check, expected, actual, passed):
+        results.append({
+            'Check'   : check,
+            'Expected': expected,
+            'Actual'  : round(float(actual), 4),
+            'Status'  : 'PASS' if passed else 'FAIL'
+        })
+
+    # --- KS test: raw vehicle count vs Poisson (before pattern application)
+    df_raw     = generate_traffic_data(city=city, n_days=n_days)
+    profile    = CITY_PROFILES[city]
+    lam        = profile['base_vehicles']
+    ks_stat, p = stats.kstest(
+        df_raw['vehicle_count'].values,
+        lambda x: stats.poisson.cdf(x, mu=lam)
+    )
+    record('KS test — Poisson fit (p-value)', '>= 0.05', p, p >= 0.05)
+
+    # --- Autocorrelation: lag-1 hourly temporal correlation
+    zone_one   = df[df['zone'] == 'Zone_1'].sort_values('timestamp')
+    autocorr   = zone_one['vehicle_count'].autocorr(lag=1)
+    record('Autocorrelation lag-1', '> 0.50', autocorr, autocorr > 0.50)
+
+    # --- Friday prayer drop
+    friday_prayer = df[
+        (df['day_of_week'] == 'Friday') &
+        (df['hour'].isin(FRIDAY_PRAYER_HOURS))
+    ]['vehicle_count'].mean()
+
+    weekday_midday = df[
+        (~df['day_of_week'].isin(['Friday', 'Saturday'])) &
+        (df['hour'].isin(FRIDAY_PRAYER_HOURS))
+    ]['vehicle_count'].mean()
+
+    prayer_drop_pct = (weekday_midday - friday_prayer) / weekday_midday
+    record('Friday prayer drop (vs weekday midday)', '>= 0.85', prayer_drop_pct, prayer_drop_pct >= 0.85)
+
+    # --- Late night activity vs evening peak
+    late_night_mean = df[df['hour'].isin([21, 22, 23])]['vehicle_count'].mean()
+    evening_peak    = df[df['hour'] == 17]['vehicle_count'].mean()
+    late_night_ratio = late_night_mean / evening_peak
+    record('Late night / evening peak ratio', '>= 0.70', late_night_ratio, late_night_ratio >= 0.70)
+
+    # --- Sandstorm speed reduction
+    clear_speed     = df[df['weather'] == 'clear']['avg_speed'].mean()
+    sandstorm_speed = df[df['weather'] == 'sandstorm']['avg_speed'].mean()
+    speed_reduction = (clear_speed - sandstorm_speed) / clear_speed
+    record('Sandstorm speed reduction', '0.35–0.45', speed_reduction, 0.35 <= speed_reduction <= 0.45)
+
+    report = pd.DataFrame(results)
+
+    print("\n" + "=" * 60)
+    print(f"  Data Validation Report — {city}")
+    print("=" * 60)
+    print(report.to_string(index=False))
+    print("=" * 60)
+    passed = (report['Status'] == 'PASS').sum()
+    print(f"  {passed} / {len(report)} checks passed")
+    print("=" * 60 + "\n")
+
+    return report
