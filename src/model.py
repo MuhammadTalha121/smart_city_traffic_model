@@ -14,7 +14,9 @@ from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES
 FEATURE_COLS = [
     'hour', 'vehicle_count', 'avg_speed', 'weather', 'event',
     'road_type', 'rush_hour', 'is_weekend', 'is_late_night',
-    'hour_multiplier', 'zone', 'day_of_week'
+    'hour_multiplier', 'zone', 'day_of_week',
+    'vehicle_count_lag_1h', 'vehicle_count_lag_2h',
+    'congestion_lag_1h', 'rolling_mean_3h', 'rolling_std_3h'
 ]
 
 WEATHER_ENCODING  = {'clear': 0, 'dust': 1, 'fog': 2, 'humid': 3, 'rain': 4, 'sandstorm': 5}
@@ -140,3 +142,49 @@ def save_model(model, path: str = 'model.joblib'):
 
 def load_model(path: str = 'model.joblib'):
     return joblib.load(path)
+
+
+
+
+
+def compare_baseline_vs_enhanced(city: str = 'Riyadh') -> pd.DataFrame:
+    """
+    Train XGBoost with and without lag features and print improvement table.
+    """
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+
+    df_base     = apply_hourly_patterns(generate_traffic_data(city=city), city=city)
+    df_enhanced = add_lag_features(df_base.copy())
+
+    rows = []
+    for label, df in [('Baseline', df_base), ('Enhanced (lag features)', df_enhanced)]:
+        X, y, _ = prepare_features(df)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        model = xgb.XGBRegressor(
+            n_estimators=200, max_depth=5, learning_rate=0.1,
+            subsample=0.8, random_state=42, verbosity=0
+        )
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        rows.append({
+            'Model': label,
+            'R²'   : round(r2_score(y_test, y_pred), 4),
+            'MAE'  : round(mean_absolute_error(y_test, y_pred), 4),
+            'RMSE' : round(np.sqrt(mean_squared_error(y_test, y_pred)), 4),
+        })
+
+    report = pd.DataFrame(rows)
+    baseline_r2  = report.loc[report['Model'] == 'Baseline', 'R²'].values[0]
+    enhanced_r2  = report.loc[report['Model'] == 'Enhanced (lag features)', 'R²'].values[0]
+    improvement  = round((enhanced_r2 - baseline_r2) / max(baseline_r2, 1e-9) * 100, 2)
+
+    print("\n" + "=" * 60)
+    print("  Baseline vs Enhanced — XGBoost Comparison")
+    print("=" * 60)
+    print(report.to_string(index=False))
+    print(f"\n  R² improvement with lag features: {improvement}%")
+    print("=" * 60 + "\n")
+
+    return report

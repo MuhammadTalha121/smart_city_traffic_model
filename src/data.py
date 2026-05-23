@@ -184,3 +184,32 @@ def validate_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
     print("=" * 60 + "\n")
 
     return report
+
+
+def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add temporal lag and rolling features per zone.
+
+    Requires df to be sorted by zone and timestamp.
+    Must be called after apply_hourly_patterns().
+    """
+    df = df.copy().sort_values(['zone', 'timestamp']).reset_index(drop=True)
+
+    df['vehicle_count_lag_1h'] = df.groupby('zone')['vehicle_count'].shift(1)
+    df['vehicle_count_lag_2h'] = df.groupby('zone')['vehicle_count'].shift(2)
+    df['congestion_lag_1h']    = df.groupby('zone')['congestion_score'].shift(1)
+    df['rolling_mean_3h']      = (
+        df.groupby('zone')['vehicle_count']
+          .transform(lambda x: x.shift(1).rolling(3).mean())
+    )
+    df['rolling_std_3h']       = (
+        df.groupby('zone')['vehicle_count']
+          .transform(lambda x: x.shift(1).rolling(3).std())
+    )
+
+    df = df.dropna(subset=[
+        'vehicle_count_lag_1h', 'vehicle_count_lag_2h',
+        'congestion_lag_1h', 'rolling_mean_3h', 'rolling_std_3h'
+    ]).reset_index(drop=True)
+
+    return df
