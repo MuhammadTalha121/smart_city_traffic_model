@@ -13,7 +13,8 @@ from src.config import CITY_PROFILES, PALETTE, CONGESTION_THRESHOLDS
 from src.data import generate_traffic_data, apply_hourly_patterns
 from src.model import (
     prepare_features, train_xgboost, evaluate_models,
-    congestion_level, get_recommendation, predict_single
+    congestion_level, get_recommendation, predict_single,
+    detect_anomalies
 )
 
 st.set_page_config(
