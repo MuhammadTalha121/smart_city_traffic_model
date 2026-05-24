@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal, List
 from src.model import predict_single
+from src.data import generate_traffic_data, apply_hourly_patterns
+from src.model import predict_single, detect_anomalies
 
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
@@ -84,3 +86,32 @@ def predict_batch(inputs: List[TrafficInput]):
     if len(inputs) > 20:
         raise HTTPException(status_code=400, detail="Batch limit is 20 records per request.")
     return [predict(item) for item in inputs]
+
+
+@app.get("/anomalies")
+def get_anomalies(city: str = "Riyadh", n_days: int = 30):
+    """
+    Return all detected anomalies across all zones.
+    Includes severity classification and recommended action.
+    """
+    try:
+        df = generate_traffic_data(city=city, n_days=n_days)
+        df = apply_hourly_patterns(df, city=city)
+        df = detect_anomalies(df)
+
+        anomalies = df[df['anomaly_flag'] == 1][[
+            'zone', 'hour', 'weather',
+            'expected_vehicle_count', 'vehicle_count',
+            'anomaly_severity', 'anomaly_recommendation'
+        ]].copy()
+
+        anomalies['expected_vehicle_count'] = anomalies['expected_vehicle_count'].round(1)
+        anomalies['vehicle_count']          = anomalies['vehicle_count'].round(1)
+
+        return {
+            "city"          : city,
+            "total_anomalies": len(anomalies),
+            "anomalies"     : anomalies.to_dict(orient='records')
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

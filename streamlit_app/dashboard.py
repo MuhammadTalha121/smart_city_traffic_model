@@ -110,6 +110,19 @@ st.markdown(f"# 🚦 Smart City Traffic Intelligence")
 st.markdown(f"**{city}** · {n_days}-day simulation · {'Ramadan schedule' if ramadan else 'Standard schedule'}")
 st.markdown("---")
 
+anomalies_now = df[df['anomaly_flag'] == 1]
+if not anomalies_now.empty:
+    critical = anomalies_now[anomalies_now['anomaly_severity'] == 'Critical Anomaly']
+    banner_color = '#C0392B' if not critical.empty else '#E67E22'
+    zone_list    = ', '.join(anomalies_now['zone'].unique())
+    st.markdown(
+        f"<div style='background:{banner_color}15; border-left:4px solid {banner_color}; "
+        f"padding:0.75rem 1rem; border-radius:6px; margin-bottom:1rem;'>"
+        f"<b>⚠️ Anomaly Detected</b> — Elevated traffic in: <b>{zone_list}</b>. "
+        f"Review anomaly table in Zone Analysis tab.</div>",
+        unsafe_allow_html=True
+    )
+
 # ── KPI Row ──────────────────────────────────────────────────────────────────
 
 col1, col2, col3, col4, col5 = st.columns(5)
@@ -230,6 +243,25 @@ with tab2:
         .reset_index()
     )
     st.dataframe(zone_summary, use_container_width=True, hide_index=True)
+    
+    st.markdown("#### Anomaly Detection Log")
+    anomaly_log = df[df['anomaly_flag'] == 1][[
+        'zone', 'hour', 'expected_vehicle_count',
+        'vehicle_count', 'anomaly_severity', 'anomaly_recommendation'
+    ]].copy()
+    anomaly_log.columns = [
+        'Zone', 'Hour', 'Expected Volume',
+        'Actual Volume', 'Severity', 'Recommended Action'
+    ]
+    anomaly_log['Expected Volume'] = anomaly_log['Expected Volume'].round(1)
+
+    if anomaly_log.empty:
+        st.success("No anomalies detected in current simulation period.")
+    else:
+        st.dataframe(
+            anomaly_log.sort_values('Severity', ascending=False).reset_index(drop=True),
+            use_container_width=True, hide_index=True
+        )
 
 with tab3:
     st.markdown("#### Weather Impact on Speed and Congestion")
