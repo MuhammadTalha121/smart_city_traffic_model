@@ -188,3 +188,49 @@ def compare_baseline_vs_enhanced(city: str = 'Riyadh') -> pd.DataFrame:
     print("=" * 60 + "\n")
 
     return report
+
+
+def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detect anomalous traffic conditions per zone and hour.
+
+    Anomaly defined as actual vehicle count exceeding 200% of
+    rolling 7-day mean for that zone and hour combination.
+
+    Returns
+    -------
+    pd.DataFrame with anomaly_flag and anomaly_severity columns added.
+    """
+    df = df.copy().sort_values(['zone', 'timestamp']).reset_index(drop=True)
+
+    df['expected_vehicle_count'] = (
+        df.groupby(['zone', 'hour'])['vehicle_count']
+          .transform(lambda x: x.shift(1).rolling(window=7, min_periods=1).mean())
+    )
+    df['expected_congestion'] = (
+        df.groupby(['zone', 'hour'])['congestion_score']
+          .transform(lambda x: x.shift(1).rolling(window=7, min_periods=1).mean())
+    )
+
+    df['anomaly_ratio'] = df['vehicle_count'] / df['expected_vehicle_count'].replace(0, np.nan)
+    df['anomaly_flag']  = (df['anomaly_ratio'] >= 2.0).astype(int)
+
+    def severity(ratio):
+        if   pd.isna(ratio)  : return 'Normal'
+        elif ratio < 1.5     : return 'Normal'
+        elif ratio < 2.0     : return 'Elevated'
+        elif ratio < 3.0     : return 'Anomalous'
+        else                 : return 'Critical Anomaly'
+
+    df['anomaly_severity'] = df['anomaly_ratio'].apply(severity)
+
+    def anomaly_recommendation(row):
+        if row['anomaly_severity'] == 'Normal'          : return 'No action required.'
+        if row['anomaly_severity'] == 'Elevated'        : return f"Monitor {row['zone']} closely — traffic building above expected levels."
+        if row['anomaly_severity'] == 'Anomalous'       : return f"Dispatch traffic officers to {row['zone']}. Investigate cause immediately."
+        if row['anomaly_severity'] == 'Critical Anomaly': return f"CRITICAL: {row['zone']} at {row['anomaly_ratio']:.1f}x expected volume. Activate emergency protocol."
+        return 'No action required.'
+
+    df['anomaly_recommendation'] = df.apply(anomaly_recommendation, axis=1)
+
+    return df
