@@ -65,6 +65,7 @@ def set_plot_style():
 def load_data(city, n_days, ramadan):
     df = generate_traffic_data(city=city, n_days=n_days)
     df = apply_hourly_patterns(df, city=city, ramadan=ramadan)
+    df = detect_anomalies(df)
     return df
 
 
