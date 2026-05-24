@@ -3,7 +3,8 @@ from pydantic import BaseModel, Field
 from typing import Literal, List
 from src.model import predict_single
 from src.data import generate_traffic_data, apply_hourly_patterns
-from src.model import predict_single, detect_anomalies
+from src.model import predict_single, detect_anomalies, forecast_congestion
+
 
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
@@ -113,5 +114,25 @@ def get_anomalies(city: str = "Riyadh", n_days: int = 30):
             "total_anomalies": len(anomalies),
             "anomalies"     : anomalies.to_dict(orient='records')
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/forecast")
+def get_forecast(
+    city   : str = "Riyadh",
+    zone   : str = "Zone_1",
+    n_days : int = 30
+):
+    """
+    Forecast congestion 1h, 2h, and 3h ahead for a given zone.
+    Returns predicted score, confidence interval, level, and recommendation.
+    """
+    try:
+        from src.data import generate_traffic_data, apply_hourly_patterns
+        df        = generate_traffic_data(city=city, n_days=n_days)
+        df        = apply_hourly_patterns(df, city=city)
+        forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
+        return {"city": city, "zone": zone, "forecasts": forecasts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

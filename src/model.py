@@ -234,3 +234,121 @@ def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     df['anomaly_recommendation'] = df.apply(anomaly_recommendation, axis=1)
 
     return df
+
+
+def forecast_congestion(df: pd.DataFrame, zone: str,
+                         hours_ahead: list = [1, 2, 3]) -> list:
+    """
+    Forecast congestion score for a zone at 1, 2, and 3 hours ahead.
+
+    Uses historical patterns for that zone and hour combination.
+    Returns predicted score, confidence interval, level, and recommendation.
+    """
+    from src.config import HOURLY_MULTIPLIERS, CITY_PROFILES
+
+    zone_df  = df[df['zone'] == zone].sort_values('timestamp').copy()
+    forecasts = []
+
+    current_hour  = int(zone_df['hour'].iloc[-1])
+    current_score = float(zone_df['congestion_score'].iloc[-1])
+    city          = zone_df['city'].iloc[0] if 'city' in zone_df.columns else 'Riyadh'
+    weather       = zone_df['weather'].iloc[-1] if 'weather' in zone_df.columns else 'clear'
+
+    schedule = 'saudi' if city in SAUDI_CITIES else 'standard'
+    multipliers = HOURLY_MULTIPLIERS[schedule]
+
+    residuals = []
+    for h in range(1, 8):
+        past_hour = (current_hour - h) % 24
+        past_vals = zone_df[zone_df['hour'] == past_hour]['congestion_score']
+        if len(past_vals) >= 2:
+            residuals.extend(list(past_vals.diff().dropna().abs()))
+
+    residual_std = float(np.std(residuals)) if residuals else 0.02
+
+    for h in hours_ahead:
+        future_hour    = (current_hour + h) % 24
+        hour_mult      = multipliers.get(future_hour, 1.0)
+        current_mult   = multipliers.get(current_hour, 1.0)
+        scale          = hour_mult / max(current_mult, 0.01)
+        predicted      = float(np.clip(current_score * scale, 0, 1))
+        lower          = float(np.clip(predicted - residual_std, 0, 1))
+        upper          = float(np.clip(predicted + residual_std, 0, 1))
+        level          = congestion_level(predicted)
+        recommendation = get_recommendation(level, zone, weather, city)
+
+        forecasts.append({
+            'hours_ahead'     : h,
+            'forecast_hour'   : future_hour,
+            'predicted_score' : round(predicted, 4),
+            'lower_bound'     : round(lower, 4),
+            'upper_bound'     : round(upper, 4),
+            'congestion_level': level,
+            'recommendation'  : recommendation
+        })
+
+    return forecasts
+
+
+def compare_arima_vs_xgboost(city: str = 'Riyadh', zone: str = 'Zone_1') -> pd.DataFrame:
+    """
+    Compare ARIMA and XGBoost on 1h, 2h, 3h forecast horizon for a single zone.
+
+    Returns comparison table with MAE per horizon per model.
+    """
+    from statsmodels.tsa.arima.model import ARIMA
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+
+    df       = apply_hourly_patterns(generate_traffic_data(city=city), city=city)
+    df       = add_lag_features(df)
+    zone_df  = df[df['zone'] == zone].sort_values('timestamp').reset_index(drop=True)
+    series   = zone_df['congestion_score'].values
+
+    split    = int(len(series) * 0.8)
+    train    = series[:split]
+    test     = series[split:]
+
+    rows = []
+    for horizon in [1, 2, 3]:
+        arima_preds  = []
+        xgb_preds    = []
+        actuals      = []
+
+        X_all, y_all, _ = prepare_features(zone_df)
+        X_train = X_all.iloc[:split]
+        y_train = y_all.iloc[:split]
+        xgb_model = xgb.XGBRegressor(
+            n_estimators=200, max_depth=5, learning_rate=0.1,
+            subsample=0.8, random_state=42, verbosity=0
+        )
+        xgb_model.fit(X_train, y_train)
+
+        for i in range(len(test) - horizon):
+            actual = test[i + horizon]
+            actuals.append(actual)
+
+            try:
+                arima_model  = ARIMA(train, order=(2, 1, 2))
+                arima_fit    = arima_model.fit()
+                arima_fc     = arima_fit.forecast(steps=horizon)
+                arima_preds.append(float(np.clip(arima_fc.iloc[-1], 0, 1)))
+            except Exception:
+                arima_preds.append(float(np.mean(train)))
+
+            xgb_input = X_all.iloc[split + i: split + i + 1]
+            xgb_fc    = float(xgb_model.predict(xgb_input)[0])
+            xgb_preds.append(np.clip(xgb_fc, 0, 1))
+
+        rows.append({
+            'Horizon'   : f'+{horizon}h',
+            'ARIMA MAE' : round(mean_absolute_error(actuals, arima_preds), 4),
+            'XGBoost MAE': round(mean_absolute_error(actuals, xgb_preds), 4),
+        })
+
+    report = pd.DataFrame(rows)
+    print("\n" + "=" * 60)
+    print(f"  ARIMA vs XGBoost — Forecast Comparison ({zone})")
+    print("=" * 60)
+    print(report.to_string(index=False))
+    print("=" * 60 + "\n")
+    return report

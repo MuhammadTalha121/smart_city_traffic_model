@@ -14,7 +14,7 @@ from src.data import generate_traffic_data, apply_hourly_patterns
 from src.model import (
     prepare_features, train_xgboost, evaluate_models,
     congestion_level, get_recommendation, predict_single,
-    detect_anomalies
+    detect_anomalies, forecast_congestion
 )
 
 st.set_page_config(
@@ -182,8 +182,8 @@ if predict_btn:
 
 # ── Charts ───────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📈 Hourly Patterns", "🗺️ Zone Analysis", "🌤️ Weather Impact", "🤖 Model Insights"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 Hourly Patterns", "🗺️ Zone Analysis", "🌤️ Weather Impact", "🤖 Model Insights", "🔮 Forecasting"
 ])
 
 with tab1:
@@ -243,7 +243,7 @@ with tab2:
         .reset_index()
     )
     st.dataframe(zone_summary, use_container_width=True, hide_index=True)
-    
+
     st.markdown("#### Anomaly Detection Log")
     anomaly_log = df[df['anomaly_flag'] == 1][[
         'zone', 'hour', 'expected_vehicle_count',
@@ -352,3 +352,62 @@ with tab4:
         plt.close()
     else:
         st.info("Click 'Train and Compare Models' to run the full model pipeline.")
+
+
+
+with tab5:
+    st.markdown("#### Congestion Forecast — 1h, 2h, 3h Ahead")
+
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        f_zone = st.selectbox("Select Zone", [f"Zone_{i}" for i in range(1, 6)], key="f_zone")
+    with f_col2:
+        f_hour = st.slider("Current Hour", 0, 23, 8, key="f_hour")
+
+    forecasts = forecast_congestion(df, zone=f_zone, hours_ahead=[1, 2, 3])
+
+    current_score = df[df['zone'] == f_zone]['congestion_score'].iloc[-1]
+    all_points    = [{'hours_ahead': 0, 'forecast_hour': f_hour,
+                      'predicted_score': current_score,
+                      'lower_bound': current_score, 'upper_bound': current_score}] + forecasts
+
+    hours  = [p['forecast_hour'] for p in all_points]
+    scores = [p['predicted_score'] for p in all_points]
+    lower  = [p['lower_bound'] for p in all_points]
+    upper  = [p['upper_bound'] for p in all_points]
+    labels = ['Now'] + [f'+{f["hours_ahead"]}h' for f in forecasts]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    fig.patch.set_facecolor(PALETTE['background'])
+    ax.fill_between(range(len(hours)), lower, upper,
+                    alpha=0.15, color=PALETTE['secondary'], label='Confidence band')
+    ax.plot(range(len(hours)), scores,
+            color=PALETTE['primary'], marker='o', linewidth=2, label='Forecast')
+    ax.set_xticks(range(len(hours)))
+    ax.set_xticklabels([f"{labels[i]}\n({hours[i]:02d}:00)" for i in range(len(hours))])
+    ax.set_ylabel('Congestion Score')
+    ax.set_ylim(0, 1)
+    ax.axhline(0.60, color=PALETTE['danger'],  linestyle='--', linewidth=0.8, alpha=0.6, label='High threshold')
+    ax.axhline(0.40, color=PALETTE['accent'],  linestyle='--', linewidth=0.8, alpha=0.6, label='Moderate threshold')
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close()
+
+    st.markdown("#### Forecast Detail")
+    f_cols = st.columns(3)
+    traffic_light = {'Low': '🟢', 'Moderate': '🟡', 'High': '🟠', 'Critical': '🔴'}
+
+    for i, fc in enumerate(forecasts):
+        with f_cols[i]:
+            icon  = traffic_light.get(fc['congestion_level'], '⚪')
+            color = congestion_color(fc['congestion_level'])
+            st.markdown(
+                f"<div style='border:0.5px solid {color}; border-radius:8px; padding:1rem;'>"
+                f"<div style='font-size:13px; color:#717D7E;'>+{fc['hours_ahead']}h &nbsp; {fc['forecast_hour']:02d}:00</div>"
+                f"<div style='font-size:24px; font-weight:500; color:{color};'>{icon} {fc['predicted_score']:.3f}</div>"
+                f"<div style='font-size:12px; color:{color}; margin-top:4px;'>{fc['congestion_level']}</div>"
+                f"<div style='font-size:11px; color:#717D7E; margin-top:8px;'>{fc['recommendation']}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
