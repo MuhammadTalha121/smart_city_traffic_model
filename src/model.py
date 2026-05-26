@@ -352,3 +352,89 @@ def compare_arima_vs_xgboost(city: str = 'Riyadh', zone: str = 'Zone_1') -> pd.D
     print(report.to_string(index=False))
     print("=" * 60 + "\n")
     return report
+
+
+
+def explain_prediction(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
+    """
+    Generate SHAP-based explanation for a single prediction.
+
+    Returns top 3 contributing factors with direction and plain English summary.
+    """
+    import shap
+
+    explainer  = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_row)
+
+    shap_series = pd.Series(shap_values[0], index=feature_names)
+    shap_abs    = shap_series.abs().sort_values(ascending=False)
+    top_3       = shap_abs.head(3).index.tolist()
+
+    business_labels = {
+        'avg_speed'            : 'average speed',
+        'vehicle_count'        : 'vehicle count',
+        'hour'                 : 'time of day',
+        'hour_multiplier'      : 'hourly traffic weight',
+        'rush_hour'            : 'rush hour period',
+        'is_late_night'        : 'late night activity',
+        'is_weekend'           : 'weekend pattern',
+        'weather'              : 'weather condition',
+        'road_type'            : 'road type',
+        'zone'                 : 'zone location',
+        'event'                : 'special event',
+        'day_of_week'          : 'day of week',
+        'vehicle_count_lag_1h' : 'traffic 1 hour ago',
+        'vehicle_count_lag_2h' : 'traffic 2 hours ago',
+        'congestion_lag_1h'    : 'congestion 1 hour ago',
+        'rolling_mean_3h'      : '3-hour traffic average',
+        'rolling_std_3h'       : 'traffic volatility'
+    }
+
+    factors = []
+    for feat in top_3:
+        impact    = float(shap_series[feat])
+        direction = 'increasing congestion' if impact > 0 else 'reducing congestion'
+        factors.append({
+            'factor'   : business_labels.get(feat, feat),
+            'direction': direction,
+            'impact'   : round(abs(impact), 4)
+        })
+
+    top_factor   = factors[0]['factor']
+    top_dir      = factors[0]['direction']
+    second       = factors[1]['factor'] if len(factors) > 1 else ''
+    plain_english = (
+        f"Congestion is primarily driven by {top_factor} ({top_dir})"
+        f"{f', followed by {second}' if second else ''}."
+    )
+
+    return {
+        'top_factors'  : factors,
+        'plain_english': plain_english
+    }
+
+
+def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv'):
+    """
+    Append a prediction and its explanation to the audit log CSV.
+    """
+    import os
+    from datetime import datetime
+
+    row = {
+        'timestamp'      : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'city'           : prediction.get('city'),
+        'zone'           : prediction.get('zone'),
+        'hour'           : prediction.get('hour'),
+        'weather'        : prediction.get('weather'),
+        'congestion_score': prediction.get('congestion_score'),
+        'congestion_level': prediction.get('congestion_level'),
+        'top_factor_1'   : explanation['top_factors'][0]['factor'] if len(explanation['top_factors']) > 0 else '',
+        'top_factor_2'   : explanation['top_factors'][1]['factor'] if len(explanation['top_factors']) > 1 else '',
+        'top_factor_3'   : explanation['top_factors'][2]['factor'] if len(explanation['top_factors']) > 2 else '',
+        'plain_english'  : explanation.get('plain_english', '')
+    }
+
+    log_df     = pd.DataFrame([row])
+    write_header = not os.path.exists(log_path)
+    log_df.to_csv(log_path, mode='a', header=write_header, index=False)

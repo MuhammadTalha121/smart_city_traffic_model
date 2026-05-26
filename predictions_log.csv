@@ -1,0 +1,2 @@
+timestamp,city,zone,hour,weather,congestion_score,congestion_level,top_factor_1,top_factor_2,top_factor_3,plain_english
+2026-05-26 16:12:43,Riyadh,Zone_1,8,clear,0.45,Moderate,average speed,vehicle count,zone location,"Congestion is primarily driven by average speed (reducing congestion), followed by vehicle count."

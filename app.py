@@ -1,10 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal, List
-from src.model import predict_single
-from src.data import generate_traffic_data, apply_hourly_patterns
-from src.model import predict_single, detect_anomalies, forecast_congestion
-
+from src.data  import generate_traffic_data, apply_hourly_patterns
+from src.model import predict_single, detect_anomalies, forecast_congestion, explain_prediction, log_prediction
 
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
@@ -56,11 +54,15 @@ def health():
 @app.post("/predict", response_model=CongestionOutput)
 def predict(data: TrafficInput):
     """
-    Predict congestion score for a single zone and return
-    level classification with operational recommendation.
+    Predict congestion score for a single zone.
+    Returns level, recommendation, SHAP explanation, and plain English summary.
+    Logs every prediction to predictions_log.csv.
     """
     try:
-        return predict_single(
+        from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+        from src.config import HOURLY_MULTIPLIERS
+
+        result = predict_single(
             city            = data.city,
             zone            = data.zone,
             hour            = data.hour,
@@ -74,10 +76,25 @@ def predict(data: TrafficInput):
             event           = data.event,
             hour_multiplier = data.hour_multiplier
         )
+
+        try:
+            df          = apply_hourly_patterns(generate_traffic_data(city=data.city), city=data.city)
+            df          = add_lag_features(df)
+            X, y, feats = __import__('src.model', fromlist=['prepare_features']).prepare_features(df)
+            xgb_model, _, _ = __import__('src.model', fromlist=['train_xgboost']).train_xgboost(X, y)
+            sample      = X.iloc[[-1]]
+            explanation = explain_prediction(xgb_model, sample, feats)
+            log_prediction(result, explanation)
+            result['explanation']   = explanation['top_factors']
+            result['plain_english'] = explanation['plain_english']
+        except Exception:
+            result['explanation']   = []
+            result['plain_english'] = 'Explanation unavailable.'
+
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
+    
 @app.post("/predict/batch")
 def predict_batch(inputs: List[TrafficInput]):
     """

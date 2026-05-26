@@ -14,7 +14,7 @@ from src.data import generate_traffic_data, apply_hourly_patterns
 from src.model import (
     prepare_features, train_xgboost, evaluate_models,
     congestion_level, get_recommendation, predict_single,
-    detect_anomalies, forecast_congestion
+    detect_anomalies, forecast_congestion, explain_prediction, log_prediction
 )
 
 st.set_page_config(
@@ -331,11 +331,18 @@ with tab4:
             'rush_hour': 'Rush Hour Flag', 'is_late_night': 'Late Night Flag',
             'is_weekend': 'Weekend Flag', 'weather': 'Weather Condition',
             'road_type': 'Road Type', 'zone': 'City Zone',
-            'event': 'Special Event', 'day_of_week': 'Day of Week'
+            'event': 'Special Event', 'day_of_week': 'Day of Week',
+            'vehicle_count_lag_1h': 'Traffic 1h Ago',
+            'vehicle_count_lag_2h': 'Traffic 2h Ago',
+            'congestion_lag_1h': 'Congestion 1h Ago',
+            'rolling_mean_3h': '3h Rolling Average',
+            'rolling_std_3h': '3h Volatility'
         }
-        importance_df['Label'] = importance_df['Feature'].map(lambda x: business_labels.get(x, x))
+        importance_df['Label'] = importance_df['Feature'].map(
+            lambda x: business_labels.get(x, x)
+        )
 
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(10, 6))
         fig.patch.set_facecolor(PALETTE['background'])
         colors = [
             PALETTE['danger'] if v > importance_df['Importance'].quantile(0.75)
@@ -350,9 +357,40 @@ with tab4:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
-    else:
-        st.info("Click 'Train and Compare Models' to run the full model pipeline.")
 
+        st.markdown("##### Prediction Explainability (SHAP)")
+        st.markdown("Explaining the most recent prediction in the test set.")
+
+        with st.spinner("Computing SHAP values..."):
+            sample_row  = X_test.iloc[[-1]]
+            explanation = explain_prediction(model, sample_row, feature_names)
+
+        st.markdown(
+            f"<div style='background:#1B4F7215; border-left:4px solid #1B4F72; "
+            f"padding:0.75rem 1rem; border-radius:6px; margin-bottom:1rem;'>"
+            f"<b>Why this prediction?</b><br>{explanation['plain_english']}</div>",
+            unsafe_allow_html=True
+        )
+
+        factors_df = pd.DataFrame(explanation['top_factors'])
+        factors_df.columns = ['Factor', 'Direction', 'Impact Score']
+        st.dataframe(factors_df, use_container_width=True, hide_index=True)
+
+        sample_prediction = {
+            'city': city, 'zone': p_zone, 'hour': p_hour,
+            'weather': p_weather, 'congestion_score': 0.0,
+            'congestion_level': 'Low'
+        }
+        log_prediction(sample_prediction, explanation)
+        st.caption("Prediction logged to predictions_log.csv")
+
+    st.markdown("##### Audit Trail")
+    import os
+    if os.path.exists('predictions_log.csv'):
+        audit_df = pd.read_csv('predictions_log.csv')
+        st.dataframe(audit_df.tail(20), use_container_width=True, hide_index=True)
+    else:
+        st.info("No predictions logged yet. Train models and run predictions to populate the audit trail.")
 
 
 with tab5:
