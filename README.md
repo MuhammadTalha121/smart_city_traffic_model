@@ -30,6 +30,8 @@ This system addresses all three.
   - Late-night activity (21:00–23:00): comparable to evening rush hour
   - Ramadan schedule shift: entire daily cycle moves ~4 hours
   - Sandstorm protocol: 40% speed reduction — most disruptive weather event in Gulf cities
+- Authenticates every API call — not an open endpoint
+- Rate-limits by IP — prevents abuse without infrastructure changes
 - Provides operational recommendations, not just numbers
 - Logs every prediction to an auditable trail
 - Scales to any city via a single configuration parameter
@@ -40,20 +42,23 @@ This system addresses all three.
 
 ```
 smart-city-traffic-model/
-├── app.py                          # FastAPI REST API
+├── app.py                          # FastAPI REST API — authenticated, rate-limited
+├── generate_key.py                 # Run once to create .env with secure API key
+├── .env.example                    # Documents required environment variables
+├── .gitignore                      # Excludes .env, predictions_log.csv, *.joblib
 ├── docker-compose.yml              # Container orchestration
 ├── Dockerfile                      # Container definition
 ├── requirements.txt
 ├── predictions_log.csv             # Audit trail — every prediction logged
 ├── README.md
 ├── PROJECT_CONTEXT.md
-├── IMPROVEMENT_CHAIN.md
+├── IMPROVEMENT_CHAIN_V2.md
 │
 ├── src/
 │   ├── config.py                   # City profiles, constants, thresholds
 │   ├── data.py                     # Data generation, pattern engineering, lag features
 │   └── model.py                    # Training, evaluation, prediction, anomaly detection,
-│                                   # forecasting, SHAP explainability
+│                                   # forecasting, SHAP explainability, encoding dicts
 │
 ├── streamlit_app/
 │   └── dashboard.py                # Interactive operations dashboard (5 tabs)
@@ -115,21 +120,59 @@ smart-city-traffic-model/
 
 ---
 
+## Authentication
+
+All endpoints except `/health` require an `X-API-Key` header.
+
+```bash
+# Generate your key (run once)
+py generate_key.py
+# → writes .env with a secure 64-character hex key
+
+# All protected requests require the header
+X-API-Key: your_key_here
+
+# Missing or invalid key returns:
+# HTTP 401 {"detail": "Invalid or missing API key."}
+```
+
+To add production domains, update `ALLOWED_ORIGINS` in `.env`:
+```
+ALLOWED_ORIGINS=https://traffic.yourdomain.com,https://dashboard.yourdomain.com
+```
+
+---
+
+## Rate Limits
+
+| Endpoint | Limit |
+|---|---|
+| `/predict` | 60 requests / minute / IP |
+| `/predict/batch` | 20 requests / minute / IP |
+| `/anomalies` | 20 requests / minute / IP |
+| `/forecast` | 20 requests / minute / IP |
+
+Exceeded limit returns `HTTP 429` with `Retry-After` header.
+
+---
+
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/` | GET | Service info |
-| `/health` | GET | Health check |
-| `/predict` | POST | Single zone prediction with SHAP explanation |
-| `/predict/batch` | POST | Up to 20 zones simultaneously |
-| `/anomalies` | GET | All current anomalies across all zones |
-| `/forecast` | GET | 1h, 2h, 3h congestion forecast for a zone |
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/` | GET | No | Service info |
+| `/health` | GET | No | Health check |
+| `/predict` | POST | Yes | Single zone prediction with SHAP explanation |
+| `/predict/batch` | POST | Yes | Up to 20 zones simultaneously |
+| `/anomalies` | GET | Yes | All current anomalies across all zones |
+| `/forecast` | GET | Yes | 1h, 2h, 3h congestion forecast for a zone |
 
 ### Predict — Sample Request
 
 ```json
 POST /predict
+X-API-Key: your_key_here
+
 {
   "city": "Riyadh",
   "zone": "Zone_1",
@@ -170,6 +213,7 @@ POST /predict
 
 ```json
 GET /anomalies?city=Riyadh
+X-API-Key: your_key_here
 
 {
   "city": "Riyadh",
@@ -192,6 +236,7 @@ GET /anomalies?city=Riyadh
 
 ```json
 GET /forecast?city=Riyadh&zone=Zone_1
+X-API-Key: your_key_here
 
 {
   "city": "Riyadh",
@@ -238,11 +283,14 @@ Vehicle count — coefficient of variation    < 0.60  0.3105   PASS
 # Install dependencies
 pip install -r requirements.txt
 
+# Generate API key (run once)
+py generate_key.py
+
 # Validate data
 py -c "from src.data import validate_data; validate_data(city='Riyadh')"
 
 # Run API
-uvicorn app:app --reload
+py -m uvicorn app:app --reload
 # → http://127.0.0.1:8000/docs
 
 # Run Dashboard
@@ -258,6 +306,25 @@ docker-compose up --build
 
 # API       → http://localhost:8000/docs
 # Dashboard → http://localhost:8501
+```
+
+## Testing the API (PowerShell)
+
+```powershell
+# Health check — no key required
+Invoke-WebRequest -Uri "http://localhost:8000/health"
+
+# No key → 401
+Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
+  -ContentType "application/json" `
+  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multiplier":1.4}'
+
+# Valid key → prediction
+$key = (Get-Content .env | Where-Object { $_ -match "^API_KEY=" }) -replace "^API_KEY=",""
+Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
+  -ContentType "application/json" `
+  -Headers @{"X-API-Key" = $key} `
+  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multiplier":1.4}'
 ```
 
 ---
@@ -305,9 +372,12 @@ Adding a new city requires one dictionary entry in `src/config.py`.
 - [x] FastAPI REST deployment — /predict, /batch, /anomalies, /forecast
 - [x] Streamlit operations dashboard — 5 interactive tabs
 - [x] Docker containerization
+- [x] API key authentication — X-API-Key header, 401 on invalid/missing
+- [x] Rate limiting — 60/min on /predict, 20/min on /anomalies and /forecast
+- [x] CORS configuration — localhost in dev, configurable for production
+- [ ] Automated test suite with CI/CD
 - [ ] Real IoT data integration layer
 - [ ] Automated retraining pipeline
-- [ ] OAuth2 + HTTPS security layer
 - [ ] Cloud deployment (Railway / Render / AWS)
 - [ ] Multi-city comparative dashboard
 - [ ] Vehicle-to-Infrastructure (V2I) data simulation
@@ -316,7 +386,7 @@ Adding a new city requires one dictionary entry in `src/config.py`.
 
 ## Tech Stack
 
-`Python 3.11` `FastAPI` `Streamlit` `XGBoost` `Scikit-learn` `SHAP` `Statsmodels` `Pandas` `NumPy` `Matplotlib` `Seaborn` `Docker` `Pydantic`
+`Python 3.11` `FastAPI` `Streamlit` `XGBoost` `Scikit-learn` `SHAP` `Statsmodels` `Pandas` `NumPy` `Matplotlib` `Seaborn` `Docker` `Pydantic` `slowapi` `python-dotenv`
 
 ---
 
