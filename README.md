@@ -5,27 +5,35 @@
 
 ---
 
-## Problem
+## The Problem — By The Numbers
 
-Riyadh's population will reach 15–20 million by 2030.  
-NEOM, Diriyah, and Qiddiya are being built from scratch — with no historical traffic baseline.
+Saudi Arabia's traffic system is under documented, quantified pressure.
 
-Traditional traffic management systems are:
-- **Reactive** — they respond after congestion forms, not before
-- **Static** — fixed signal timings with no real-time adaptation
-- **Culturally blind** — built on Western behavioral models that don't apply to Saudi cities
+| Statistic | Source |
+|---|---|
+| 10,000–14,000 traffic accident cases handled every single day | Najm Insurance Services (CEO report) |
+| 15% surge in total traffic accidents recorded on Saudi roads | Najm Insurance Services (CEO report) |
+| 69% of collisions caused by violations fixed cameras cannot detect | MDPI Sustainability Journal |
+| 30% of urban air pollution in major Saudi cities from congestion | Urban mobility analyses |
 
-This system addresses all three.
+The core failure of the current system: **it is reactive.**  
+Fixed Saher cameras catch speeding and red lights — 31% of collision causes.  
+The remaining 69% — sudden lane changes, tailgating, distracted driving — happen between cameras.  
+By the time Najm processes a claim, the incident has already occurred.
+
+Researchers at MDPI, ResearchGate, and ScienceDirect identify the solution as predictive analytics,  
+zone-level AI scoring, and behavioral calibration to Saudi-specific patterns.  
+That is exactly what this system is.
 
 ---
 
 ## What This System Does
 
-- Validates synthetic traffic data against statistical benchmarks before any model trains
-- Predicts zone-level congestion scores in real time with SHAP-based explanations
-- Detects anomalous traffic events before they become incidents
+- Predicts zone-level congestion scores before incidents form — not after
+- Detects anomalous traffic events before they escalate to accidents
 - Forecasts congestion 1, 2, and 3 hours ahead with confidence intervals
-- Models Saudi-specific patterns invisible to standard systems:
+- Validates synthetic traffic data against statistical benchmarks before any model trains
+- Models Saudi-specific patterns invisible to standard Western systems:
   - Friday prayer drop (12:00–13:00): ~90% traffic reduction — statistically verified
   - Late-night activity (21:00–23:00): comparable to evening rush hour
   - Ramadan schedule shift: entire daily cycle moves ~4 hours
@@ -35,6 +43,19 @@ This system addresses all three.
 - Provides operational recommendations, not just numbers
 - Logs every prediction to an auditable trail
 - Scales to any city via a single configuration parameter
+
+---
+
+## How This Maps to What Researchers Recommend
+
+| Researcher recommendation | What this system has |
+|---|---|
+| LSTM / predictive analytics — anticipate bottlenecks hours ahead | Multi-horizon forecasting at +1h, +2h, +3h |
+| AI-driven anomaly detection beyond fixed cameras | Rolling 7-day anomaly detection, 4 severity levels |
+| Zone-level congestion scoring with adaptive signals | Congestion score per zone per hour, all zones |
+| Centralized control hub processing transit data in real time | FastAPI backend with authenticated prediction endpoints |
+| Behavioral calibration to Saudi cultural patterns | Friday prayer, Ramadan, sandstorm — statistically verified |
+| Plain-language output for non-technical decision makers | SHAP plain English summaries on every prediction |
 
 ---
 
@@ -387,6 +408,17 @@ Adding a new city requires one dictionary entry in `src/config.py`.
 ## Tech Stack
 
 `Python 3.11` `FastAPI` `Streamlit` `XGBoost` `Scikit-learn` `SHAP` `Statsmodels` `Pandas` `NumPy` `Matplotlib` `Seaborn` `Docker` `Pydantic` `slowapi` `python-dotenv`
+
+---
+
+## References
+
+- Najm Insurance Services — CEO report on accident volume and surge statistics
+- MDPI Sustainability Journal — peer-reviewed analysis of Saher system blind spots and violation distribution
+- ScienceDirect — transportation planning and public transit adoption challenges in KSA
+- ResearchGate — LSTM forecasting and reward-based congestion reduction research
+- Royal Commission for Riyadh City (RCRC) — Riyadh Metro planning and ridership projections
+- Saudi General Directorate of Traffic (Muroor) — enforcement fine structures and violation categories
 
 ---
 
