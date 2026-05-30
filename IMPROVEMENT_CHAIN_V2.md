@@ -9,56 +9,60 @@ PROMPT 001–005 complete:
 - Multi-horizon forecasting — XGBoost vs ARIMA compared
 - SHAP explainability — plain English summaries, audit trail
 
+PROMPT 006 complete:
+- API key authentication — X-API-Key header required on all endpoints except /health
+- Rate limiting — /predict: 60 req/min, /anomalies + /forecast: 20 req/min per IP
+- CORS — localhost:8501 and localhost:3000 allowed in development
+- .env + .gitignore + .env.example added to repo
+- Verified: no key → 401, /health → 200 no key, valid key → prediction with SHAP
+
 The system is portfolio-ready.
-The next 10 prompts make it production-ready.
+The next 9 prompts make it production-ready.
 The difference: a recruiter can run this. A city can deploy this.
 
 ---
 
-## PROMPT 006 — Security Layer
+## PROMPT 006 — Security Layer ✅ COMPLETE
 
+### What was built
+- `python-dotenv` loads API_KEY and ALLOWED_ORIGINS from `.env` at startup
+- `APIKeyHeader` dependency on all endpoints except `/` and `/health`
+- `slowapi` rate limiter: 60/min on `/predict`, 20/min on `/anomalies`, `/forecast`, `/predict/batch`
+- CORS middleware with configurable origins via `.env`
+- `generate_key.py` — run once to write a 64-char hex key to `.env`
+- `.env.example` — safe to commit, shows structure without real values
+- `.gitignore` — excludes `.env`, `predictions_log.csv`, `pipeline_log.csv`, `*.joblib`
+
+### Key implementation details for future prompts
+- Encoding dictionaries (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING)
+  live in `src/model.py` — not `src/config.py`
+- `prepare_features()` always expects `congestion_score` as target — cannot be used
+  for single-row inference. Build X_row manually using the encoding dicts from model.py
+- Lag features (vehicle_count_lag_1h, vehicle_count_lag_2h, congestion_lag_1h,
+  rolling_mean_3h, rolling_std_3h) must be present in X_row even for live requests —
+  approximate with current vehicle_count and 0.0 for std/congestion
+- `apply_hourly_patterns()` must be called after `generate_traffic_data()` — it creates
+  `congestion_score`. Without it, `add_lag_features()` will raise KeyError
+- `train_xgboost()` signature: `train_xgboost(X, y)` — takes separate feature matrix
+  and target series, not a full dataframe
+- `log_prediction()` signature: `log_prediction(prediction_dict, explanation_dict)`
+- `explain_prediction()` signature: `explain_prediction(model, X_row_df, feature_names_list)`
+  returns `{top_factors: [...], plain_english: str}`
+
+### Correct lifespan startup sequence
+```python
+df = generate_traffic_data(city="Riyadh")
+df = apply_hourly_patterns(df, city="Riyadh")   # creates congestion_score
+df = add_lag_features(df)                        # now congestion_score exists
+X, y, feature_cols = prepare_features(df)
+model, _, _        = train_xgboost(X, y)
 ```
-MISSION: Add API authentication and rate limiting so the system
-is not an open endpoint anyone can abuse.
 
-CONTEXT:
-- Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 001-005 complete — full ML pipeline with explainability
-- Current API has zero authentication — any caller gets full access
-- A government infrastructure demo cannot have an unsecured API
-
-PROBLEM TO SOLVE:
-A city IT director asks: "Who can call this API?"
-Current answer: anyone. That ends the conversation.
-
-YOUR TASK:
-1. Add API key authentication to app.py:
-   a. Generate a secure API key using secrets.token_hex(32)
-   b. Store it in a .env file — never hardcode
-   c. All endpoints except /health require X-API-Key header
-   d. Invalid key returns 401 with clear error message
-2. Add rate limiting:
-   a. pip install slowapi
-   b. Limit /predict to 60 requests per minute per IP
-   c. Limit /anomalies and /forecast to 20 requests per minute
-   d. Return 429 with retry-after header when exceeded
-3. Add CORS configuration:
-   a. Allow only localhost:8501 (Streamlit) and localhost:3000 in development
-   b. Document how to add production domains
-4. Add .env.example to repo — never commit .env itself
-5. Update .gitignore to exclude .env and predictions_log.csv
-
-DELIVERABLE:
-- Updated app.py with auth + rate limiting
-- .env.example file
-- Updated .gitignore
-- Test: curl with no key returns 401, curl with key returns prediction
-
-GENERATE NEXT PROMPT:
-After completing this mission, identify what a DevOps engineer
-would call the biggest deployment risk in this system.
-Write PROMPT 007 targeting that risk.
-```
+### Verified test results
+- `POST /predict` no key → 401 Invalid or missing API key
+- `GET /health` no key → 200 {"status":"healthy"}
+- `POST /predict` valid key → 200 with congestion_score, congestion_level,
+  recommendation, explanation, plain_english
 
 ---
 
@@ -70,17 +74,28 @@ they reach production.
 
 CONTEXT:
 - Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 006 complete — API is secured
+- PROMPT 006 complete — API is secured with key auth and rate limiting
 - Zero automated tests exist — every change is manually verified
 - Manual testing does not scale and misses edge cases
+
+CRITICAL IMPLEMENTATION NOTES (read before writing any test):
+- Encoding dicts live in src/model.py: WEATHER_ENCODING, ROAD_ENCODING,
+  ZONE_ENCODING, DAY_ENCODING — not src/config.py
+- prepare_features() requires congestion_score column — cannot be used
+  for single-row inference. Tests for the API must build X_row manually
+- apply_hourly_patterns() must be called before add_lag_features()
+- train_xgboost() takes (X, y) not a full dataframe
+- log_prediction() takes (prediction_dict, explanation_dict)
+- Lag feature columns must be present even for single-request tests —
+  use current vehicle_count as approximation for lag values
 
 PROBLEM TO SOLVE:
 You change one line in data.py.
 The Friday prayer drop silently breaks.
-You don't notice until a recruiter runs a demo.
+You don't notice until a recruiter runs the demo.
 
 YOUR TASK:
-1. pip install pytest pytest-cov
+1. pip install pytest pytest-cov httpx
 2. Create tests/ directory with:
    a. tests/test_data.py:
       - test_generate_returns_correct_shape()
@@ -94,21 +109,25 @@ YOUR TASK:
       - test_anomaly_detection_flags_spike()
       - test_forecast_returns_three_horizons()
       - test_explain_prediction_returns_three_factors()
-   c. tests/test_api.py:
-      - test_health_endpoint_returns_200()
-      - test_predict_endpoint_valid_input()
-      - test_predict_endpoint_invalid_hour()
+   c. tests/test_api.py — use FastAPI TestClient:
+      - test_health_endpoint_no_auth_returns_200()
+      - test_predict_no_key_returns_401()
+      - test_predict_wrong_key_returns_401()
+      - test_predict_valid_key_returns_prediction()
       - test_anomalies_endpoint_returns_list()
       - test_forecast_endpoint_returns_forecasts()
-3. Run: pytest tests/ --cov=src --cov-report=term-missing
-4. Achieve minimum 80% code coverage
-5. Add GitHub Actions workflow .github/workflows/test.yml:
+      - test_rate_limit_returns_429_after_threshold()
+3. Set TEST_API_KEY environment variable for test_api.py
+4. Run: pytest tests/ --cov=src --cov-report=term-missing
+5. Achieve minimum 80% code coverage
+6. Add GitHub Actions workflow .github/workflows/test.yml:
    - Triggers on every push to main
+   - Sets API_KEY as a GitHub Actions secret
    - Runs pytest automatically
    - Fails the push if any test fails
 
 DELIVERABLE:
-- tests/ directory with 15 passing tests
+- tests/ directory with 16 passing tests
 - Coverage report showing ≥80%
 - .github/workflows/test.yml
 - Badge in README: tests passing
@@ -285,11 +304,14 @@ PROMPT 001–005  : Portfolio foundation (COMPLETE)
                   Validated data · Lag features · Anomaly detection
                   Forecasting · Explainability · Audit trail
 
-PROMPT 006–007  : Production hardening
-                  API security · Automated testing · CI/CD
+PROMPT 006      : Security layer (COMPLETE)
+                  API key auth · Rate limiting · CORS · .env
 
-PROMPT 008–009  : Real world connectivity
-                  Live data adapters · Drift detection · Auto-retraining
+PROMPT 007–008  : Production hardening + real world connectivity
+                  Automated testing · CI/CD · Live data adapters
+
+PROMPT 009      : Self-improving system
+                  Drift detection · Auto-retraining
 
 PROMPT 010      : Public deployment
                   Live URL · Recruiter-ready demo
@@ -307,13 +329,13 @@ PROMPT 016–020  : Company layer (future)
 
 ## WHAT EACH PROMPT UNLOCKS IN A RECRUITER CONVERSATION
 
-| Prompt | What you can say |
-|---|---|
-| 006 | "The API is authenticated and rate-limited — not an open endpoint." |
-| 007 | "Every push runs 15 automated tests with 80%+ coverage." |
-| 008 | "It can ingest real weather data from Open-Meteo right now, live." |
-| 009 | "It detects model drift and retrains itself automatically at 3AM." |
-| 010 | "Here's the URL — you can test it on your phone right now." |
+| Prompt | What you can say | Status |
+|---|---|---|
+| 006 | "The API is authenticated and rate-limited — not an open endpoint." | ✅ Done |
+| 007 | "Every push runs 16 automated tests with 80%+ coverage." | Pending |
+| 008 | "It can ingest real weather data from Open-Meteo right now, live." | Pending |
+| 009 | "It detects model drift and retrains itself automatically at 3AM." | Pending |
+| 010 | "Here's the URL — you can test it on your phone right now." | Pending |
 
 Each prompt adds one sentence you could not say before.
 That sentence is what gets you the meeting.
