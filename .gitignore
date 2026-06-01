@@ -1,0 +1,53 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+.env/
+
+# --- Environment / secrets ---
+# CRITICAL: never commit the real .env file
+.env
+*.env
+!.env.example
+
+# --- Runtime artifacts ---
+predictions_log.csv
+pipeline_log.csv
+*.joblib
+*.pkl
+*.model
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Docker ---
+*.dockerignore
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml

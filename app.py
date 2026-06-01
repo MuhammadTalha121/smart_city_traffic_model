@@ -1,155 +1,215 @@
-from fastapi import FastAPI, HTTPException
+import os
+from contextlib import asynccontextmanager
+import pandas as pd
+from datetime import datetime
+from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
-from typing import Literal, List
-from src.data  import generate_traffic_data, apply_hourly_patterns
-from src.model import predict_single, detect_anomalies, forecast_congestion, explain_prediction, log_prediction
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, validate_data
+
+from src.data    import generate_traffic_data, add_lag_features, validate_data
+from src.model   import (
+    train_xgboost, prepare_features, predict_single,
+    detect_anomalies, forecast_congestion, explain_prediction,
+    log_prediction, congestion_level, get_recommendation,
+)
+
+load_dotenv()
+
+API_KEY        = os.getenv("API_KEY")
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:8501,http://localhost:3000",
+).split(",")
+
+limiter = Limiter(key_func=get_remote_address)
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(key: str = Depends(api_key_header)):
+    """Validate the X-API-Key header on every protected endpoint."""
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="Server has no API key configured.")
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    return key
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Train the model once at startup so all endpoints share it."""
+    df = generate_traffic_data(city="Riyadh")
+    df = apply_hourly_patterns(df, city="Riyadh")   # creates congestion_score
+    df = add_lag_features(df)                        # now congestion_score exists
+    
+    X, y, feature_cols = prepare_features(df)
+    model, _, _        = train_xgboost(X, y)
+    
+    app.state.df           = df
+    app.state.model        = model
+    app.state.feature_cols = feature_cols
+    yield
+
 
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
-    description = "Real-time congestion prediction for Vision 2030 smart cities.",
-    version     = "1.0.0"
+    description = "Production-ready traffic prediction for Vision 2030 smart cities.",
+    version     = "2.0.0",
+    lifespan    = lifespan,
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins     = ALLOWED_ORIGINS,
+    allow_credentials = True,
+    allow_methods     = ["GET", "POST"],
+    allow_headers     = ["*"],
 )
 
 
-class TrafficInput(BaseModel):
-    city          : str                                                              = Field(..., example="Riyadh")
-    zone          : Literal["Zone_1", "Zone_2", "Zone_3", "Zone_4", "Zone_5"]
-    hour          : int                                                              = Field(..., ge=0, le=23)
-    vehicle_count : float                                                            = Field(..., ge=0, le=500)
-    avg_speed     : float                                                            = Field(..., ge=20, le=100)
-    weather       : Literal["clear", "sandstorm", "dust", "fog", "rain", "humid"]
-    road_type     : Literal["highway", "arterial", "local"]
-    rush_hour     : Literal[0, 1]
-    is_weekend    : Literal[0, 1]
-    is_late_night : Literal[0, 1]
-    event         : Literal[0, 1]
-    hour_multiplier: float                                                           = Field(..., ge=0.0, le=2.0)
+# ---------------------------------------------------------------------------
+# Request / response schemas
+# ---------------------------------------------------------------------------
+
+class PredictRequest(BaseModel):
+    city:            str          = Field("Riyadh")
+    zone:            str          = Field("Zone_1")
+    hour:            int          = Field(..., ge=0, le=23)
+    vehicle_count:   float        = Field(..., gt=0)
+    avg_speed:       float        = Field(..., gt=0)
+    weather:         str          = Field("clear")
+    road_type:       str          = Field("arterial")
+    rush_hour:       int          = Field(0, ge=0, le=1)
+    is_weekend:      int          = Field(0, ge=0, le=1)
+    is_late_night:   int          = Field(0, ge=0, le=1)
+    event:           int          = Field(0, ge=0, le=1)
+    hour_multiplier: float        = Field(1.0, gt=0)
 
 
-class CongestionOutput(BaseModel):
-    city             : str
-    zone             : str
-    hour             : int
-    weather          : str
-    congestion_score : float
-    congestion_level : str
-    recommendation   : str
+class BatchPredictRequest(BaseModel):
+    predictions: list[PredictRequest] = Field(..., max_length=20)
 
 
-@app.get("/")
+# ---------------------------------------------------------------------------
+# Public endpoints (no auth required)
+# ---------------------------------------------------------------------------
+
+@app.get("/", tags=["info"])
 def root():
     return {
-        "service": "Smart City Traffic Intelligence API",
-        "version": "1.0.0",
-        "docs"   : "/docs",
-        "health" : "/health"
+        "service" : "Smart City Traffic Intelligence API",
+        "version" : "2.0.0",
+        "status"  : "operational",
+        "docs"    : "/docs",
     }
 
 
-@app.get("/health")
+@app.get("/health", tags=["info"])
 def health():
+    """Health check — no authentication required."""
     return {"status": "healthy"}
 
 
-@app.post("/predict", response_model=CongestionOutput)
-def predict(data: TrafficInput):
-    """
-    Predict congestion score for a single zone.
-    Returns level, recommendation, SHAP explanation, and plain English summary.
-    Logs every prediction to predictions_log.csv.
-    """
-    try:
-        from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
-        from src.config import HOURLY_MULTIPLIERS
+# ---------------------------------------------------------------------------
+# Protected endpoints — require X-API-Key header
+# ---------------------------------------------------------------------------
 
-        result = predict_single(
-            city            = data.city,
-            zone            = data.zone,
-            hour            = data.hour,
-            vehicle_count   = data.vehicle_count,
-            avg_speed       = data.avg_speed,
-            weather         = data.weather,
-            road_type       = data.road_type,
-            rush_hour       = data.rush_hour,
-            is_weekend      = data.is_weekend,
-            is_late_night   = data.is_late_night,
-            event           = data.event,
-            hour_multiplier = data.hour_multiplier
-        )
-
-        try:
-            df          = apply_hourly_patterns(generate_traffic_data(city=data.city), city=data.city)
-            df          = add_lag_features(df)
-            X, y, feats = __import__('src.model', fromlist=['prepare_features']).prepare_features(df)
-            xgb_model, _, _ = __import__('src.model', fromlist=['train_xgboost']).train_xgboost(X, y)
-            sample      = X.iloc[[-1]]
-            explanation = explain_prediction(xgb_model, sample, feats)
-            log_prediction(result, explanation)
-            result['explanation']   = explanation['top_factors']
-            result['plain_english'] = explanation['plain_english']
-        except Exception:
-            result['explanation']   = []
-            result['plain_english'] = 'Explanation unavailable.'
-
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/predict/batch")
-def predict_batch(inputs: List[TrafficInput]):
-    """
-    Predict congestion for up to 20 zones simultaneously.
-    Designed for city-wide dashboard updates.
-    """
-    if len(inputs) > 20:
-        raise HTTPException(status_code=400, detail="Batch limit is 20 records per request.")
-    return [predict(item) for item in inputs]
-
-
-@app.get("/anomalies")
-def get_anomalies(city: str = "Riyadh", n_days: int = 30):
-    """
-    Return all detected anomalies across all zones.
-    Includes severity classification and recommended action.
-    """
-    try:
-        df = generate_traffic_data(city=city, n_days=n_days)
-        df = apply_hourly_patterns(df, city=city)
-        df = detect_anomalies(df)
-
-        anomalies = df[df['anomaly_flag'] == 1][[
-            'zone', 'hour', 'weather',
-            'expected_vehicle_count', 'vehicle_count',
-            'anomaly_severity', 'anomaly_recommendation'
-        ]].copy()
-
-        anomalies['expected_vehicle_count'] = anomalies['expected_vehicle_count'].round(1)
-        anomalies['vehicle_count']          = anomalies['vehicle_count'].round(1)
-
-        return {
-            "city"          : city,
-            "total_anomalies": len(anomalies),
-            "anomalies"     : anomalies.to_dict(orient='records')
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/forecast")
-def get_forecast(
-    city   : str = "Riyadh",
-    zone   : str = "Zone_1",
-    n_days : int = 30
+@app.post("/predict", tags=["prediction"])
+@limiter.limit("60/minute")
+def predict(
+    request:  Request,
+    payload:  PredictRequest,
+    _key:     str = Depends(require_api_key),
 ):
-    """
-    Forecast congestion 1h, 2h, and 3h ahead for a given zone.
-    Returns predicted score, confidence interval, level, and recommendation.
-    """
-    try:
-        from src.data import generate_traffic_data, apply_hourly_patterns
-        df        = generate_traffic_data(city=city, n_days=n_days)
-        df        = apply_hourly_patterns(df, city=city)
-        forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
-        return {"city": city, "zone": zone, "forecasts": forecasts}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Single zone prediction with SHAP explanation. 60 req/min per IP."""
+    from datetime import datetime
+    from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
+
+    p      = payload.model_dump()
+    result = predict_single(
+        city            = p["city"],
+        zone            = p["zone"],
+        hour            = p["hour"],
+        vehicle_count   = p["vehicle_count"],
+        avg_speed       = p["avg_speed"],
+        weather         = p["weather"],
+        road_type       = p["road_type"],
+        rush_hour       = p["rush_hour"],
+        is_weekend      = p["is_weekend"],
+        is_late_night   = p["is_late_night"],
+        event           = p["event"],
+        hour_multiplier = p["hour_multiplier"],
+    )
+
+    row = {
+        "vehicle_count"        : p["vehicle_count"],
+        "avg_speed"            : p["avg_speed"],
+        "hour"                 : p["hour"],
+        "rush_hour"            : p["rush_hour"],
+        "is_weekend"           : p["is_weekend"],
+        "is_late_night"        : p["is_late_night"],
+        "event"                : p["event"],
+        "hour_multiplier"      : p["hour_multiplier"],
+        "weather"              : WEATHER_ENCODING.get(p["weather"], 0),
+        "road_type"            : ROAD_ENCODING.get(p["road_type"], 0),
+        "zone"                 : ZONE_ENCODING.get(p["zone"], 0),
+        "day_of_week"          : DAY_ENCODING.get(datetime.now().strftime("%A"), 0),
+        "vehicle_count_lag_1h" : p["vehicle_count"],
+        "vehicle_count_lag_2h" : p["vehicle_count"],
+        "congestion_lag_1h"    : 0.0,
+        "rolling_mean_3h"      : p["vehicle_count"],
+        "rolling_std_3h"       : 0.0,
+    }
+
+    X_row = pd.DataFrame([row])[app.state.feature_cols]
+    explanation = explain_prediction(app.state.model, X_row, app.state.feature_cols)
+
+    result["explanation"]   = explanation["top_factors"]
+    result["plain_english"] = explanation["plain_english"]
+
+    log_prediction(result, explanation)
+    return result
+
+
+
+@app.get("/anomalies", tags=["monitoring"])
+@limiter.limit("20/minute")
+def anomalies(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """Current anomalies across all zones. 20 req/min per IP."""
+    df         = app.state.df[app.state.df["city"] == city]
+    anomaly_df = detect_anomalies(df)
+    flagged    = anomaly_df[anomaly_df["anomaly_flag"] == 1].to_dict(orient="records")
+    return {
+        "city"            : city,
+        "total_anomalies" : len(flagged),
+        "anomalies"       : flagged,
+    }
+
+
+@app.get("/forecast", tags=["forecasting"])
+@limiter.limit("20/minute")
+def forecast(
+    request: Request,
+    city:    str = "Riyadh",
+    zone:    str = "Zone_1",
+    _key:    str = Depends(require_api_key),
+):
+    """1h / 2h / 3h congestion forecast with confidence intervals."""
+    df        = app.state.df[(app.state.df["city"] == city) & (app.state.df["zone"] == zone)]
+    forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
+    return {"city": city, "zone": zone, "forecasts": forecasts}
