@@ -12,26 +12,26 @@ from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, validate_data
-
-from src.data    import generate_traffic_data, add_lag_features, validate_data
-from src.model   import (
+from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, congestion_level, get_recommendation,
 )
+from src.adapters import get_adapter
 
 load_dotenv()
 
-API_KEY        = os.getenv("API_KEY")
+API_KEY         = os.getenv("API_KEY")
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
     "http://localhost:8501,http://localhost:3000",
 ).split(",")
 
-limiter = Limiter(key_func=get_remote_address)
-
+limiter        = Limiter(key_func=get_remote_address)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+VALID_SOURCES = ["weather", "osm", "mock"]
 
 
 def require_api_key(key: str = Depends(api_key_header)):
@@ -47,22 +47,23 @@ def require_api_key(key: str = Depends(api_key_header)):
 async def lifespan(app: FastAPI):
     """Train the model once at startup so all endpoints share it."""
     df = generate_traffic_data(city="Riyadh")
-    df = apply_hourly_patterns(df, city="Riyadh")   # creates congestion_score
-    df = add_lag_features(df)                        # now congestion_score exists
-    
-    X, y, feature_cols = prepare_features(df)
-    model, _, _        = train_xgboost(X, y)
-    
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+
+    X, y, feature_cols    = prepare_features(df)
+    model, _, _           = train_xgboost(X, y)
+
     app.state.df           = df
     app.state.model        = model
     app.state.feature_cols = feature_cols
+    app.state.data_source  = "mock"
     yield
 
 
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
     description = "Production-ready traffic prediction for Vision 2030 smart cities.",
-    version     = "2.0.0",
+    version     = "3.0.0",
     lifespan    = lifespan,
 )
 
@@ -83,18 +84,18 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 class PredictRequest(BaseModel):
-    city:            str          = Field("Riyadh")
-    zone:            str          = Field("Zone_1")
-    hour:            int          = Field(..., ge=0, le=23)
-    vehicle_count:   float        = Field(..., gt=0)
-    avg_speed:       float        = Field(..., gt=0)
-    weather:         str          = Field("clear")
-    road_type:       str          = Field("arterial")
-    rush_hour:       int          = Field(0, ge=0, le=1)
-    is_weekend:      int          = Field(0, ge=0, le=1)
-    is_late_night:   int          = Field(0, ge=0, le=1)
-    event:           int          = Field(0, ge=0, le=1)
-    hour_multiplier: float        = Field(1.0, gt=0)
+    city:            str   = Field("Riyadh")
+    zone:            str   = Field("Zone_1")
+    hour:            int   = Field(..., ge=0, le=23)
+    vehicle_count:   float = Field(..., gt=0)
+    avg_speed:       float = Field(..., gt=0)
+    weather:         str   = Field("clear")
+    road_type:       str   = Field("arterial")
+    rush_hour:       int   = Field(0, ge=0, le=1)
+    is_weekend:      int   = Field(0, ge=0, le=1)
+    is_late_night:   int   = Field(0, ge=0, le=1)
+    event:           int   = Field(0, ge=0, le=1)
+    hour_multiplier: float = Field(1.0, gt=0)
 
 
 class BatchPredictRequest(BaseModel):
@@ -102,16 +103,17 @@ class BatchPredictRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Public endpoints (no auth required)
+# Public endpoints — no auth required
 # ---------------------------------------------------------------------------
 
 @app.get("/", tags=["info"])
 def root():
     return {
-        "service" : "Smart City Traffic Intelligence API",
-        "version" : "2.0.0",
-        "status"  : "operational",
-        "docs"    : "/docs",
+        "service"     : "Smart City Traffic Intelligence API",
+        "version"     : "3.0.0",
+        "status"      : "operational",
+        "data_source" : app.state.data_source,
+        "docs"        : "/docs",
     }
 
 
@@ -122,20 +124,71 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# Protected endpoints — require X-API-Key header
+# Data source endpoints — authenticated
+# ---------------------------------------------------------------------------
+
+@app.get("/data/source", tags=["data"])
+def get_data_source(
+    _key: str = Depends(require_api_key),
+):
+    """Return the currently active data source."""
+    return {
+        "active_source" : app.state.data_source,
+        "available"     : VALID_SOURCES,
+        "description"   : {
+            "weather": "Open-Meteo live weather API — no key required",
+            "osm"    : "OpenStreetMap Overpass API — road network data",
+            "mock"   : "Deterministic IoT sensor simulation — always available",
+        }
+    }
+
+
+@app.post("/data/source", tags=["data"])
+def set_data_source(
+    request: Request,
+    source:  str = "mock",
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Switch the active data source and fetch a sample from it.
+
+    source options: weather | osm | mock
+    """
+    if source not in VALID_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source '{source}'. Choose from: {VALID_SOURCES}"
+        )
+
+    try:
+        adapter    = get_adapter(source)
+        sample_df  = adapter.fetch(city)
+        app.state.data_source = source
+
+        return {
+            "active_source" : source,
+            "city"          : city,
+            "rows_fetched"  : len(sample_df),
+            "columns"       : list(sample_df.columns),
+            "sample"        : sample_df.head(3).to_dict(orient="records"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Adapter fetch failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Prediction endpoints — authenticated
 # ---------------------------------------------------------------------------
 
 @app.post("/predict", tags=["prediction"])
 @limiter.limit("60/minute")
 def predict(
-    request:  Request,
-    payload:  PredictRequest,
-    _key:     str = Depends(require_api_key),
+    request: Request,
+    payload: PredictRequest,
+    _key:    str = Depends(require_api_key),
 ):
     """Single zone prediction with SHAP explanation. 60 req/min per IP."""
-    from datetime import datetime
-    from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
-
     p      = payload.model_dump()
     result = predict_single(
         city            = p["city"],
@@ -172,7 +225,7 @@ def predict(
         "rolling_std_3h"       : 0.0,
     }
 
-    X_row = pd.DataFrame([row])[app.state.feature_cols]
+    X_row       = pd.DataFrame([row])[app.state.feature_cols]
     explanation = explain_prediction(app.state.model, X_row, app.state.feature_cols)
 
     result["explanation"]   = explanation["top_factors"]
@@ -182,6 +235,38 @@ def predict(
     return result
 
 
+@app.post("/predict/batch", tags=["prediction"])
+@limiter.limit("20/minute")
+def predict_batch(
+    request: Request,
+    payload: BatchPredictRequest,
+    _key:    str = Depends(require_api_key),
+):
+    """Batch prediction for up to 20 zones. 20 req/min per IP."""
+    results = []
+    for item in payload.predictions:
+        p     = item.model_dump()
+        score = predict_single(
+            city            = p["city"],
+            zone            = p["zone"],
+            hour            = p["hour"],
+            vehicle_count   = p["vehicle_count"],
+            avg_speed       = p["avg_speed"],
+            weather         = p["weather"],
+            road_type       = p["road_type"],
+            rush_hour       = p["rush_hour"],
+            is_weekend      = p["is_weekend"],
+            is_late_night   = p["is_late_night"],
+            event           = p["event"],
+            hour_multiplier = p["hour_multiplier"],
+        )
+        results.append(score)
+    return {"city": payload.predictions[0].city, "results": results}
+
+
+# ---------------------------------------------------------------------------
+# Monitoring endpoints — authenticated
+# ---------------------------------------------------------------------------
 
 @app.get("/anomalies", tags=["monitoring"])
 @limiter.limit("20/minute")

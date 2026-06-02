@@ -1,0 +1,281 @@
+import requests
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from abc import ABC, abstractmethod
+
+
+CITY_COORDINATES = {
+    'Riyadh': {'lat': 24.7136, 'lon': 46.6753},
+    'NEOM'  : {'lat': 28.2500, 'lon': 35.5000},
+    'Dubai' : {'lat': 25.2048, 'lon': 55.2708},
+    'Karachi': {'lat': 24.8607, 'lon': 67.0011},
+}
+
+
+class BaseAdapter(ABC):
+    """Common interface every data adapter must implement."""
+
+    @abstractmethod
+    def fetch(self, city: str) -> pd.DataFrame:
+        """Fetch data for a city and return a normalised DataFrame."""
+
+
+class WeatherAdapter(BaseAdapter):
+    """
+    Fetch current weather for a city using the Open-Meteo API.
+
+    Free, no API key required.
+    Endpoint: https://api.open-meteo.com/v1/forecast
+    Maps raw meteorological values to the weather categories used
+    throughout the system: clear, dust, fog, humid, rain, sandstorm.
+    """
+
+    BASE_URL = "https://api.open-meteo.com/v1/forecast"
+
+    def fetch(self, city: str = 'Riyadh') -> pd.DataFrame:
+        """Return a single-row DataFrame with current weather for the city."""
+        coords = CITY_COORDINATES.get(city, CITY_COORDINATES['Riyadh'])
+
+        params = {
+            'latitude'              : coords['lat'],
+            'longitude'             : coords['lon'],
+            'current'               : 'temperature_2m,wind_speed_10m,precipitation,relative_humidity_2m,visibility',
+            'timezone'              : 'Asia/Riyadh',
+            'wind_speed_unit'       : 'kmh',
+        }
+
+        try:
+            response = requests.get(self.BASE_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data    = response.json()
+            current = data.get('current', {})
+
+            wind_speed   = float(current.get('wind_speed_10m', 0))
+            precipitation = float(current.get('precipitation', 0))
+            humidity     = float(current.get('relative_humidity_2m', 0))
+            visibility   = float(current.get('visibility', 10000))
+            temperature  = float(current.get('temperature_2m', 30))
+
+            weather = self._classify_weather(
+                wind_speed, precipitation, humidity, visibility
+            )
+
+            return pd.DataFrame([{
+                'city'        : city,
+                'timestamp'   : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'source'      : 'open-meteo',
+                'weather'     : weather,
+                'temperature' : temperature,
+                'wind_speed'  : wind_speed,
+                'precipitation': precipitation,
+                'humidity'    : humidity,
+                'visibility'  : visibility,
+            }])
+
+        except requests.RequestException as e:
+            print(f"WeatherAdapter: API call failed ({e}). Falling back to clear.")
+            return self._fallback(city)
+
+    def _classify_weather(
+        self,
+        wind_speed: float,
+        precipitation: float,
+        humidity: float,
+        visibility: float,
+    ) -> str:
+        """Map meteorological readings to system weather categories."""
+        if wind_speed > 40 and visibility < 1000:
+            return 'sandstorm'
+        if wind_speed > 30 and visibility < 3000:
+            return 'dust'
+        if precipitation > 0:
+            return 'rain'
+        if visibility < 2000:
+            return 'fog'
+        if humidity > 80:
+            return 'humid'
+        return 'clear'
+
+    def _fallback(self, city: str) -> pd.DataFrame:
+        """Return a safe default row when the API is unreachable."""
+        return pd.DataFrame([{
+            'city'        : city,
+            'timestamp'   : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'source'      : 'fallback',
+            'weather'     : 'clear',
+            'temperature' : 35.0,
+            'wind_speed'  : 10.0,
+            'precipitation': 0.0,
+            'humidity'    : 30.0,
+            'visibility'  : 10000.0,
+        }])
+
+
+class OpenStreetMapAdapter(BaseAdapter):
+    """
+    Fetch road network for a city bounding box using the Overpass API.
+
+    Free, no API key required.
+    Endpoint: https://overpass-api.de/api/interpreter
+    Returns major road segments within the city bounding box.
+    """
+
+    BASE_URL    = "https://overpass-api.de/api/interpreter"
+    CITY_BBOXES = {
+        'Riyadh' : (24.50, 46.50, 24.90, 46.90),
+        'NEOM'   : (28.00, 35.20, 28.50, 35.80),
+        'Dubai'  : (25.05, 55.05, 25.35, 55.45),
+        'Karachi': (24.75, 66.85, 25.05, 67.20),
+    }
+
+    def fetch(self, city: str = 'Riyadh') -> pd.DataFrame:
+        """Return a DataFrame of road segments for the city."""
+        bbox  = self.CITY_BBOXES.get(city, self.CITY_BBOXES['Riyadh'])
+        query = f"""
+        [out:json][timeout:25];
+        (
+          way["highway"~"motorway|trunk|primary|secondary"]
+          ({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});
+        );
+        out body;
+        """
+
+        try:
+            response = requests.post(
+                self.BASE_URL,
+                data={'data': query},
+                timeout=30,
+            )
+            response.raise_for_status()
+            elements = response.json().get('elements', [])
+
+            rows = []
+            for element in elements[:50]:
+                tags      = element.get('tags', {})
+                highway   = tags.get('highway', 'unknown')
+                road_name = tags.get('name', tags.get('name:en', 'Unnamed Road'))
+                road_type = self._map_road_type(highway)
+                rows.append({
+                    'city'     : city,
+                    'source'   : 'overpass',
+                    'road_name': road_name,
+                    'road_type': road_type,
+                    'highway'  : highway,
+                    'osm_id'   : element.get('id'),
+                })
+
+            if not rows:
+                return self._fallback(city)
+
+            return pd.DataFrame(rows)
+
+        except requests.RequestException as e:
+            print(f"OpenStreetMapAdapter: API call failed ({e}). Using fallback.")
+            return self._fallback(city)
+
+    def _map_road_type(self, highway: str) -> str:
+        """Map OSM highway tags to system road type categories."""
+        mapping = {
+            'motorway'  : 'highway',
+            'trunk'     : 'highway',
+            'primary'   : 'arterial',
+            'secondary' : 'arterial',
+            'tertiary'  : 'local',
+            'residential': 'local',
+        }
+        return mapping.get(highway, 'arterial')
+
+    def _fallback(self, city: str) -> pd.DataFrame:
+        """Return known major roads when the API is unreachable."""
+        roads = {
+            'Riyadh': [
+                {'road_name': 'King Fahd Road',    'road_type': 'highway'},
+                {'road_name': 'King Abdullah Road', 'road_type': 'highway'},
+                {'road_name': 'Olaya Street',       'road_type': 'arterial'},
+                {'road_name': 'Tahlia Street',      'road_type': 'arterial'},
+            ],
+            'Dubai': [
+                {'road_name': 'Sheikh Zayed Road', 'road_type': 'highway'},
+                {'road_name': 'Al Khail Road',     'road_type': 'highway'},
+            ],
+        }
+        rows = roads.get(city, roads['Riyadh'])
+        for row in rows:
+            row.update({'city': city, 'source': 'fallback', 'highway': 'primary', 'osm_id': None})
+        return pd.DataFrame(rows)
+
+
+class MockIoTAdapter(BaseAdapter):
+    """
+    Simulate IoT sensor readings for a city.
+
+    Mirrors the column structure of generate_traffic_data() exactly.
+    Acts as fallback when real APIs are unavailable or rate-limited.
+    noise_level: 0.0 = deterministic, 1.0 = maximum variance.
+    """
+
+    def __init__(self, noise_level: float = 0.3):
+        self.noise_level = float(noise_level)
+
+    def fetch(self, city: str = 'Riyadh') -> pd.DataFrame:
+        """Return a single-hour simulated sensor reading for all zones."""
+        from src.config import CITY_PROFILES, WEATHER_SPEED_IMPACT
+
+        np.random.seed(int(datetime.now().timestamp()) % 10000)
+        profile   = CITY_PROFILES.get(city, list(CITY_PROFILES.values())[0])
+        hour      = datetime.now().hour
+        zones     = ['Zone_1', 'Zone_2', 'Zone_3', 'Zone_4', 'Zone_5']
+        rows      = []
+
+        for zone in zones:
+            base_vehicles = profile['base_vehicles']
+            noise         = np.random.normal(0, base_vehicles * self.noise_level)
+            vehicle_count = float(np.clip(base_vehicles + noise, 0, 500))
+            avg_speed     = float(np.clip(
+                np.random.normal(profile['speed_mean'], 10 * self.noise_level), 20, 100
+            ))
+            weather = np.random.choice(
+                profile['weather_conditions'], p=profile['weather_probs']
+            )
+
+            rows.append({
+                'city'         : city,
+                'timestamp'    : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'source'       : 'mock-iot',
+                'zone'         : zone,
+                'hour'         : hour,
+                'vehicle_count': vehicle_count,
+                'avg_speed'    : avg_speed,
+                'weather'      : weather,
+                'road_type'    : 'arterial',
+                'is_weekend'   : int(datetime.now().weekday() in [4, 5]),
+                'rush_hour'    : int(hour in [7, 8, 17, 18]),
+                'is_late_night': int(hour in [21, 22, 23, 0]),
+                'event'        : 0,
+            })
+
+        return pd.DataFrame(rows)
+
+
+def get_adapter(source: str) -> BaseAdapter:
+    """
+    Return the correct adapter instance for the requested source.
+
+    Parameters
+    ----------
+    source : 'weather' | 'osm' | 'mock'
+
+    Returns
+    -------
+    BaseAdapter instance ready to call .fetch(city)
+    """
+    adapters = {
+        'weather': WeatherAdapter,
+        'osm'    : OpenStreetMapAdapter,
+        'mock'   : MockIoTAdapter,
+    }
+    cls = adapters.get(source)
+    if cls is None:
+        raise ValueError(f"Unknown source '{source}'. Choose from: {list(adapters.keys())}")
+    return cls()
