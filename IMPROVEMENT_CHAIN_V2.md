@@ -10,15 +10,40 @@ PROMPT 001–005 complete:
 - SHAP explainability — plain English summaries, audit trail
 
 PROMPT 006 complete:
-- API key authentication — X-API-Key header required on all endpoints except /health
-- Rate limiting — /predict: 60 req/min, /anomalies + /forecast: 20 req/min per IP
-- CORS — localhost:8501 and localhost:3000 allowed in development
-- .env + .gitignore + .env.example added to repo
-- Verified: no key → 401, /health → 200 no key, valid key → prediction with SHAP
+- API key authentication — X-API-Key header, 401 on invalid/missing
+- Rate limiting — 60/min on /predict, 20/min on /anomalies and /forecast
+- CORS, .env, .gitignore, .env.example, generate_key.py
 
-The system is portfolio-ready.
-The next prompts make it production-ready, then research-grade.
-The difference: a recruiter can run this. A city can deploy this. A researcher can cite this.
+PROMPT 007 complete:
+- 20 automated tests across test_data.py, test_model.py, test_api.py
+- 85% code coverage
+- GitHub Actions CI/CD — runs on every push to main
+- Caught 3 silent bugs: wrong column name, duplicate endpoint, wrong function args
+
+PROMPT 008 complete:
+- WeatherAdapter — live Riyadh weather from Open-Meteo, no key required
+- OpenStreetMapAdapter — Overpass API road network with fallback
+- MockIoTAdapter — deterministic sensor simulation
+- /data/source GET and POST endpoints — switch source in one API call
+- Verified: live weather fetch returns real Riyadh conditions
+
+PROMPT 009 complete:
+- src/pipeline.py — compute_drift_score, should_retrain, retrain_model, run_pipeline
+- /pipeline/status — drift score and last retrain timestamp
+- /pipeline/trigger — manual retrain trigger
+- APScheduler — nightly retrain at 03:00 if drift >= 1.3
+- pipeline_log.csv confirmed created after first test run
+
+PROMPT 010 complete:
+- FastAPI deployed to Railway — live at https://web-production-abfda1.up.railway.app
+- Streamlit dashboard deployed — live at https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app
+- DEMO.md created with 6 copy-paste PowerShell commands
+- UptimeRobot monitoring /health every 5 minutes
+- Live prediction verified: sandstorm scenario returns congestion_score 0.5056, level High
+
+The system is production-ready and publicly accessible.
+The next prompts make it research-grade.
+The difference: a city can cite this. A government can deploy this.
 
 ---
 
@@ -38,16 +63,16 @@ The difference: a recruiter can run this. A city can deploy this. A researcher c
   live in `src/model.py` — not `src/config.py`
 - `prepare_features()` always expects `congestion_score` as target — cannot be used
   for single-row inference. Build X_row manually using the encoding dicts from model.py
-- Lag features (vehicle_count_lag_1h, vehicle_count_lag_2h, congestion_lag_1h,
-  rolling_mean_3h, rolling_std_3h) must be present in X_row even for live requests —
+- Lag features must be present in X_row even for live requests —
   approximate with current vehicle_count and 0.0 for std/congestion
 - `apply_hourly_patterns()` must be called after `generate_traffic_data()` — it creates
   `congestion_score`. Without it, `add_lag_features()` will raise KeyError
 - `train_xgboost()` signature: `train_xgboost(X, y)` — takes separate feature matrix
   and target series, not a full dataframe
 - `log_prediction()` signature: `log_prediction(prediction_dict, explanation_dict)`
-- `explain_prediction()` signature: `explain_prediction(model, X_row_df, feature_names_list)`
-  returns `{top_factors: [...], plain_english: str}`
+- `explain_prediction()` returns `{top_factors: [...], plain_english: str}`
+- `forecast_congestion()` signature: `forecast_congestion(df, zone, hours_ahead)`
+- `detect_anomalies()` returns `anomaly_flag` column, not `is_anomaly`
 
 ### Correct lifespan startup sequence
 ```python
@@ -58,270 +83,81 @@ X, y, feature_cols = prepare_features(df)
 model, _, _        = train_xgboost(X, y)
 ```
 
-### Verified test results
-- `POST /predict` no key → 401 Invalid or missing API key
-- `GET /health` no key → 200 {"status":"healthy"}
-- `POST /predict` valid key → 200 with congestion_score, congestion_level,
-  recommendation, explanation, plain_english
+---
+
+## PROMPT 007 — Automated Testing Suite ✅ COMPLETE
+
+### What was built
+- `tests/test_data.py` — 5 tests: shape, Friday prayer drop, sandstorm, lag nulls, validate
+- `tests/test_model.py` — 8 tests: predict_single, congestion levels, anomaly spike,
+  forecast horizons, SHAP factors, evaluate_models, log_prediction, compare_baseline
+- `tests/test_api.py` — 7 tests: health 200, no key 401, wrong key 401, valid key 200,
+  invalid hour 422, anomalies list, forecast three horizons
+- `.github/workflows/test.yml` — triggers on push to main, fails if any test fails
+- Coverage: 85% total (99% data.py, 78% model.py, 100% config.py)
+
+### Bugs caught by tests that manual testing missed
+- `anomaly_df["is_anomaly"]` → should be `anomaly_df["anomaly_flag"] == 1`
+- Duplicate `/predict` endpoint silently overwriting itself
+- `forecast_congestion` called with wrong arguments in app.py
 
 ---
 
-## PROMPT 007 — Automated Testing Suite
+## PROMPT 008 — Real Data Integration Layer ✅ COMPLETE
 
-```
-MISSION: Build a test suite that catches regressions before
-they reach production.
+### What was built
+- `src/adapters.py` with BaseAdapter ABC and three implementations
+- WeatherAdapter: Open-Meteo API, classifies wind/precipitation/humidity → system categories
+- OpenStreetMapAdapter: Overpass API with Riyadh bbox, fallback to known major roads
+- MockIoTAdapter: deterministic simulation matching generate_traffic_data() column format
+- `get_adapter(source)` factory function
+- `/data/source` GET returns active source
+- `/data/source` POST switches source and returns live sample
 
-CONTEXT:
-- Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 006 complete — API is secured with key auth and rate limiting
-- Zero automated tests exist — every change is manually verified
-- Manual testing does not scale and misses edge cases
-
-CRITICAL IMPLEMENTATION NOTES (read before writing any test):
-- Encoding dicts live in src/model.py: WEATHER_ENCODING, ROAD_ENCODING,
-  ZONE_ENCODING, DAY_ENCODING — not src/config.py
-- prepare_features() requires congestion_score column — cannot be used
-  for single-row inference. Tests for the API must build X_row manually
-- apply_hourly_patterns() must be called before add_lag_features()
-- train_xgboost() takes (X, y) not a full dataframe
-- log_prediction() takes (prediction_dict, explanation_dict)
-- Lag feature columns must be present even for single-request tests —
-  use current vehicle_count as approximation for lag values
-
-PROBLEM TO SOLVE:
-You change one line in data.py.
-The Friday prayer drop silently breaks.
-You don't notice until a recruiter runs the demo.
-
-YOUR TASK:
-1. pip install pytest pytest-cov httpx
-2. Create tests/ directory with:
-   a. tests/test_data.py:
-      - test_generate_returns_correct_shape()
-      - test_friday_prayer_drop_exceeds_85_percent()
-      - test_sandstorm_speed_reduction_in_range()
-      - test_lag_features_no_nulls_after_dropna()
-      - test_validate_data_all_pass()
-   b. tests/test_model.py:
-      - test_predict_single_returns_valid_score()
-      - test_congestion_level_boundaries()
-      - test_anomaly_detection_flags_spike()
-      - test_forecast_returns_three_horizons()
-      - test_explain_prediction_returns_three_factors()
-   c. tests/test_api.py — use FastAPI TestClient:
-      - test_health_endpoint_no_auth_returns_200()
-      - test_predict_no_key_returns_401()
-      - test_predict_wrong_key_returns_401()
-      - test_predict_valid_key_returns_prediction()
-      - test_anomalies_endpoint_returns_list()
-      - test_forecast_endpoint_returns_forecasts()
-      - test_rate_limit_returns_429_after_threshold()
-3. Set TEST_API_KEY environment variable for test_api.py
-4. Run: pytest tests/ --cov=src --cov-report=term-missing
-5. Achieve minimum 80% code coverage
-6. Add GitHub Actions workflow .github/workflows/test.yml:
-   - Triggers on every push to main
-   - Sets API_KEY as a GitHub Actions secret
-   - Runs pytest automatically
-   - Fails the push if any test fails
-
-DELIVERABLE:
-- tests/ directory with 16 passing tests
-- Coverage report showing ≥80%
-- .github/workflows/test.yml
-- Badge in README: tests passing
-
-GENERATE NEXT PROMPT:
-After completing this mission, identify what prevents this system
-from connecting to real traffic data sources.
-Write PROMPT 008 targeting that gap.
-```
+### Verified output
+- weather → rows_fetched: 1, real Riyadh temperature/wind/humidity/visibility
+- osm → rows_fetched: 4, King Fahd Road and three arterials (fallback triggered)
+- mock → rows_fetched: 5, one row per zone with simulated sensor readings
 
 ---
 
-## PROMPT 008 — Real Data Integration Layer
+## PROMPT 009 — Automated Retraining Pipeline ✅ COMPLETE
 
-```
-MISSION: Build a data adapter layer that can ingest real traffic
-data from open APIs and replace synthetic generation seamlessly.
+### What was built
+- `src/pipeline.py` with four functions:
+  - `compute_drift_score()` — reads predictions_log.csv, compares rolling MAE to baseline
+  - `should_retrain(drift_score, threshold=1.3)` — pure boolean check
+  - `retrain_model(city)` — full regenerate → train → save to model.joblib
+  - `run_pipeline(city)` — orchestrates all steps, logs to pipeline_log.csv
+- `/pipeline/status` — drift_score, needs_retrain, last_retrain, next_scheduled
+- `/pipeline/trigger` — POST to force immediate run
+- APScheduler cron job at 03:00 daily
 
-CONTEXT:
-- Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 007 complete — test suite passing
-- All current data is synthetic — no real world signals
-- The system architecture already supports swapping data sources
-
-PROBLEM TO SOLVE:
-OpenStreetMap and Open-Meteo both offer free APIs with no key required.
-The system has no connector to either.
-A proof of concept that ingests real Riyadh weather data is worth
-10x more in a recruiter conversation than one that cannot.
-
-YOUR TASK:
-1. Create src/adapters.py with:
-   a. WeatherAdapter — fetch current weather for Riyadh coordinates
-      using Open-Meteo API (free, no key required)
-      - Endpoint: https://api.open-meteo.com/v1/forecast
-      - Map wind speed > 40 km/h + low visibility → 'sandstorm'
-      - Map precipitation > 0 → 'rain'
-      - Default → 'clear'
-      - Returns DataFrame with columns: city, weather, timestamp
-   b. OpenStreetMapAdapter — fetch road segments for Riyadh bounding box
-      using Overpass API (free, no key required)
-      - Endpoint: https://overpass-api.de/api/interpreter
-      - Query: highways within bbox [24.5, 46.5, 24.9, 46.9]
-      - Returns DataFrame with columns: road_name, road_type, length_m
-   c. MockIoTAdapter — deterministic fallback with configurable noise
-      - Mirrors generate_traffic_data() output format exactly
-      - Used when real APIs are unavailable or rate-limited
-      - noise_level parameter: 0.0 = clean, 1.0 = max variance
-2. Each adapter implements:
-      def fetch(self, city: str) -> pd.DataFrame
-3. Add AdapterFactory:
-      def get_adapter(source: str) -> BaseAdapter
-      source options: 'weather', 'osm', 'mock'
-4. Add /data/source endpoint to app.py (authenticated):
-      GET  /data/source → returns currently active source name
-      POST /data/source?source=weather → switches active source
-5. Confirm live fetch prints real data:
-      adapter = get_adapter('weather')
-      df = adapter.fetch('Riyadh')
-      print(df.head())  # must show real timestamp and weather condition
-
-DELIVERABLE:
-- src/adapters.py with three working adapters
-- Updated app.py with /data/source GET and POST endpoints
-- Terminal output showing live Riyadh weather fetch
-- README updated: data sources section with adapter interface docs
-
-GENERATE NEXT PROMPT:
-After completing this mission, identify what a data engineer
-would build next to make this system self-improving over time.
-Write PROMPT 009 targeting that capability.
-```
+### Verified output
+- drift_score: 1.0 (stable, below 1.3 threshold)
+- needs_retrain: false
+- pipeline_log.csv created with correct columns
 
 ---
 
-## PROMPT 009 — Automated Retraining Pipeline
+## PROMPT 010 — Cloud Deployment ✅ COMPLETE
 
-```
-MISSION: Build a pipeline that detects model drift and retrains
-automatically when prediction quality degrades.
+### What was built
+- `railway.toml` + `nixpacks.toml` + `Procfile` — Railway deployment config
+- `DEMO.md` — 6 copy-paste PowerShell commands for recruiters
+- UptimeRobot monitor on /health — pings every 5 minutes to prevent sleep
 
-CONTEXT:
-- Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 008 complete — real data adapters exist
-- Model was trained once on static data — never updated
-- In production, traffic patterns shift: new roads open,
-  Ramadan changes demand, population grows
+### Live URLs
+- API: https://web-production-abfda1.up.railway.app
+- Docs: https://web-production-abfda1.up.railway.app/docs
+- Dashboard: https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app
 
-PROBLEM TO SOLVE:
-A model trained in January predicts poorly by June.
-No one notices because there is no drift monitoring.
-The city loses trust in the system silently.
-
-YOUR TASK:
-1. Create src/pipeline.py with these four functions:
-   a. compute_drift_score(recent_predictions_df: pd.DataFrame) -> float
-      - Load predictions_log.csv, take last 500 rows
-      - Compute MAE between congestion_score and a naive baseline
-      - Compare against baseline MAE stored at training time
-      - Return ratio: 1.0 = stable, 1.3+ = retrain threshold reached
-   b. should_retrain(drift_score: float, threshold: float = 1.3) -> bool
-      - Pure function: return drift_score >= threshold
-   c. retrain_model(city: str) -> dict
-      - Call full startup sequence:
-        generate → apply_hourly_patterns → add_lag_features →
-        prepare_features → train_xgboost
-      - Save new model to model.joblib using joblib.dump()
-      - Return: {retrained: True, new_r2: float, old_r2: float,
-                 timestamp: str}
-   d. run_pipeline(city: str) -> dict
-      - compute_drift_score → should_retrain → retrain_model if needed
-      - Append result row to pipeline_log.csv
-      - Return full pipeline result dict
-2. Add two endpoints to app.py (both authenticated):
-      GET  /pipeline/status → {drift_score, last_retrain, next_scheduled}
-      POST /pipeline/trigger → runs run_pipeline('Riyadh') immediately
-3. Schedule pipeline using APScheduler:
-      pip install apscheduler
-      Run run_pipeline('Riyadh') daily at 03:00 local time
-      Log "Pipeline complete" to console after each run
-4. Test manually:
-      POST /pipeline/trigger with valid API key
-      Confirm pipeline_log.csv is created with one row
-
-DELIVERABLE:
-- src/pipeline.py with all four functions
-- Updated app.py with /pipeline/status and /pipeline/trigger
-- pipeline_log.csv showing one completed run
-- APScheduler confirmed running with console output
-
-GENERATE NEXT PROMPT:
-After completing this mission, identify what would make this
-system visible and deployable to a real government client.
-Write PROMPT 010 targeting that requirement.
-```
-
----
-
-## PROMPT 010 — Cloud Deployment + Public Demo URL
-
-```
-MISSION: Deploy the full system to the cloud so it has a real
-public URL that can be shared with any recruiter or client.
-
-CONTEXT:
-- Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 009 complete — full automated pipeline with drift detection
-- System runs locally — no public URL exists
-- A live demo URL in a conversation changes everything
-
-PROBLEM TO SOLVE:
-You walk into a company in Riyadh's KAFD district.
-They ask: "Can I see it running?"
-You open your laptop. That is the wrong answer.
-The right answer: you hand them a URL on your phone.
-
-YOUR TASK:
-1. Deploy FastAPI to Railway (free tier):
-   a. Create railway.toml:
-      [build]
-      builder = "nixpacks"
-      [deploy]
-      startCommand = "uvicorn app:app --host 0.0.0.0 --port $PORT"
-   b. Set API_KEY and ALLOWED_ORIGINS as Railway environment variables
-   c. Confirm GET /health returns 200 at the public Railway URL
-   d. Confirm GET /docs renders the full Swagger UI at public URL
-2. Deploy Streamlit to Streamlit Cloud (free):
-   a. Push streamlit_app/ to GitHub if not already there
-   b. Connect repo at share.streamlit.io
-   c. Set API_KEY in Streamlit secrets
-   d. Confirm all 5 dashboard tabs load from the public URL
-3. Update README top section with both live URLs:
-      API:       https://your-app.railway.app/docs
-      Dashboard: https://your-app.streamlit.app
-4. Create DEMO.md with:
-   - Two-sentence description of what the system does
-   - 5 copy-paste PowerShell commands hitting the live API
-     (health, predict clear, predict sandstorm, anomalies, forecast)
-   - Screenshot of dashboard with all 5 tabs visible
-   - One paragraph for a recruiter explaining what to look for
-
-DELIVERABLE:
-- Live API URL: GET /health returns 200, GET /docs renders
-- Live Dashboard URL: all 5 tabs load
-- README updated with both URLs
-- DEMO.md ready to share with any recruiter
-
-GENERATE NEXT PROMPT:
-After completing this mission, look at the research on Saudi traffic.
-69% of violations happen between cameras — lane changes, tailgating,
-distracted driving. The system predicts congestion but cannot yet
-estimate the environmental cost of that congestion.
-Write PROMPT 011 targeting that gap.
-```
+### Deployment notes for future reference
+- Railway does not expand $PORT in railway.toml startCommand directly
+- Fix: use `sh -c 'uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}'`
+- Or hardcode port 8000 — Railway routes traffic correctly either way
+- Streamlit Cloud: set API_KEY in Advanced settings → Secrets
+- Railway free tier sleeps after 30min inactivity — UptimeRobot prevents this
 
 ---
 
@@ -343,9 +179,19 @@ cannot participate in that conversation.
 
 CONTEXT:
 - Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
-- PROMPT 010 complete — system is live at a public URL
+- PROMPT 010 complete — system is live at public URLs
+- API: https://web-production-abfda1.up.railway.app
+- Dashboard: https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app
 - Every prediction currently outputs congestion_score and level
 - Zero environmental output exists anywhere in the system
+
+CRITICAL IMPLEMENTATION NOTES:
+- Encoding dicts live in src/model.py — not src/config.py
+- detect_anomalies() returns anomaly_flag column, not is_anomaly
+- forecast_congestion(df, zone, hours_ahead) — zone is second arg
+- log_prediction(prediction_dict, explanation_dict) — two separate args
+- After any change to app.py, run: py -m pytest tests/ -v to confirm
+  no regressions before pushing to Railway
 
 PROBLEM TO SOLVE:
 A city sustainability director asks: "What is the emissions cost
@@ -365,38 +211,38 @@ YOUR TASK:
    CO2_KG_PER_LITRE = 2.31   # standard petrol combustion factor
    AVG_VEHICLES_PER_ZONE = 250
 
-2. Add compute_emissions(congestion_level, vehicle_count, duration_hours)
+2. Add compute_emissions(congestion_level, vehicle_count, duration_hours=1.0)
    to src/model.py:
    - Returns: {fuel_litres: float, co2_kg: float, co2_tonnes: float}
    - Formula: fuel = consumption_rate * (vehicle_count / 100) * duration
    - co2_kg = fuel_litres * CO2_KG_PER_LITRE
+   - co2_tonnes = co2_kg / 1000
 
 3. Update /predict endpoint in app.py:
    - Call compute_emissions() using congestion_level and vehicle_count
    - Add emissions dict to every prediction response
-   - Log emissions fields to predictions_log.csv
+   - Log co2_kg and fuel_litres to predictions_log.csv
 
 4. Update /anomalies endpoint:
    - Add estimated_co2_kg to each anomaly record
    - Flag anomalies where co2_kg > 500 as 'Green Initiative Impact'
 
 5. Add /emissions/summary endpoint (authenticated):
-   GET /emissions/summary?city=Riyadh&date=2024-01-15
+   GET /emissions/summary?city=Riyadh
    - Reads predictions_log.csv
    - Returns: {total_co2_tonnes, peak_emission_hour, peak_emission_zone,
-               green_initiative_events}
+               green_initiative_events, period_days}
 
-6. Update Streamlit dashboard:
-   - Add emissions gauge to Tab 1 (Hourly Patterns)
-   - Show daily CO2 total in Tab 2 (Zone Analysis)
-   - Add "Green Initiative Impact" badge to critical anomalies
+6. Add test to tests/test_model.py:
+   - test_compute_emissions_returns_valid_output()
+   - test_emissions_critical_higher_than_low()
 
 DELIVERABLE:
-- compute_emissions() function in src/model.py
+- compute_emissions() in src/model.py
 - /predict response includes emissions dict on every call
 - /emissions/summary endpoint returning aggregated CO2 data
-- Dashboard showing emissions alongside congestion
-- Sample response showing co2_kg for a sandstorm prediction
+- 2 new passing tests
+- Live API at Railway URL returning emissions data
 
 WHAT THIS UNLOCKS IN A RECRUITER CONVERSATION:
 "The system doesn't just predict congestion — it quantifies the
@@ -425,14 +271,22 @@ This system does.
 CONTEXT:
 - Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
 - PROMPT 011 complete — emissions layer exists
+- Live URLs:
+  API: https://web-production-abfda1.up.railway.app
+  Dashboard: https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app
 - Ramadan schedule is already modeled in apply_hourly_patterns()
 - Hajj produces a categorically different traffic pattern:
   inbound surge → stationary dense crowds → outbound dispersal
-  This is not a Ramadan shift — it is a different behavioral model
+
+CRITICAL IMPLEMENTATION NOTES:
+- apply_hourly_patterns() already has ramadan: bool parameter
+- Add hajj: bool = False as a third parameter — do not rename ramadan
+- Hajj overrides Ramadan if both True
+- After changes to data.py, run validate_data() — must still pass 5/5
+- Push to Railway after local tests pass — Railway auto-deploys on push
 
 PROBLEM TO SOLVE:
 The system models Friday prayer and Ramadan.
-Those are weekly and annual recurring events.
 Hajj is the largest annual human gathering on earth.
 A traffic system for Vision 2030 smart cities that cannot
 model Hajj is missing the single most operationally critical
@@ -440,49 +294,43 @@ event in Saudi traffic planning.
 
 YOUR TASK:
 1. Add HAJJ_SCHEDULE to src/config.py:
-   - Hajj spans 5 days (8–12 Dhul Hijja) — add approximate
-     Gregorian date ranges for 2025 and 2026
+   - Hajj spans 5 days (8–12 Dhul Hijja) — add Gregorian date ranges:
+     2025: June 4–9, 2026: May 24–29
    - Define hourly multipliers for three phases:
      HAJJ_INBOUND  = {0:0.3, 6:1.8, 12:2.5, 18:2.0, 21:1.5}
      HAJJ_PEAK     = {0:1.2, 6:2.2, 12:3.0, 18:2.8, 21:2.0}
      HAJJ_OUTBOUND = {0:0.8, 6:2.5, 12:2.0, 18:1.5, 21:0.9}
-   - Add HAJJ_ROUTE_ZONES = ['Zone_1', 'Zone_3'] — zones on
-     pilgrimage routes get 1.8x additional multiplier
+   - Add HAJJ_ROUTE_ZONES = ['Zone_1', 'Zone_3']
 
 2. Update apply_hourly_patterns() in src/data.py:
-   - Add hajj: bool = False parameter
+   - Add hajj: bool = False parameter after ramadan
    - When hajj=True, select phase based on day offset (0=inbound,
-     2=peak, 4=outbound) and apply HAJJ_ROUTE_ZONES multiplier
-   - Hajj overrides Ramadan schedule if both flags are True
+     2=peak, 4=outbound)
+   - Apply 1.8x multiplier to HAJJ_ROUTE_ZONES
    - Add 'hajj_phase' column to output DataFrame
+   - Hajj overrides Ramadan schedule if both flags are True
 
-3. Update /predict endpoint in app.py:
-   - Add optional hajj_mode: bool = False to PredictRequest schema
-   - Pass to predict logic — document in /docs
+3. Update PredictRequest in app.py:
+   - Add optional hajj_mode: bool = False field
 
 4. Add /schedule/active endpoint (authenticated):
    GET /schedule/active?city=Riyadh
-   - Returns which schedule is currently active:
-     {schedule: 'hajj_peak' | 'ramadan' | 'friday_prayer' | 'standard',
-      next_event: str, days_until: int}
-   - Auto-detects based on current date
+   - Returns: {schedule, next_event, days_until}
+   - Auto-detects based on current date against HAJJ_SCHEDULE dates
 
-5. Validate Hajj model statistically:
-   - Run validate_data() equivalent on Hajj-mode data
-   - Confirm peak hour multiplier produces vehicle_count
-     at least 2.5x standard Friday midday volume
-   - Print validation report — must show PASS
+5. Validate statistically:
+   - Confirm Hajj peak hour vehicle_count >= 2.5x standard Friday midday
+   - Print PASS/FAIL validation report
 
 DELIVERABLE:
-- HAJJ_SCHEDULE constants in src/config.py
+- HAJJ_SCHEDULE in src/config.py
 - apply_hourly_patterns() accepts hajj=True with three phases
 - /predict accepts hajj_mode parameter
 - /schedule/active returns current schedule with countdown
-- Validation report confirming Hajj model is statistically distinct
-  from standard and Ramadan schedules
+- Validation report showing PASS
 
 WHAT THIS UNLOCKS IN A RECRUITER CONVERSATION:
-"The system has a dedicated Hajj mode with three traffic phases —
+"It has a dedicated Hajj mode with three traffic phases —
 inbound, peak, and dispersal — calibrated to pilgrimage route zones.
 No Western traffic system ships with this. This one does."
 ```
@@ -510,10 +358,11 @@ shift and departure timing to be operationally useful.
 CONTEXT:
 - Read PROJECT_CONTEXT.md and IMPROVEMENT_CHAIN_V2.md
 - PROMPT 012 complete — Hajj mode exists, full schedule awareness
-- Current recommendations are operational alerts to city staff
+- Live URLs:
+  API: https://web-production-abfda1.up.railway.app
+  Dashboard: https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app
+- Current recommendations are operational alerts to city staff only
 - No output targets commuters or recommends behavioral change
-- The system knows peak hours, knows congestion level, knows
-  zones — it has everything needed to recommend intervention
 
 PROBLEM TO SOLVE:
 Zone_1 hits Critical at 08:00.
@@ -523,60 +372,48 @@ The commuter drives into the congestion anyway.
 Prediction without intervention is half a system.
 
 YOUR TASK:
-1. Add METRO_STATIONS and CARPOOL_LANES to src/config.py:
+1. Add to src/config.py:
    METRO_STATIONS = {
        'Zone_1': 'King Abdullah Financial District Station',
        'Zone_2': 'King Fahd Road Station',
        'Zone_3': 'Olaya Station',
        'Zone_4': 'Al Malaz Station',
    }
-   CARPOOL_LANES = ['Zone_1', 'Zone_2']  # zones with dedicated lanes
+   CARPOOL_LANES = ['Zone_1', 'Zone_2']
    OFF_PEAK_WINDOWS = {
        'morning': {'recommended_departure': '06:30', 'avoid_until': '09:30'},
        'evening': {'recommended_departure': '15:30', 'avoid_until': '18:30'},
    }
 
-2. Add get_intervention(zone, hour, congestion_level, schedule) to src/model.py:
-   - Returns a structured intervention dict:
-     {
-       operator_action: str,     # existing recommendation
-       commuter_advice: str,     # new — plain language for public
-       metro_station: str,       # nearest station if zone has one
-       carpool_available: bool,  # whether carpool lane exists
-       recommended_departure: str,  # off-peak window suggestion
-       intervention_urgency: str    # 'Monitor' | 'Advise' | 'Intervene'
-     }
-   - Logic:
-     Low/Moderate → Monitor, standard advice
-     High → Advise, suggest metro or off-peak departure
-     Critical → Intervene, strong modal shift push + carpool lane
+2. Add get_intervention(zone, hour, congestion_level) to src/model.py:
+   - Returns: {operator_action, commuter_advice, metro_station,
+               carpool_available, recommended_departure, intervention_urgency}
+   - Low/Moderate → Monitor
+   - High → Advise, suggest metro or off-peak departure
+   - Critical → Intervene, metro + carpool + departure window
 
-3. Update /predict response to include intervention dict alongside
-   existing congestion_score and explanation fields
+3. Update /predict response to include intervention dict
 
 4. Add /interventions/active endpoint (authenticated):
    GET /interventions/active?city=Riyadh
-   - Returns all zones currently at High or Critical with their
-     full intervention recommendation
-   - Sorted by urgency: Critical first
+   - All zones at High or Critical, sorted Critical first
 
-5. Update Streamlit dashboard Tab 2 (Zone Analysis):
-   - Add intervention column to zone comparison table
-   - Show commuter_advice in plain text under each anomaly
-   - Highlight carpool_available zones in green
+5. Add 2 tests:
+   - test_get_intervention_critical_returns_intervene()
+   - test_interventions_endpoint_returns_list()
 
 DELIVERABLE:
 - get_intervention() in src/model.py
-- /predict response includes full intervention dict
-- /interventions/active endpoint returning prioritized list
-- Dashboard Tab 2 shows commuter_advice and metro station
-- Sample response showing Critical zone with metro recommendation
+- /predict includes intervention dict
+- /interventions/active endpoint
+- 2 new passing tests
+- Live Railway API returning intervention data
 
 WHAT THIS UNLOCKS IN A RECRUITER CONVERSATION:
-"When a zone hits Critical, the system doesn't just alert operators —
-it tells commuters which metro station to use, whether a carpool lane
-is available, and what departure time avoids the congestion entirely.
-That's demand management, not just monitoring."
+"When a zone hits Critical, the system tells commuters which metro
+station to use, whether a carpool lane is available, and what
+departure time avoids the congestion entirely. That's demand
+management, not just monitoring."
 ```
 
 ---
@@ -591,29 +428,27 @@ PROMPT 001–005  : Portfolio foundation (COMPLETE)
 PROMPT 006      : Security layer (COMPLETE)
                   API key auth · Rate limiting · CORS · .env
 
-PROMPT 007      : Regression safety
-                  16 automated tests · 80%+ coverage · CI/CD
+PROMPT 007      : Regression safety (COMPLETE)
+                  20 tests · 85% coverage · CI/CD · 3 bugs caught
 
-PROMPT 008      : Real world data
-                  Live weather fetch · OSM road network · Mock fallback
+PROMPT 008      : Real world data (COMPLETE)
+                  Live weather · OSM roads · Mock fallback
 
-PROMPT 009      : Self-improving system
+PROMPT 009      : Self-improving system (COMPLETE)
                   Drift detection · Auto-retraining at 03:00
 
-PROMPT 010      : Public deployment
-                  Live Railway URL · Live Streamlit URL · DEMO.md
+PROMPT 010      : Public deployment (COMPLETE)
+                  Railway API live · Streamlit dashboard live
+                  UptimeRobot monitoring · DEMO.md
 
-PROMPT 011      : Environmental layer (research-grounded)
+PROMPT 011      : Environmental layer (next)
                   CO2 per prediction · Green Initiative thresholds
-                  Emissions summary endpoint
 
-PROMPT 012      : Hajj mode (Saudi-exclusive feature)
+PROMPT 012      : Hajj mode (Saudi-exclusive)
                   Three traffic phases · Pilgrimage route zones
-                  Schedule auto-detection
 
 PROMPT 013      : Demand intervention (research-grounded)
-                  Commuter advice · Metro station routing
-                  Carpool lane awareness · Off-peak departure windows
+                  Commuter advice · Metro routing · Carpool lanes
 
 PROMPT 014–020  : Product and company layer (future)
                   Multi-city dashboard · Government reporting
@@ -627,11 +462,11 @@ PROMPT 014–020  : Product and company layer (future)
 | Prompt | What you can say | Status |
 |---|---|---|
 | 006 | "The API is authenticated and rate-limited — not an open endpoint." | ✅ Done |
-| 007 | "Every push runs 16 automated tests with 80%+ coverage." | Pending |
-| 008 | "It fetches live Riyadh weather from Open-Meteo right now." | Pending |
-| 009 | "It detects model drift and retrains itself automatically at 3AM." | Pending |
-| 010 | "Here's the URL — you can test it on your phone right now." | Pending |
-| 011 | "Every prediction includes CO2 output — it reports against Green Initiative targets." | Pending |
+| 007 | "Every push runs 20 automated tests with 85% coverage." | ✅ Done |
+| 008 | "It fetches live Riyadh weather from Open-Meteo right now." | ✅ Done |
+| 009 | "It detects model drift and retrains itself automatically at 3AM." | ✅ Done |
+| 010 | "Here's the URL — you can test it on your phone right now." | ✅ Done |
+| 011 | "Every prediction includes CO2 output — reports against Green Initiative targets." | Pending |
 | 012 | "It has a dedicated Hajj mode with three traffic phases. No Western system has this." | Pending |
 | 013 | "When a zone hits Critical, it tells commuters which metro station to use." | Pending |
 

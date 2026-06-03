@@ -22,6 +22,16 @@ This project is shown to industry leaders as a proof of concept.
 
 ---
 
+## Live URLs
+
+| Service | URL |
+|---|---|
+| API | https://web-production-abfda1.up.railway.app |
+| API Docs | https://web-production-abfda1.up.railway.app/docs |
+| Dashboard | https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app |
+
+---
+
 ## Architecture Decisions
 
 | Decision | Reason |
@@ -41,6 +51,10 @@ This project is shown to industry leaders as a proof of concept.
 | Audit trail | Every prediction logged to predictions_log.csv with timestamp and factors |
 | API key auth | X-API-Key header via python-dotenv — key never hardcoded |
 | Rate limiting | slowapi — 60/min on /predict, 20/min on /anomalies and /forecast |
+| Data adapters | WeatherAdapter, OSMAdapter, MockIoTAdapter — swap sources in one API call |
+| Drift detection | Rolling MAE comparison — retrains at 03:00 if drift >= 1.3 |
+| Railway deployment | Free tier, auto-deploy on push to main |
+| UptimeRobot | Pings /health every 5 minutes to prevent Railway sleep |
 
 ---
 
@@ -67,25 +81,26 @@ This project is shown to industry leaders as a proof of concept.
 
 ## Critical Implementation Notes — Read Before Modifying
 
-These are hard-won facts discovered during PROMPT 006 implementation.
-Every future prompt must respect them.
-
 ### Function signatures
-- `train_xgboost(X, y)` — takes separate feature matrix and target series, not a dataframe
-- `prepare_features(df)` — returns (X, y, feature_cols). Always expects `congestion_score`
-  column. Cannot be used for single-row live inference.
-- `explain_prediction(model, X_row_df, feature_names_list)` — X_row must be a DataFrame,
-  not a dict. Returns `{top_factors: [...], plain_english: str}`
+- `train_xgboost(X, y)` — takes separate feature matrix and target series
+- `prepare_features(df)` — returns (X, y, feature_cols). Always expects `congestion_score`.
+  Cannot be used for single-row live inference.
+- `explain_prediction(model, X_row_df, feature_names_list)` — X_row must be a DataFrame.
+  Returns `{top_factors: [...], plain_english: str}`
 - `log_prediction(prediction_dict, explanation_dict)` — two separate arguments
 - `predict_single(city, zone, hour, vehicle_count, avg_speed, weather, road_type,
   rush_hour, is_weekend, is_late_night, event, hour_multiplier)` — individual keyword args
+- `forecast_congestion(df, zone, hours_ahead)` — zone is second arg, not model
+- `detect_anomalies(df)` — returns `anomaly_flag` column (int), not `is_anomaly`
 
 ### Where things live
 - WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING — in `src/model.py`
 - PALETTE, CONGESTION_THRESHOLDS, HOURLY_MULTIPLIERS, WEATHER_SPEED_IMPACT,
   FRIDAY_PRAYER_HOURS, SAUDI_CITIES — in `src/config.py`
+- get_adapter(source) factory — in `src/adapters.py`
+- compute_drift_score, run_pipeline — in `src/pipeline.py`
 
-### Correct startup sequence for app.py lifespan
+### Correct startup sequence
 ```python
 df = generate_traffic_data(city="Riyadh")
 df = apply_hourly_patterns(df, city="Riyadh")   # creates congestion_score
@@ -93,11 +108,8 @@ df = add_lag_features(df)                        # requires congestion_score
 X, y, feature_cols = prepare_features(df)
 model, _, _        = train_xgboost(X, y)
 ```
-Skipping `apply_hourly_patterns()` causes KeyError: congestion_score in add_lag_features.
 
 ### Building X_row for live inference
-`prepare_features()` cannot be used for a single live request because it requires
-`congestion_score`. Build X_row manually:
 ```python
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
 row = {
@@ -113,76 +125,88 @@ row = {
     "road_type"            : ROAD_ENCODING.get(p["road_type"], 0),
     "zone"                 : ZONE_ENCODING.get(p["zone"], 0),
     "day_of_week"          : DAY_ENCODING.get(datetime.now().strftime("%A"), 0),
-    "vehicle_count_lag_1h" : p["vehicle_count"],   # approximation
-    "vehicle_count_lag_2h" : p["vehicle_count"],   # approximation
+    "vehicle_count_lag_1h" : p["vehicle_count"],
+    "vehicle_count_lag_2h" : p["vehicle_count"],
     "congestion_lag_1h"    : 0.0,
-    "rolling_mean_3h"      : p["vehicle_count"],   # approximation
+    "rolling_mean_3h"      : p["vehicle_count"],
     "rolling_std_3h"       : 0.0,
 }
 X_row = pd.DataFrame([row])[app.state.feature_cols]
 ```
+
+### Railway deployment notes
+- Railway does not expand $PORT in railway.toml startCommand directly
+- Working fix: `sh -c 'uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}'`
+- Set API_KEY and ALLOWED_ORIGINS in Railway Variables dashboard
+- Railway auto-deploys on every push to main
+- Free tier sleeps after 30min — UptimeRobot on /health prevents this
+
+### TestClient and lifespan
+- Use `with TestClient(app) as client:` in a pytest fixture — triggers lifespan startup
+- Without the context manager, app.state.df and app.state.model are not set
 
 ---
 
 ## Current State (Complete)
 
 ### src/config.py
-- All constants, city profiles, thresholds
 - PALETTE, CONGESTION_THRESHOLDS, HOURLY_MULTIPLIERS, WEATHER_SPEED_IMPACT
-- FRIDAY_PRAYER_HOURS, SAUDI_CITIES
+- FRIDAY_PRAYER_HOURS, SAUDI_CITIES, CITY_PROFILES
 
 ### src/data.py
 - generate_traffic_data() — Poisson-based synthetic generation per city profile
-- apply_hourly_patterns() — Saudi behavioral calibration, prayer drop, sandstorm,
-  creates congestion_score column
+- apply_hourly_patterns(df, city, ramadan) — Saudi calibration, creates congestion_score
 - add_lag_features() — 1h/2h vehicle lag, 1h congestion lag, 3h rolling mean/std
 - validate_data() — 5 statistical checks, returns PASS/FAIL report table
 
 ### src/model.py
-- WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING — encoding dicts
-- prepare_features() — categorical encoding, feature matrix construction
-- train_xgboost(X, y) — XGBoost with early stopping, returns (model, X_test, y_test)
-- evaluate_models() — Linear Regression, Random Forest, XGBoost comparison
-- congestion_level() — score to human-readable level classification
-- get_recommendation() — operational recommendation per level and context
-- predict_single() — single prediction from raw inputs, returns full result dict
-- compare_baseline_vs_enhanced() — lag feature improvement measurement
-- detect_anomalies() — rolling 7-day expected vs actual, 4 severity levels
-- forecast_congestion() — multi-horizon forecast with confidence intervals
-- compare_arima_vs_xgboost() — ARIMA vs XGBoost MAE at +1h, +2h, +3h
-- explain_prediction(model, X_row_df, feature_names) — SHAP TreeExplainer,
-  returns {top_factors: [...], plain_english: str}
-- log_prediction(prediction_dict, explanation_dict) — appends to predictions_log.csv
+- WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
+- prepare_features(), train_xgboost(X, y), evaluate_models()
+- congestion_level(), get_recommendation(), predict_single()
+- detect_anomalies(), forecast_congestion(df, zone, hours_ahead)
+- explain_prediction(model, X_row_df, feature_names) → {top_factors, plain_english}
+- log_prediction(prediction_dict, explanation_dict)
+- save_model(), load_model(), compare_baseline_vs_enhanced()
+- compare_arima_vs_xgboost()
 
-### app.py
-- FastAPI with lifespan startup: generate → apply_hourly_patterns → lag features →
-  prepare_features → train_xgboost
-- Authentication: X-API-Key header via APIKeyHeader dependency
-- Rate limiting: slowapi — 60/min /predict, 20/min /anomalies + /forecast + /batch
-- CORS: configurable via ALLOWED_ORIGINS in .env
-- 6 endpoints: /, /health (public), /predict, /predict/batch, /anomalies, /forecast
-- /predict builds X_row manually for SHAP — does not call prepare_features
-- Imports pandas as pd and datetime at top level
+### src/adapters.py
+- BaseAdapter ABC with fetch(city) interface
+- WeatherAdapter — Open-Meteo API, classifies to system weather categories
+- OpenStreetMapAdapter — Overpass API with Riyadh bbox fallback
+- MockIoTAdapter — deterministic simulation, noise_level parameter
+- get_adapter(source) — factory: 'weather' | 'osm' | 'mock'
 
-### streamlit_app/dashboard.py
-- 5 interactive tabs
-- Anomaly alert banner at top when any zone is flagged
-- Tab 1 — Hourly Patterns: vehicle count and congestion by hour
-- Tab 2 — Zone Analysis: weekly heatmap + zone comparison + anomaly log
-- Tab 3 — Weather Impact: speed and congestion distribution by weather
-- Tab 4 — Model Insights: model comparison + feature importance + SHAP panel + audit trail
-- Tab 5 — Forecasting: +1h/+2h/+3h chart with confidence band + traffic light cards
+### src/pipeline.py
+- compute_drift_score(log_path) — rolling MAE vs baseline, returns ratio
+- should_retrain(drift_score, threshold=1.3) — pure boolean
+- retrain_model(city) — full pipeline, saves to model.joblib
+- run_pipeline(city) — orchestrates all steps, logs to pipeline_log.csv
+
+### app.py (version 4.0.0)
+- Lifespan: generate → apply_hourly_patterns → lag features → train
+- APScheduler: nightly pipeline at 03:00
+- Endpoints: /, /health (public)
+- /data/source GET + POST (data adapter switching)
+- /pipeline/status GET + /pipeline/trigger POST
+- /predict POST (60/min), /predict/batch POST (20/min)
+- /anomalies GET (20/min), /forecast GET (20/min)
+
+### tests/
+- test_data.py — 5 tests
+- test_model.py — 8 tests (including compare_baseline_vs_enhanced)
+- test_api.py — 7 tests (using `with TestClient(app) as client:` fixture)
+- Total: 20 tests, 85% coverage
+- .github/workflows/test.yml — CI/CD on push to main
 
 ### Infrastructure
-- Dockerfile + docker-compose.yml — containerized deployment
-- requirements.txt — unpinned versions for cross-platform compatibility
+- railway.toml + nixpacks.toml + Procfile — Railway deployment
+- Dockerfile + docker-compose.yml — local container option
+- requirements.txt — unpinned for cross-platform, pinned for Railway
 - .env — API_KEY + ALLOWED_ORIGINS (never committed)
-- .env.example — safe to commit, documents required variables
-- .gitignore — excludes .env, predictions_log.csv, pipeline_log.csv, *.joblib
-- generate_key.py — run once to generate .env with secure 64-char hex key
-- predictions_log.csv — audit trail, auto-created on first prediction
-- README.md — full documentation with architecture, API examples, validation output, roadmap
-- IMPROVEMENT_CHAIN_V2.md — prompt chain targeting production deployment
+- .env.example — safe to commit
+- .gitignore — excludes .env, *.csv logs, *.joblib, __pycache__
+- generate_key.py — one-time key generation
+- DEMO.md — 6 copy-paste commands for recruiters
 
 ---
 
@@ -200,17 +224,17 @@ X_row = pd.DataFrame([row])[app.state.feature_cols]
 
 ## Completed
 
-- API authentication — X-API-Key header, 401 on invalid/missing key (PROMPT 006)
-- Rate limiting — slowapi, per-IP, per-endpoint limits (PROMPT 006)
-- CORS configuration — localhost only in dev, configurable for production (PROMPT 006)
-- .env + .gitignore + .env.example (PROMPT 006)
+- PROMPT 006 — API auth, rate limiting, CORS, .env
+- PROMPT 007 — 20 tests, 85% coverage, CI/CD
+- PROMPT 008 — Live weather, OSM, mock adapters, /data/source
+- PROMPT 009 — Drift detection, auto-retraining, /pipeline endpoints
+- PROMPT 010 — Railway deployment, Streamlit dashboard, DEMO.md, UptimeRobot
 
 ## Pending
 
-- Automated test suite with CI/CD (PROMPT 007)
-- Real data adapters — OpenStreetMap, Open-Meteo weather API (PROMPT 008)
-- Drift detection and automated nightly retraining (PROMPT 009)
-- Cloud deployment — public URL on Railway + Streamlit Cloud (PROMPT 010)
+- PROMPT 011 — Emissions and CO2 layer
+- PROMPT 012 — Hajj and mass gathering mode
+- PROMPT 013 — Demand intervention and commuter recommendations
 
 ---
 
@@ -220,35 +244,22 @@ X_row = pd.DataFrame([row])[app.state.feature_cols]
 # Generate API key (run once)
 py generate_key.py
 
-# Validate data first
+# Validate data
 py -c "from src.data import validate_data; validate_data(city='Riyadh')"
 
-# Local
-pip install -r requirements.txt
-py -m uvicorn app:app --reload              # API → localhost:8000/docs
-streamlit run streamlit_app/dashboard.py   # Dashboard → localhost:8501
+# Run tests
+py -m pytest tests/ --cov=src --cov-report=term-missing -v
+
+# Local API
+py -m uvicorn app:app --reload
+# → http://127.0.0.1:8000/docs
+
+# Local Dashboard
+streamlit run streamlit_app/dashboard.py
+# → http://localhost:8501
 
 # Docker
 docker-compose up --build
-```
-
-## Testing the API
-
-```powershell
-# Health check (no key required)
-Invoke-WebRequest -Uri "http://localhost:8000/health"
-
-# No key → 401
-Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
-  -ContentType "application/json" `
-  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,...}'
-
-# Valid key → prediction
-$key = (Get-Content .env | Where-Object { $_ -match "^API_KEY=" }) -replace "^API_KEY=",""
-Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
-  -ContentType "application/json" `
-  -Headers @{"X-API-Key" = $key} `
-  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multiplier":1.4}'
 ```
 
 ---
@@ -256,7 +267,7 @@ Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
 ## Instructions for AI Assistant
 
 1. Never remove Saudi-specific behavioral patterns — they are the core differentiator
-2. Keep src/ modular — config, data, model stay separate
+2. Keep src/ modular — config, data, model, adapters, pipeline stay separate
 3. Dashboard has 5 tabs: Hourly Patterns → Zone Analysis → Weather Impact → Model Insights → Forecasting
 4. All charts use PALETTE from config.py — no hardcoded colors
 5. Recommendations must be operational and specific — not generic data science output
@@ -271,3 +282,7 @@ Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
 14. prepare_features() cannot be used for live single-row inference — build X_row manually
 15. apply_hourly_patterns() must always be called between generate_traffic_data()
     and add_lag_features() — it creates the congestion_score column both depend on
+16. detect_anomalies() returns anomaly_flag (int), not is_anomaly
+17. forecast_congestion(df, zone, hours_ahead) — zone is second positional arg
+18. After any app.py change, run tests locally before pushing — Railway auto-deploys
+19. TestClient tests must use `with TestClient(app) as client:` to trigger lifespan
