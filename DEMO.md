@@ -11,7 +11,7 @@
 |---|---|
 | API Documentation | https://web-production-abfda1.up.railway.app/docs |
 | API Health Check | https://web-production-abfda1.up.railway.app/health |
-| Dashboard | https://muhammadtalha121-smart-city-traffic.streamlit.app |
+| Dashboard | https://smartcitytrafficmodel-u2bsdyw2cqxtorno5sscyk.streamlit.app |
 
 ---
 
