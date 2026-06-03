@@ -9,8 +9,8 @@
 
 | Service | URL |
 |---|---|
-| API Documentation | https://smart-city-traffic-model.up.railway.app/docs |
-| API Health Check | https://smart-city-traffic-model.up.railway.app/health |
+| API Documentation | https://web-production-abfda1.up.railway.app/docs |
+| API Health Check | https://web-production-abfda1.up.railway.app/health |
 | Dashboard | https://muhammadtalha121-smart-city-traffic.streamlit.app |
 
 ---
@@ -19,12 +19,12 @@
 
 ### 1. Health check — no key required
 ```powershell
-Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/health"
+Invoke-WebRequest -Uri "https://web-production-abfda1.up.railway.app/health"
 ```
 
 ### 2. Predict congestion — sandstorm scenario
 ```powershell
-Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/predict" `
+Invoke-WebRequest -Uri "https://web-production-abfda1.up.railway.app/predict" `
   -Method POST `
   -ContentType "application/json" `
   -Headers @{"X-API-Key" = "YOUR_KEY"} `
@@ -33,7 +33,7 @@ Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/predict"
 
 ### 3. Predict congestion — Friday prayer window
 ```powershell
-Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/predict" `
+Invoke-WebRequest -Uri "https://web-production-abfda1.up.railway.app/predict" `
   -Method POST `
   -ContentType "application/json" `
   -Headers @{"X-API-Key" = "YOUR_KEY"} `
@@ -42,19 +42,19 @@ Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/predict"
 
 ### 4. Get current anomalies
 ```powershell
-Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/anomalies?city=Riyadh" `
+Invoke-WebRequest -Uri "https://web-production-abfda1.up.railway.app/anomalies?city=Riyadh" `
   -Headers @{"X-API-Key" = "YOUR_KEY"}
 ```
 
 ### 5. Get 1h / 2h / 3h forecast
 ```powershell
-Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/forecast?city=Riyadh&zone=Zone_1" `
+Invoke-WebRequest -Uri "https://web-production-abfda1.up.railway.app/forecast?city=Riyadh&zone=Zone_1" `
   -Headers @{"X-API-Key" = "YOUR_KEY"}
 ```
 
 ### 6. Check model drift score
 ```powershell
-Invoke-WebRequest -Uri "https://smart-city-traffic-model.up.railway.app/pipeline/status" `
+Invoke-WebRequest -Uri "https://web-production-abfda1.up.railway.app/pipeline/status" `
   -Headers @{"X-API-Key" = "YOUR_KEY"}
 ```
 

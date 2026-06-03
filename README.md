@@ -1,6 +1,8 @@
 # Smart City Traffic Intelligence System
 
-> A production-ready traffic congestion prediction framework for Vision 2030 smart cities.  
+> A production-ready traffic congestion prediction framework for Vision 2030 smart cities.
+> 
+> **Live API:** https://web-production-abfda1.up.railway.app/docs  
 > City-configurable. Culturally calibrated. Statistically validated. Deployable.
 
 ---
