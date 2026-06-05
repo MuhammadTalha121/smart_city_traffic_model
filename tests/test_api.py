@@ -65,6 +65,24 @@ def test_predict_valid_key_returns_prediction(client):
     assert 0.0 <= data["congestion_score"] <= 1.0
 
 
+def test_predict_valid_key_returns_emissions(client):
+    """PROMPT 011: /predict response must include an emissions dict."""
+    response = client.post(
+        "/predict",
+        json=VALID_PAYLOAD,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "emissions" in data
+    emissions = data["emissions"]
+    assert "fuel_litres"           in emissions
+    assert "co2_kg"                in emissions
+    assert "co2_tonnes"            in emissions
+    assert "green_initiative_flag" in emissions
+    assert emissions["co2_kg"] > 0
+
+
 def test_predict_invalid_hour_returns_422(client):
     bad_payload = {**VALID_PAYLOAD, "hour": 25}
     response = client.post(
@@ -100,3 +118,23 @@ def test_forecast_endpoint_returns_three_horizons(client):
         assert "hours_ahead"      in fc
         assert "predicted_score"  in fc
         assert "congestion_level" in fc
+
+
+def test_emissions_summary_endpoint_returns_valid_structure(client):
+    """PROMPT 011: /emissions/summary must return the expected response keys."""
+    # Make a predict call first so the log exists
+    client.post(
+        "/predict",
+        json=VALID_PAYLOAD,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    response = client.get(
+        "/emissions/summary?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "city"                     in data
+    assert "total_co2_tonnes"         in data
+    assert "green_initiative_events"  in data
+    assert "green_initiative_threshold_kg" in data

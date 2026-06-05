@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
 
 from dotenv import load_dotenv
@@ -18,10 +18,11 @@ from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_featu
 from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
-    log_prediction,
+    log_prediction, compute_emissions,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
+from src.config import GREEN_INITIATIVE_CO2_THRESHOLD_KG
 
 load_dotenv()
 
@@ -82,7 +83,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
     description = "Production-ready traffic prediction for Vision 2030 smart cities.",
-    version     = "4.0.0",
+    version     = "4.1.0",
     lifespan    = lifespan,
 )
 
@@ -129,7 +130,7 @@ class BatchPredictRequest(BaseModel):
 def root():
     return {
         "service"     : "Smart City Traffic Intelligence API",
-        "version"     : "4.0.0",
+        "version"     : "4.1.0",
         "status"      : "operational",
         "data_source" : app.state.data_source,
         "docs"        : "/docs",
@@ -230,7 +231,10 @@ def predict(
     payload: PredictRequest,
     _key:    str = Depends(require_api_key),
 ):
-    """Single zone prediction with SHAP explanation. 60 req/min per IP."""
+    """
+    Single zone prediction with SHAP explanation and emissions estimate.
+    60 req/min per IP.
+    """
     p      = payload.model_dump()
     result = predict_single(
         city            = p["city"],
@@ -270,8 +274,17 @@ def predict(
     X_row       = pd.DataFrame([row])[app.state.feature_cols]
     explanation = explain_prediction(app.state.model, X_row, app.state.feature_cols)
 
+    # Emissions estimate for this zone and hour
+    emissions = compute_emissions(
+        congestion_level_str = result["congestion_level"],
+        vehicle_count        = p["vehicle_count"],
+        duration_hours       = 1.0,
+    )
+    emissions["green_initiative_flag"] = emissions["co2_kg"] > GREEN_INITIATIVE_CO2_THRESHOLD_KG
+
     result["explanation"]   = explanation["top_factors"]
     result["plain_english"] = explanation["plain_english"]
+    result["emissions"]     = emissions
 
     log_prediction(result, explanation)
     return result
@@ -288,7 +301,7 @@ def predict_batch(
     results = []
     for item in payload.predictions:
         p = item.model_dump()
-        results.append(predict_single(
+        r = predict_single(
             city            = p["city"],
             zone            = p["zone"],
             hour            = p["hour"],
@@ -301,7 +314,13 @@ def predict_batch(
             is_late_night   = p["is_late_night"],
             event           = p["event"],
             hour_multiplier = p["hour_multiplier"],
-        ))
+        )
+        r["emissions"] = compute_emissions(
+            congestion_level_str = r["congestion_level"],
+            vehicle_count        = p["vehicle_count"],
+            duration_hours       = 1.0,
+        )
+        results.append(r)
     return {"city": payload.predictions[0].city, "results": results}
 
 
@@ -319,11 +338,22 @@ def anomalies(
     """Current anomalies across all zones. 20 req/min per IP."""
     df         = app.state.df[app.state.df["city"] == city]
     anomaly_df = detect_anomalies(df)
-    flagged    = anomaly_df[anomaly_df["anomaly_flag"] == 1].to_dict(orient="records")
+    flagged    = anomaly_df[anomaly_df["anomaly_flag"] == 1].copy()
+
+    # Add estimated CO2 to each anomaly record and flag Green Initiative breaches
+    records = []
+    for rec in flagged.to_dict(orient="records"):
+        level      = rec.get("congestion_level") if "congestion_level" in rec else "High"
+        count      = rec.get("vehicle_count", 100)
+        emissions  = compute_emissions(level, count)
+        rec["estimated_co2_kg"]          = emissions["co2_kg"]
+        rec["green_initiative_impact"]   = emissions["co2_kg"] > GREEN_INITIATIVE_CO2_THRESHOLD_KG
+        records.append(rec)
+
     return {
         "city"           : city,
-        "total_anomalies": len(flagged),
-        "anomalies"      : flagged,
+        "total_anomalies": len(records),
+        "anomalies"      : records,
     }
 
 
@@ -339,3 +369,95 @@ def forecast(
     df        = app.state.df[(app.state.df["city"] == city) & (app.state.df["zone"] == zone)]
     forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
     return {"city": city, "zone": zone, "forecasts": forecasts}
+
+
+# ---------------------------------------------------------------------------
+# Emissions endpoints — authenticated  (PROMPT 011)
+# ---------------------------------------------------------------------------
+
+@app.get("/emissions/summary", tags=["emissions"])
+def emissions_summary(
+    city: str = "Riyadh",
+    _key: str = Depends(require_api_key),
+):
+    """
+    Aggregate CO2 emissions summary derived from the predictions audit log.
+
+    Reads predictions_log.csv and returns:
+    - total_co2_tonnes   : cumulative CO2 across all logged predictions
+    - peak_emission_hour : hour of day with highest average co2_kg
+    - peak_emission_zone : zone with highest cumulative co2_kg
+    - green_initiative_events : number of predictions that exceeded the threshold
+    - period_days        : span of the log in days
+    """
+    log_path = "predictions_log.csv"
+
+    if not os.path.exists(log_path):
+        return {
+            "city"                    : city,
+            "message"                 : "No predictions logged yet. Call /predict to populate the log.",
+            "total_co2_tonnes"        : 0.0,
+            "peak_emission_hour"      : None,
+            "peak_emission_zone"      : None,
+            "green_initiative_events" : 0,
+            "period_days"             : 0,
+        }
+
+    log_df = pd.read_csv(log_path)
+
+    # Filter by city if the column exists
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+
+    if log_df.empty:
+        return {
+            "city"                    : city,
+            "message"                 : f"No predictions logged for {city}.",
+            "total_co2_tonnes"        : 0.0,
+            "peak_emission_hour"      : None,
+            "peak_emission_zone"      : None,
+            "green_initiative_events" : 0,
+            "period_days"             : 0,
+        }
+
+    # co2_kg column may be absent in older logs — recompute if needed
+    if "co2_kg" not in log_df.columns or log_df["co2_kg"].isna().all():
+        log_df["co2_kg"] = log_df.apply(
+            lambda r: compute_emissions(
+                str(r.get("congestion_level", "Low")),
+                float(r.get("vehicle_count", 100)) if "vehicle_count" in log_df.columns else 100.0,
+            )["co2_kg"],
+            axis=1,
+        )
+
+    log_df["co2_kg"] = pd.to_numeric(log_df["co2_kg"], errors="coerce").fillna(0)
+
+    total_co2_tonnes = round(log_df["co2_kg"].sum() / 1000, 6)
+    green_events     = int((log_df["co2_kg"] > GREEN_INITIATIVE_CO2_THRESHOLD_KG).sum())
+
+    peak_hour = None
+    if "hour" in log_df.columns:
+        peak_hour = int(log_df.groupby("hour")["co2_kg"].mean().idxmax())
+
+    peak_zone = None
+    if "zone" in log_df.columns:
+        peak_zone = str(log_df.groupby("zone")["co2_kg"].sum().idxmax())
+
+    period_days = 0
+    if "timestamp" in log_df.columns:
+        try:
+            timestamps  = pd.to_datetime(log_df["timestamp"], errors="coerce").dropna()
+            if len(timestamps) > 1:
+                period_days = int((timestamps.max() - timestamps.min()).days) + 1
+        except Exception:
+            pass
+
+    return {
+        "city"                    : city,
+        "total_co2_tonnes"        : total_co2_tonnes,
+        "peak_emission_hour"      : peak_hour,
+        "peak_emission_zone"      : peak_zone,
+        "green_initiative_events" : green_events,
+        "period_days"             : period_days,
+        "green_initiative_threshold_kg": GREEN_INITIATIVE_CO2_THRESHOLD_KG,
+    }

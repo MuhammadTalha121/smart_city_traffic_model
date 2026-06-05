@@ -93,3 +93,24 @@ PALETTE = {
     'background': '#FDFEFE',
     'grid'      : '#EAECEE'
 }
+
+# ---------------------------------------------------------------------------
+# Emissions constants — PROMPT 011
+# Fuel consumption in litres per 100 vehicles per hour at each congestion level.
+# Based on stop-and-go fuel consumption curves from urban mobility literature.
+# CO2 factor: standard petrol combustion, IPCC value.
+# ---------------------------------------------------------------------------
+
+FUEL_CONSUMPTION_LPH: Dict[str, float] = {
+    'Low'     : 6.5,
+    'Moderate': 9.2,
+    'High'    : 13.8,
+    'Critical': 18.4,
+}
+
+CO2_KG_PER_LITRE: float  = 2.31    # kg CO2 per litre of petrol combusted
+AVG_ZONE_AREA_KM2: float = 2.5     # average zone coverage area in km²
+
+# Green Initiative threshold: events generating > 500 kg CO2 in one hour
+# are flagged as significant under the Saudi Green Initiative reporting framework.
+GREEN_INITIATIVE_CO2_THRESHOLD_KG: float = 500.0

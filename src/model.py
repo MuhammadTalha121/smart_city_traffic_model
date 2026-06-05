@@ -8,7 +8,10 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
 import joblib
 from typing import Tuple, Dict
-from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES
+from src.config import (
+    CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES,
+    FUEL_CONSUMPTION_LPH, CO2_KG_PER_LITRE,
+)
 
 
 FEATURE_COLS = [
@@ -113,6 +116,42 @@ def get_recommendation(level: str, zone: str, weather: str, city: str) -> str:
     return recommendations[level]
 
 
+def compute_emissions(
+    congestion_level_str: str,
+    vehicle_count: float,
+    duration_hours: float = 1.0,
+) -> Dict:
+    """
+    Estimate fuel consumption and CO2 output for a zone over a given duration.
+
+    Formula
+    -------
+    fuel_litres = consumption_rate_lph * (vehicle_count / 100) * duration_hours
+    co2_kg      = fuel_litres * CO2_KG_PER_LITRE
+    co2_tonnes  = co2_kg / 1000
+
+    Parameters
+    ----------
+    congestion_level_str : One of Low, Moderate, High, Critical.
+    vehicle_count        : Number of vehicles in the zone.
+    duration_hours       : Duration to estimate over (default 1 hour).
+
+    Returns
+    -------
+    dict with fuel_litres, co2_kg, co2_tonnes.
+    """
+    rate        = FUEL_CONSUMPTION_LPH.get(congestion_level_str, FUEL_CONSUMPTION_LPH['Moderate'])
+    fuel_litres = rate * (vehicle_count / 100) * duration_hours
+    co2_kg      = fuel_litres * CO2_KG_PER_LITRE
+    co2_tonnes  = co2_kg / 1000
+
+    return {
+        'fuel_litres': round(fuel_litres, 3),
+        'co2_kg'     : round(co2_kg, 3),
+        'co2_tonnes' : round(co2_tonnes, 6),
+    }
+
+
 def predict_single(city: str, zone: str, hour: int, vehicle_count: float,
                    avg_speed: float, weather: str, road_type: str,
                    rush_hour: int, is_weekend: int, is_late_night: int,
@@ -142,9 +181,6 @@ def save_model(model, path: str = 'model.joblib'):
 
 def load_model(path: str = 'model.joblib'):
     return joblib.load(path)
-
-
-
 
 
 def compare_baseline_vs_enhanced(city: str = 'Riyadh') -> pd.DataFrame:
@@ -354,7 +390,6 @@ def compare_arima_vs_xgboost(city: str = 'Riyadh', zone: str = 'Zone_1') -> pd.D
     return report
 
 
-
 def explain_prediction(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
     """
     Generate SHAP-based explanation for a single prediction.
@@ -416,7 +451,7 @@ def explain_prediction(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
 
 def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv'):
     """
-    Append a prediction and its explanation to the audit log CSV.
+    Append a prediction, its explanation, and emissions data to the audit log CSV.
     """
     import os
     from datetime import datetime
@@ -432,7 +467,9 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
         'top_factor_1'   : explanation['top_factors'][0]['factor'] if len(explanation['top_factors']) > 0 else '',
         'top_factor_2'   : explanation['top_factors'][1]['factor'] if len(explanation['top_factors']) > 1 else '',
         'top_factor_3'   : explanation['top_factors'][2]['factor'] if len(explanation['top_factors']) > 2 else '',
-        'plain_english'  : explanation.get('plain_english', '')
+        'plain_english'  : explanation.get('plain_english', ''),
+        'co2_kg'         : prediction.get('emissions', {}).get('co2_kg', ''),
+        'fuel_litres'    : prediction.get('emissions', {}).get('fuel_litres', ''),
     }
 
     log_df     = pd.DataFrame([row])
