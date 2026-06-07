@@ -36,6 +36,23 @@ def test_health_endpoint_no_auth_returns_200(client):
     assert response.json()["status"] == "healthy"
 
 
+def test_dashboard_serves_html(client):
+    """Dashboard at root returns valid HTML — no Streamlit dependency needed."""
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Smart City Traffic Intelligence" in response.text
+    assert "DM Sans" in response.text        # correct font loaded
+    assert "chart.js" in response.text       # charting library loaded
+
+
+def test_dashboard_alias_works(client):
+    """/dashboard alias also returns the HTML dashboard."""
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
 def test_predict_no_key_returns_401(client):
     response = client.post("/predict", json=VALID_PAYLOAD)
     assert response.status_code == 401
@@ -66,7 +83,7 @@ def test_predict_valid_key_returns_prediction(client):
 
 
 def test_predict_valid_key_returns_emissions(client):
-    """PROMPT 011: /predict response must include an emissions dict."""
+    """PROMPT 011 — /predict response must include an emissions dict."""
     response = client.post(
         "/predict",
         json=VALID_PAYLOAD,
@@ -75,12 +92,12 @@ def test_predict_valid_key_returns_emissions(client):
     assert response.status_code == 200
     data = response.json()
     assert "emissions" in data
-    emissions = data["emissions"]
-    assert "fuel_litres"           in emissions
-    assert "co2_kg"                in emissions
-    assert "co2_tonnes"            in emissions
-    assert "green_initiative_flag" in emissions
-    assert emissions["co2_kg"] > 0
+    em = data["emissions"]
+    assert "fuel_litres"           in em
+    assert "co2_kg"                in em
+    assert "co2_tonnes"            in em
+    assert "green_initiative_flag" in em
+    assert em["co2_kg"] > 0
 
 
 def test_predict_invalid_hour_returns_422(client):
@@ -120,21 +137,16 @@ def test_forecast_endpoint_returns_three_horizons(client):
         assert "congestion_level" in fc
 
 
-def test_emissions_summary_endpoint_returns_valid_structure(client):
-    """PROMPT 011: /emissions/summary must return the expected response keys."""
-    # Make a predict call first so the log exists
-    client.post(
-        "/predict",
-        json=VALID_PAYLOAD,
-        headers={"X-API-Key": TEST_KEY},
-    )
+def test_emissions_summary_endpoint(client):
+    """PROMPT 011 — /emissions/summary returns expected structure."""
+    client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
     response = client.get(
         "/emissions/summary?city=Riyadh",
         headers={"X-API-Key": TEST_KEY},
     )
     assert response.status_code == 200
     data = response.json()
-    assert "city"                     in data
-    assert "total_co2_tonnes"         in data
-    assert "green_initiative_events"  in data
+    assert "city"                          in data
+    assert "total_co2_tonnes"              in data
+    assert "green_initiative_events"       in data
     assert "green_initiative_threshold_kg" in data

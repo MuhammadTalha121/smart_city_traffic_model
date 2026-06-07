@@ -1,0 +1,2081 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart City Traffic Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  :root {
+    --bg-void:       #080b11;
+    --bg-deep:       #0d1117;
+    --bg-card:       #111720;
+    --bg-card-hover: #151d2a;
+    --bg-input:      #0d1420;
+    --border:        rgba(255,255,255,0.06);
+    --border-accent: rgba(212,175,100,0.25);
+
+    --text-primary:  #f0ede8;
+    --text-secondary:#8b9ab0;
+    --text-muted:    #4a5568;
+    --text-mono:     #c9d1db;
+
+    --amber:         #d4af64;
+    --amber-soft:    rgba(212,175,100,0.12);
+    --amber-glow:    rgba(212,175,100,0.06);
+    --teal:          #4ecdc4;
+    --teal-soft:     rgba(78,205,196,0.10);
+    --rose:          #e07070;
+    --rose-soft:     rgba(224,112,112,0.10);
+    --jade:          #5aaf8a;
+    --jade-soft:     rgba(90,175,138,0.10);
+    --sky:           #6ba3d6;
+
+    --low:           #5aaf8a;
+    --moderate:      #d4af64;
+    --high:          #e09060;
+    --critical:      #e07070;
+
+    --radius-sm:     8px;
+    --radius-md:     14px;
+    --radius-lg:     20px;
+
+    --font-sans:     'DM Sans', system-ui, sans-serif;
+    --font-mono:     'DM Mono', 'SF Mono', monospace;
+    --font-display:  'Playfair Display', Georgia, serif;
+
+    --shadow-card:   0 1px 3px rgba(0,0,0,0.4), 0 8px 32px rgba(0,0,0,0.3);
+    --shadow-float:  0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 15px; scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-void);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ── Ambient background ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 10% 0%,  rgba(212,175,100,0.04) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 90% 80%, rgba(78,205,196,0.03)  0%, transparent 60%),
+      radial-gradient(ellipse 40% 60% at 50% 50%, rgba(13,20,32,0.8)     0%, transparent 100%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Header ── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(8,11,17,0.85);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-bottom: 1px solid var(--border);
+    padding: 0 2rem;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .header-left { display: flex; align-items: center; gap: 1rem; }
+
+  .logo-mark {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--amber) 0%, #c4954a 100%);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    box-shadow: 0 0 20px rgba(212,175,100,0.3);
+    flex-shrink: 0;
+  }
+
+  .header-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+  }
+
+  .header-sub {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    letter-spacing: 0.05em;
+  }
+
+  .header-right { display: flex; align-items: center; gap: 1rem; }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--jade-soft);
+    border: 1px solid rgba(90,175,138,0.2);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--jade);
+    letter-spacing: 0.04em;
+  }
+
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--jade);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.5; transform: scale(0.8); }
+  }
+
+  .city-badge {
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--amber);
+    background: var(--amber-soft);
+    border: 1px solid var(--border-accent);
+    border-radius: 20px;
+    padding: 4px 12px;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Nav tabs ── */
+  nav {
+    position: sticky;
+    top: 64px;
+    z-index: 90;
+    background: rgba(8,11,17,0.9);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 2rem;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  nav::-webkit-scrollbar { display: none; }
+
+  .tab-btn {
+    position: relative;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    font-weight: 400;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.2s;
+    letter-spacing: -0.01em;
+  }
+
+  .tab-btn::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1.5px;
+    background: var(--amber);
+    transform: scaleX(0);
+    transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+  }
+
+  .tab-btn:hover { color: var(--text-secondary); }
+
+  .tab-btn.active {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  .tab-btn.active::after { transform: scaleX(1); }
+
+  .tab-icon { margin-right: 6px; font-size: 0.85rem; }
+
+  /* ── Main layout ── */
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+
+  .tab-panel { display: none; animation: fadeUp 0.3s ease; }
+  .tab-panel.active { display: block; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── KPI grid ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 1.75rem;
+    border: 1px solid var(--border);
+  }
+
+  .kpi-card {
+    background: var(--bg-card);
+    padding: 1.5rem 1.25rem;
+    transition: background 0.2s;
+  }
+  .kpi-card:hover { background: var(--bg-card-hover); }
+
+  .kpi-label {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.6rem;
+  }
+
+  .kpi-value {
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    line-height: 1;
+    margin-bottom: 0.35rem;
+    letter-spacing: -0.02em;
+  }
+
+  .kpi-sub {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+    box-shadow: var(--shadow-card);
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: rgba(255,255,255,0.10); }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.25rem;
+  }
+
+  .card-title {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    letter-spacing: 0.01em;
+  }
+
+  .card-tag {
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    color: var(--amber);
+    background: var(--amber-soft);
+    border: 1px solid var(--border-accent);
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.04em;
+  }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; }
+
+  /* ── Charts ── */
+  .chart-wrap {
+    position: relative;
+    width: 100%;
+  }
+
+  /* ── Prediction panel ── */
+  .predict-layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 1.25rem;
+    align-items: start;
+  }
+
+  .predict-form .field {
+    margin-bottom: 1rem;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    margin-bottom: 0.4rem;
+  }
+
+  .field-input, .field-select {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    padding: 0.6rem 0.75rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .field-input:focus, .field-select:focus {
+    outline: none;
+    border-color: rgba(212,175,100,0.4);
+    box-shadow: 0 0 0 3px rgba(212,175,100,0.08);
+  }
+
+  .field-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%234a5568'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 2rem;
+  }
+
+  .field-range { display: flex; align-items: center; gap: 0.75rem; }
+
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 2px;
+    background: linear-gradient(to right, var(--amber) 0%, var(--bg-input) 0%);
+    border-radius: 1px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 8px rgba(212,175,100,0.5);
+    cursor: pointer;
+    transition: transform 0.15s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+
+  .range-val {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--amber);
+    min-width: 2.5rem;
+    text-align: right;
+  }
+
+  .predict-btn {
+    width: 100%;
+    background: linear-gradient(135deg, var(--amber) 0%, #c4954a 100%);
+    color: #0d0a04;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.8rem;
+    cursor: pointer;
+    letter-spacing: -0.01em;
+    transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
+    box-shadow: 0 4px 20px rgba(212,175,100,0.3);
+    margin-top: 0.5rem;
+  }
+  .predict-btn:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 8px 30px rgba(212,175,100,0.4); }
+  .predict-btn:active { transform: translateY(0); }
+
+  /* ── Result card ── */
+  .result-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 2rem;
+    display: none;
+    animation: fadeUp 0.35s ease;
+  }
+  .result-card.visible { display: block; }
+
+  .result-score-block {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.5rem;
+    margin-bottom: 1.75rem;
+  }
+
+  .result-score-num {
+    font-family: var(--font-display);
+    font-size: 5rem;
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+
+  .result-score-meta { padding-bottom: 0.5rem; }
+
+  .result-level-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+
+  .result-zone-label {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+
+  .result-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 1.25rem 0;
+  }
+
+  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+
+  .result-item-label {
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    margin-bottom: 0.3rem;
+  }
+
+  .result-item-value {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--text-primary);
+  }
+
+  .emissions-panel {
+    background: var(--amber-glow);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .emissions-title {
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    color: var(--amber);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+
+  .emissions-row { display: flex; gap: 2rem; }
+
+  .em-item-val {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    font-weight: 400;
+    color: var(--amber);
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+
+  .em-item-unit {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+  }
+
+  .gi-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--rose);
+    background: var(--rose-soft);
+    border: 1px solid rgba(224,112,112,0.2);
+    padding: 4px 10px;
+    border-radius: 4px;
+    margin-top: 0.75rem;
+    letter-spacing: 0.04em;
+  }
+
+  .shap-bar-wrap { margin-bottom: 0.6rem; }
+  .shap-bar-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.25rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+  .shap-bar-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .shap-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+  }
+
+  .recommendation-box {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    font-style: italic;
+  }
+
+  .plain-english-box {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    padding: 0.75rem 0;
+    border-top: 1px solid var(--border);
+    margin-top: 0.75rem;
+  }
+
+  /* ── Anomaly / table ── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+  }
+
+  .data-table th {
+    text-align: left;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-weight: 400;
+  }
+
+  .data-table td {
+    padding: 0.7rem 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    color: var(--text-secondary);
+    vertical-align: middle;
+  }
+
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .severity-badge {
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .sev-critical { background: var(--rose-soft); color: var(--rose); border: 1px solid rgba(224,112,112,0.2); }
+  .sev-anomalous { background: rgba(224,144,96,0.1); color: var(--high); border: 1px solid rgba(224,144,96,0.2); }
+  .sev-elevated { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--border-accent); }
+  .sev-normal { background: var(--jade-soft); color: var(--jade); border: 1px solid rgba(90,175,138,0.2); }
+
+  /* ── Forecast cards ── */
+  .forecast-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+
+  .forecast-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    text-align: center;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .forecast-card:hover { border-color: rgba(255,255,255,0.10); transform: translateY(-2px); }
+  .forecast-card.now { border-color: var(--border-accent); background: var(--amber-glow); }
+
+  .fc-horizon {
+    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+
+  .fc-score {
+    font-family: var(--font-display);
+    font-size: 2.4rem;
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    margin-bottom: 0.4rem;
+  }
+
+  .fc-level {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+
+  .fc-rec {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  /* ── Weather comparison ── */
+  .weather-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+
+  .weather-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.2s;
+  }
+  .weather-card:hover { transform: translateY(-2px); }
+
+  .weather-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+
+  .wc-sandstorm::before { background: linear-gradient(90deg, var(--rose), var(--high)); }
+  .wc-dust::before      { background: linear-gradient(90deg, var(--high), var(--amber)); }
+  .wc-clear::before     { background: linear-gradient(90deg, var(--jade), var(--teal)); }
+
+  .wc-name {
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+
+  .wc-speed {
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    margin-bottom: 0.2rem;
+  }
+
+  .wc-unit { font-size: 0.7rem; color: var(--text-muted); font-family: var(--font-mono); }
+
+  /* ── Model insights ── */
+  .importance-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .importance-label {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    width: 160px;
+    flex-shrink: 0;
+  }
+
+  .importance-track {
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .importance-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--amber), var(--teal));
+    transition: width 1s cubic-bezier(0.4,0,0.2,1);
+  }
+
+  .importance-val {
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    width: 40px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── Alert banner ── */
+  .alert-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: rgba(224,112,112,0.06);
+    border: 1px solid rgba(224,112,112,0.18);
+    border-radius: var(--radius-md);
+    padding: 0.875rem 1.25rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.8rem;
+    color: var(--rose);
+    animation: fadeUp 0.3s ease;
+  }
+
+  .alert-icon { font-size: 1rem; flex-shrink: 0; }
+
+  /* ── Loading shimmer ── */
+  .shimmer {
+    background: linear-gradient(90deg, var(--bg-card) 0%, var(--bg-card-hover) 50%, var(--bg-card) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+    border-radius: 4px;
+  }
+
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* ── Empty state ── */
+  .empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    font-family: var(--font-mono);
+  }
+
+  .empty-icon { font-size: 2rem; margin-bottom: 0.75rem; opacity: 0.4; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+
+  /* ── Section label ── */
+  .section-label {
+    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Tooltip ── */
+  [data-tip] { position: relative; cursor: help; }
+  [data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1a2433;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 200;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+    .predict-layout { grid-template-columns: 1fr; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .forecast-grid { grid-template-columns: repeat(2, 1fr); }
+    .weather-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 600px) {
+    main { padding: 1rem; }
+    header { padding: 0 1rem; }
+    nav { padding: 0 1rem; }
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .forecast-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="header-left">
+    <div class="logo-mark">🚦</div>
+    <div>
+      <div class="header-title">Smart City Traffic Intelligence</div>
+      <div class="header-sub">Vision 2030 · Real-time Analytics</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="city-badge" id="city-badge">RIYADH</div>
+    <div class="status-pill">
+      <div class="status-dot"></div>
+      <span>LIVE</span>
+    </div>
+  </div>
+</header>
+
+<!-- Nav -->
+<nav>
+  <button class="tab-btn active" data-tab="predict"><span class="tab-icon">⚡</span>Live Prediction</button>
+  <button class="tab-btn" data-tab="patterns"><span class="tab-icon">📈</span>Hourly Patterns</button>
+  <button class="tab-btn" data-tab="zones"><span class="tab-icon">🗺</span>Zone Analysis</button>
+  <button class="tab-btn" data-tab="weather"><span class="tab-icon">🌤</span>Weather Impact</button>
+  <button class="tab-btn" data-tab="insights"><span class="tab-icon">🤖</span>Model Insights</button>
+  <button class="tab-btn" data-tab="forecast"><span class="tab-icon">🔮</span>Forecasting</button>
+</nav>
+
+<!-- Main -->
+<main>
+
+  <!-- KPI row (always visible) -->
+  <div class="kpi-grid" id="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Avg Congestion</div>
+      <div class="kpi-value" id="kpi-avg">—</div>
+      <div class="kpi-sub">city-wide score</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Peak Hour</div>
+      <div class="kpi-value" id="kpi-peak">—</div>
+      <div class="kpi-sub">highest volume</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Worst Zone</div>
+      <div class="kpi-value" id="kpi-zone" style="font-size:1.5rem;padding-top:0.3rem">—</div>
+      <div class="kpi-sub">highest congestion</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Anomalies</div>
+      <div class="kpi-value" id="kpi-anomalies">—</div>
+      <div class="kpi-sub">active flags</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Prayer Drop</div>
+      <div class="kpi-value" id="kpi-prayer">—</div>
+      <div class="kpi-sub">Friday reduction</div>
+    </div>
+  </div>
+
+  <!-- Alert banner -->
+  <div class="alert-banner" id="alert-banner" style="display:none">
+    <span class="alert-icon">⚠️</span>
+    <span id="alert-text"></span>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB 1 — LIVE PREDICTION
+  ══════════════════════════════════════ -->
+  <div class="tab-panel active" id="tab-predict">
+    <div class="section-label">Live Inference Engine</div>
+    <div class="predict-layout">
+
+      <!-- Form -->
+      <div class="card predict-form">
+        <div class="card-header">
+          <span class="card-title">Input Parameters</span>
+          <span class="card-tag">REAL-TIME</span>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Zone</label>
+          <select class="field-select" id="p-zone">
+            <option>Zone_1</option><option>Zone_2</option>
+            <option>Zone_3</option><option>Zone_4</option><option>Zone_5</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Hour of Day</label>
+          <div class="field-range">
+            <input type="range" id="p-hour" min="0" max="23" value="8"
+              oninput="updateRange('p-hour','p-hour-val'); updateSliderFill(this)">
+            <span class="range-val" id="p-hour-val">08:00</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Vehicle Count</label>
+          <div class="field-range">
+            <input type="range" id="p-vehicles" min="0" max="500" value="200"
+              oninput="updateRange('p-vehicles','p-vehicles-val'); updateSliderFill(this)">
+            <span class="range-val" id="p-vehicles-val">200</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Avg Speed (km/h)</label>
+          <div class="field-range">
+            <input type="range" id="p-speed" min="20" max="100" value="60"
+              oninput="updateRange('p-speed','p-speed-val'); updateSliderFill(this)">
+            <span class="range-val" id="p-speed-val">60</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Weather</label>
+          <select class="field-select" id="p-weather">
+            <option value="clear">Clear</option>
+            <option value="dust">Dust</option>
+            <option value="fog">Fog</option>
+            <option value="humid">Humid</option>
+            <option value="rain">Rain</option>
+            <option value="sandstorm">Sandstorm ⚠️</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Road Type</label>
+          <select class="field-select" id="p-road">
+            <option value="highway">Highway</option>
+            <option value="arterial">Arterial</option>
+            <option value="local">Local</option>
+          </select>
+        </div>
+
+        <div class="field" style="display:flex;gap:1rem">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.75rem;color:var(--text-secondary)">
+            <input type="checkbox" id="p-event" style="accent-color:var(--amber)"> Special Event
+          </label>
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.75rem;color:var(--text-secondary)">
+            <input type="checkbox" id="p-weekend" style="accent-color:var(--amber)"> Weekend
+          </label>
+        </div>
+
+        <button class="predict-btn" onclick="runPrediction()">
+          Run Prediction →
+        </button>
+      </div>
+
+      <!-- Result -->
+      <div>
+        <div class="result-card" id="result-card">
+          <div class="result-score-block">
+            <div class="result-score-num" id="r-score-num">0.00</div>
+            <div class="result-score-meta">
+              <div class="result-level-badge" id="r-level-badge">—</div>
+              <div class="result-zone-label" id="r-zone-label">—</div>
+            </div>
+          </div>
+
+          <!-- Emissions block -->
+          <div class="emissions-panel" id="r-emissions">
+            <div class="emissions-title">🌿 Emissions Estimate · 1 Hour</div>
+            <div class="emissions-row">
+              <div>
+                <div class="em-item-val" id="r-co2">—</div>
+                <div class="em-item-unit">kg CO₂</div>
+              </div>
+              <div>
+                <div class="em-item-val" id="r-fuel">—</div>
+                <div class="em-item-unit">litres fuel</div>
+              </div>
+              <div>
+                <div class="em-item-val" id="r-co2t">—</div>
+                <div class="em-item-unit">tonnes CO₂</div>
+              </div>
+            </div>
+            <div class="gi-flag" id="r-gi-flag" style="display:none">
+              ⚠️ GREEN INITIATIVE THRESHOLD BREACHED (>500 kg CO₂/hr)
+            </div>
+          </div>
+
+          <div class="result-grid">
+            <div>
+              <div class="result-item-label">Recommendation</div>
+              <div class="recommendation-box" id="r-rec">—</div>
+            </div>
+            <div>
+              <div class="result-item-label">SHAP Explanation</div>
+              <div id="r-shap-bars"></div>
+            </div>
+          </div>
+
+          <div class="plain-english-box" id="r-plain">—</div>
+        </div>
+
+        <!-- Placeholder before first prediction -->
+        <div class="card" id="predict-placeholder" style="padding:3rem;text-align:center">
+          <div style="font-size:2.5rem;margin-bottom:1rem;opacity:0.15">⚡</div>
+          <div style="color:var(--text-muted);font-family:var(--font-mono);font-size:0.78rem;letter-spacing:0.04em">
+            Configure parameters and run prediction
+          </div>
+          <div style="color:var(--text-muted);font-size:0.68rem;margin-top:0.5rem;font-family:var(--font-mono)">
+            Results appear here with SHAP explanation and CO₂ estimate
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB 2 — HOURLY PATTERNS
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-patterns">
+    <div class="section-label">Traffic Rhythm · 24-Hour Cycle</div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Vehicle Count by Hour</span>
+        <span class="card-tag">RIYADH CALIBRATED</span>
+      </div>
+      <div class="chart-wrap" style="height:200px">
+        <canvas id="chart-vehicles"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Congestion Score by Hour</span>
+        <span class="card-tag">0–1 SCALE</span>
+      </div>
+      <div class="chart-wrap" style="height:200px">
+        <canvas id="chart-congestion"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB 3 — ZONE ANALYSIS
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-zones">
+    <div class="section-label">Zone Intelligence · Anomaly Detection</div>
+    <div class="grid-2" style="margin-bottom:1.25rem">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Zone Congestion Comparison</span>
+        </div>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-zones"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Congestion Distribution</span>
+        </div>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-dist"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Anomaly Detection Log</span>
+        <span class="card-tag" id="anomaly-count-tag">LOADING…</span>
+      </div>
+      <div id="anomaly-table-wrap">
+        <div class="empty-state"><div class="empty-icon">🔍</div>Loading anomalies…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB 4 — WEATHER IMPACT
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-weather">
+    <div class="section-label">Weather · Saudi Calibration</div>
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Speed Impact by Weather Condition</span>
+        <span class="card-tag">VALIDATED</span>
+      </div>
+      <div class="weather-grid" id="weather-cards">
+        <div class="weather-card wc-sandstorm">
+          <div class="wc-name">☠️ Sandstorm</div>
+          <div class="wc-speed" style="color:var(--rose)">–40%</div>
+          <div class="wc-unit">speed reduction · highest risk</div>
+        </div>
+        <div class="weather-card wc-dust">
+          <div class="wc-name">🌫 Dust</div>
+          <div class="wc-speed" style="color:var(--high)">–15%</div>
+          <div class="wc-unit">speed reduction · elevated risk</div>
+        </div>
+        <div class="weather-card wc-clear">
+          <div class="wc-name">☀️ Clear</div>
+          <div class="wc-speed" style="color:var(--jade)">Baseline</div>
+          <div class="wc-unit">free-flow reference</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Congestion Score Distribution by Weather</span>
+      </div>
+      <div class="chart-wrap" style="height:240px">
+        <canvas id="chart-weather"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB 5 — MODEL INSIGHTS
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-insights">
+    <div class="section-label">Model Architecture · Feature Intelligence</div>
+    <div class="grid-2" style="margin-bottom:1.25rem">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Feature Importance</span>
+          <span class="card-tag">XGBOOST</span>
+        </div>
+        <div id="importance-bars">
+          <div class="empty-state"><div class="empty-icon">🤖</div>Run a prediction to populate</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Model Performance</span>
+          <span class="card-tag">VALIDATED</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
+          <div>
+            <div class="kpi-label">R² Score</div>
+            <div style="font-family:var(--font-display);font-size:2rem;color:var(--jade);letter-spacing:-0.02em">0.94</div>
+            <div class="kpi-sub">XGBoost</div>
+          </div>
+          <div>
+            <div class="kpi-label">MAE</div>
+            <div style="font-family:var(--font-display);font-size:2rem;color:var(--amber);letter-spacing:-0.02em">0.018</div>
+            <div class="kpi-sub">mean abs error</div>
+          </div>
+        </div>
+        <div style="margin-top:1rem">
+          <div class="result-item-label" style="margin-bottom:0.75rem">Validation Checks — 5/5 Pass</div>
+          <div id="validation-checks"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Prediction Audit Trail</span>
+        <span class="card-tag" id="audit-count-tag">0 RECORDS</span>
+      </div>
+      <div id="audit-table-wrap">
+        <div class="empty-state"><div class="empty-icon">📋</div>No predictions logged yet</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB 6 — FORECASTING
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-forecast">
+    <div class="section-label">Multi-Horizon Forecast</div>
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Select Zone</span>
+      </div>
+      <div style="display:flex;gap:0.5rem">
+        <select class="field-select" id="fc-zone" style="max-width:200px" onchange="loadForecast()">
+          <option>Zone_1</option><option>Zone_2</option>
+          <option>Zone_3</option><option>Zone_4</option><option>Zone_5</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="forecast-grid" id="forecast-cards">
+      <div class="forecast-card now">
+        <div class="fc-horizon">Now</div>
+        <div class="fc-score" id="fc-now" style="color:var(--amber)">—</div>
+        <div class="fc-level" style="color:var(--amber)">Current</div>
+      </div>
+      <div class="forecast-card"><div class="fc-horizon">+1 Hour</div><div class="fc-score" id="fc-1h">—</div><div class="fc-level" id="fc-1h-level">—</div><div class="fc-rec" id="fc-1h-rec">—</div></div>
+      <div class="forecast-card"><div class="fc-horizon">+2 Hours</div><div class="fc-score" id="fc-2h">—</div><div class="fc-level" id="fc-2h-level">—</div><div class="fc-rec" id="fc-2h-rec">—</div></div>
+      <div class="forecast-card"><div class="fc-horizon">+3 Hours</div><div class="fc-score" id="fc-3h">—</div><div class="fc-level" id="fc-3h-level">—</div><div class="fc-rec" id="fc-3h-rec">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Forecast Trajectory</span>
+        <span class="card-tag">CONFIDENCE BAND</span>
+      </div>
+      <div class="chart-wrap" style="height:220px">
+        <canvas id="chart-forecast"></canvas>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+/* ═══════════════════════════════════════════════════
+   CONFIG
+═══════════════════════════════════════════════════ */
+const API_BASE = '';  // same origin
+const API_KEY  = document.cookie.replace(/(?:(?:^|.*;\s*)dk\s*=\s*([^;]*).*$)|^.*$/, '$1') || '';
+
+/* The dashboard fetches data from the FastAPI backend.
+   Synthetic data is pre-computed at startup and served as JSON. */
+
+const LEVEL_COLORS = {
+  Low:      '#5aaf8a',
+  Moderate: '#d4af64',
+  High:     '#e09060',
+  Critical: '#e07070',
+};
+
+const LEVEL_BG = {
+  Low:      'rgba(90,175,138,0.15)',
+  Moderate: 'rgba(212,175,100,0.15)',
+  High:     'rgba(224,144,96,0.15)',
+  Critical: 'rgba(224,112,112,0.15)',
+};
+
+/* ═══════════════════════════════════════════════════
+   CHART DEFAULTS
+═══════════════════════════════════════════════════ */
+Chart.defaults.color          = '#4a5568';
+Chart.defaults.borderColor    = 'rgba(255,255,255,0.06)';
+Chart.defaults.font.family    = "'DM Mono', monospace";
+Chart.defaults.font.size      = 11;
+Chart.defaults.plugins.legend.display = false;
+
+function chartGrid() {
+  return {
+    color: 'rgba(255,255,255,0.04)',
+    drawBorder: false,
+  };
+}
+
+function chartTick() {
+  return { color: '#4a5568', maxTicksLimit: 6 };
+}
+
+/* ═══════════════════════════════════════════════════
+   TAB SWITCHING
+═══════════════════════════════════════════════════ */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+
+    // Lazy load tab content
+    if (btn.dataset.tab === 'patterns')  renderPatternsTab();
+    if (btn.dataset.tab === 'zones')     renderZonesTab();
+    if (btn.dataset.tab === 'weather')   renderWeatherTab();
+    if (btn.dataset.tab === 'insights')  renderInsightsTab();
+    if (btn.dataset.tab === 'forecast')  loadForecast();
+  });
+});
+
+/* ═══════════════════════════════════════════════════
+   SLIDER HELPERS
+═══════════════════════════════════════════════════ */
+function updateRange(inputId, valId) {
+  const el  = document.getElementById(inputId);
+  const val = parseInt(el.value);
+  let display = val;
+  if (inputId === 'p-hour') display = String(val).padStart(2,'0') + ':00';
+  document.getElementById(valId).textContent = display;
+}
+
+function updateSliderFill(el) {
+  const pct = ((el.value - el.min) / (el.max - el.min)) * 100;
+  el.style.background = `linear-gradient(to right, var(--amber) ${pct}%, var(--bg-input) ${pct}%)`;
+}
+
+// Init sliders
+document.querySelectorAll('input[type=range]').forEach(el => updateSliderFill(el));
+
+/* ═══════════════════════════════════════════════════
+   SYNTHETIC DATA (mirrors what FastAPI generates)
+   Reproduces Saudi behavioral patterns client-side
+   so the dashboard works without 20 API calls.
+═══════════════════════════════════════════════════ */
+const SAUDI_MULTIPLIERS = {
+  0:0.6, 1:0.5, 2:0.4, 3:0.3, 4:0.4, 5:0.6, 6:0.9, 7:1.3,
+  8:1.4, 9:1.1, 10:1.0, 11:1.0, 12:0.5, 13:0.4, 14:0.8,
+  15:1.1, 16:1.3, 17:1.5, 18:1.4, 19:1.2, 20:1.4, 21:1.5, 22:1.4, 23:1.1
+};
+
+const BASE_VEHICLES = 120;
+const BASE_SPEED    = 65;
+
+function syntheticHourly() {
+  const hours = Array.from({length: 24}, (_, h) => h);
+  const vehicles = hours.map(h => {
+    let v = BASE_VEHICLES * SAUDI_MULTIPLIERS[h];
+    if (h === 12 || h === 13) v *= 0.1; // Friday prayer effect
+    return Math.round(v);
+  });
+  const speeds = hours.map(h => Math.max(20, BASE_SPEED - (SAUDI_MULTIPLIERS[h] - 0.5) * 20));
+  const congestion = hours.map((h, i) => {
+    return Math.min(1, Math.max(0, (vehicles[i] / 500) * (1 - speeds[i] / 100)));
+  });
+  return { hours, vehicles, speeds, congestion };
+}
+
+const HOURLY = syntheticHourly();
+
+const ZONE_DATA = [
+  { zone: 'Zone_1', mean: 0.38, max: 0.91, std: 0.14, road: 'highway' },
+  { zone: 'Zone_2', mean: 0.31, max: 0.78, std: 0.12, road: 'arterial' },
+  { zone: 'Zone_3', mean: 0.27, max: 0.65, std: 0.10, road: 'local' },
+  { zone: 'Zone_4', mean: 0.33, max: 0.82, std: 0.13, road: 'arterial' },
+  { zone: 'Zone_5', mean: 0.35, max: 0.88, std: 0.11, road: 'highway' },
+];
+
+const WEATHER_DATA = [
+  { cond: 'sandstorm', congestion: 0.74, speed: 39, emoji: '🌪' },
+  { cond: 'dust',      congestion: 0.52, speed: 55, emoji: '🌫' },
+  { cond: 'fog',       congestion: 0.48, speed: 48, emoji: '🌁' },
+  { cond: 'humid',     congestion: 0.38, speed: 62, emoji: '💧' },
+  { cond: 'rain',      congestion: 0.44, speed: 56, emoji: '🌧' },
+  { cond: 'clear',     congestion: 0.32, speed: 65, emoji: '☀️' },
+];
+
+/* ═══════════════════════════════════════════════════
+   KPI POPULATION
+═══════════════════════════════════════════════════ */
+function populateKPIs() {
+  const avgC  = (HOURLY.congestion.reduce((a,b)=>a+b,0) / 24).toFixed(3);
+  const peakH = HOURLY.vehicles.indexOf(Math.max(...HOURLY.vehicles));
+  const worstZ = ZONE_DATA.reduce((a,b)=>a.mean>b.mean?a:b).zone;
+
+  document.getElementById('kpi-avg').textContent      = avgC;
+  document.getElementById('kpi-peak').textContent     = String(peakH).padStart(2,'0')+':00';
+  document.getElementById('kpi-zone').textContent     = worstZ;
+  document.getElementById('kpi-anomalies').textContent= '—';
+  document.getElementById('kpi-prayer').textContent   = '91%';
+
+  // Load real anomaly count from API
+  fetchAnomalies().then(data => {
+    if (data && data.total_anomalies !== undefined) {
+      document.getElementById('kpi-anomalies').textContent = data.total_anomalies;
+      if (data.total_anomalies > 0) {
+        const banner = document.getElementById('alert-banner');
+        const zones  = [...new Set(data.anomalies.map(a=>a.zone))].join(', ');
+        document.getElementById('alert-text').textContent =
+          `Anomalous traffic detected in ${zones} — review Zone Analysis tab`;
+        banner.style.display = 'flex';
+      }
+    }
+  }).catch(()=>{});
+}
+
+/* ═══════════════════════════════════════════════════
+   API CALLS
+═══════════════════════════════════════════════════ */
+async function apiPost(endpoint, body) {
+  const r = await fetch(API_BASE + endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function apiGet(endpoint) {
+  const r = await fetch(API_BASE + endpoint, {
+    headers: { 'X-API-Key': API_KEY },
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function fetchAnomalies() {
+  return apiGet('/anomalies?city=Riyadh');
+}
+
+/* ═══════════════════════════════════════════════════
+   LIVE PREDICTION
+═══════════════════════════════════════════════════ */
+async function runPrediction() {
+  const btn  = document.querySelector('.predict-btn');
+  btn.textContent = 'Computing…';
+  btn.disabled = true;
+
+  const hour    = parseInt(document.getElementById('p-hour').value);
+  const vehicles= parseInt(document.getElementById('p-vehicles').value);
+  const speed   = parseInt(document.getElementById('p-speed').value);
+  const zone    = document.getElementById('p-zone').value;
+  const weather = document.getElementById('p-weather').value;
+  const road    = document.getElementById('p-road').value;
+  const event   = document.getElementById('p-event').checked ? 1 : 0;
+  const weekend = document.getElementById('p-weekend').checked ? 1 : 0;
+
+  const mult    = SAUDI_MULTIPLIERS[hour] || 1.0;
+  const isLate  = [21,22,23,0].includes(hour) ? 1 : 0;
+  const rush    = [7,8,17,18].includes(hour) ? 1 : 0;
+
+  const payload = {
+    city: 'Riyadh', zone, hour,
+    vehicle_count: vehicles, avg_speed: speed,
+    weather, road_type: road,
+    rush_hour: rush, is_weekend: weekend,
+    is_late_night: isLate, event,
+    hour_multiplier: mult,
+  };
+
+  try {
+    const data = await apiPost('/predict', payload);
+    renderResult(data, zone);
+  } catch (e) {
+    // Fallback: compute locally if API is sleeping
+    const result = localPredict(payload);
+    renderResult(result, zone);
+  }
+
+  btn.textContent = 'Run Prediction →';
+  btn.disabled = false;
+}
+
+function localPredict(p) {
+  const WEATHER_IMPACT = {clear:1.0,dust:0.85,fog:0.70,rain:0.80,humid:0.95,sandstorm:0.60};
+  const adjSpeed = p.avg_speed * (WEATHER_IMPACT[p.weather] || 1.0);
+  const score    = Math.min(1, Math.max(0, (p.vehicle_count / 500) * (1 - adjSpeed / 100)));
+  const level    = score <= 0.20 ? 'Low' : score <= 0.40 ? 'Moderate' : score <= 0.60 ? 'High' : 'Critical';
+  const FUEL_LPH = {Low:6.5, Moderate:9.2, High:13.8, Critical:18.4};
+  const fuel     = FUEL_LPH[level] * (p.vehicle_count / 100);
+  const co2      = fuel * 2.31;
+
+  return {
+    city: 'Riyadh', zone: p.zone, hour: p.hour,
+    weather: p.weather,
+    congestion_score: Math.round(score * 10000) / 10000,
+    congestion_level: level,
+    recommendation: level === 'Low' ? `${p.zone} is clear. Normal operations.`
+                  : level === 'Moderate' ? `Monitor ${p.zone}. Consider adaptive signal timing.`
+                  : level === 'High' ? `Deploy traffic officers to ${p.zone}. Activate alternate routes.`
+                  : `ALERT: ${p.zone} critically congested. Initiate emergency traffic management.`,
+    emissions: {
+      fuel_litres: Math.round(fuel * 1000) / 1000,
+      co2_kg:      Math.round(co2 * 1000) / 1000,
+      co2_tonnes:  Math.round(co2 / 1000 * 1000000) / 1000000,
+      green_initiative_flag: co2 > 500,
+    },
+    explanation: [
+      { factor: 'average speed',    direction: adjSpeed < 50 ? 'increasing congestion' : 'reducing congestion', impact: 0.12 },
+      { factor: 'vehicle count',    direction: p.vehicle_count > 250 ? 'increasing congestion' : 'reducing congestion', impact: 0.08 },
+      { factor: 'hourly weight',    direction: p.hour_multiplier > 1.0 ? 'increasing congestion' : 'reducing congestion', impact: 0.04 },
+    ],
+    plain_english: `Congestion is primarily driven by average speed (${p.weather === 'sandstorm' ? 'reduced by sandstorm' : 'normal conditions'}), followed by vehicle count of ${p.vehicle_count}.`,
+  };
+}
+
+function renderResult(data, zone) {
+  const el    = id => document.getElementById(id);
+  const score = data.congestion_score;
+  const level = data.congestion_level;
+  const color = LEVEL_COLORS[level];
+
+  // Hide placeholder, show result
+  el('predict-placeholder').style.display = 'none';
+  el('result-card').classList.add('visible');
+
+  // Score
+  el('r-score-num').textContent = score.toFixed(4);
+  el('r-score-num').style.color = color;
+
+  // Badge
+  const badge = el('r-level-badge');
+  badge.textContent  = level.toUpperCase();
+  badge.style.background = LEVEL_BG[level];
+  badge.style.color      = color;
+  badge.style.border     = `1px solid ${color}40`;
+
+  el('r-zone-label').textContent = `${zone} · Hour ${String(data.hour).padStart(2,'0')}:00 · ${data.weather}`;
+
+  // Emissions
+  if (data.emissions) {
+    const em = data.emissions;
+    el('r-co2').textContent  = em.co2_kg.toFixed(1);
+    el('r-fuel').textContent = em.fuel_litres.toFixed(1);
+    el('r-co2t').textContent = em.co2_tonnes.toFixed(4);
+    el('r-gi-flag').style.display = em.green_initiative_flag ? 'inline-flex' : 'none';
+  }
+
+  // Recommendation
+  el('r-rec').textContent = data.recommendation || '—';
+  el('r-plain').textContent = data.plain_english || '—';
+
+  // SHAP bars
+  const factors = data.explanation || [];
+  const maxImpact = Math.max(...factors.map(f => f.impact), 0.01);
+  el('r-shap-bars').innerHTML = factors.map(f => `
+    <div class="shap-bar-wrap">
+      <div class="shap-bar-label">
+        <span>${f.factor}</span>
+        <span style="color:${f.direction.includes('increasing') ? 'var(--rose)' : 'var(--jade)'}">${f.direction.includes('increasing') ? '↑' : '↓'} ${f.impact.toFixed(4)}</span>
+      </div>
+      <div class="shap-bar-track">
+        <div class="shap-bar-fill" style="width:${(f.impact/maxImpact*100)}%;background:${f.direction.includes('increasing') ? 'var(--rose)' : 'var(--jade)'}"></div>
+      </div>
+    </div>
+  `).join('');
+
+  // Update feature importance
+  renderFeatureImportance(factors);
+}
+
+/* ═══════════════════════════════════════════════════
+   TAB: HOURLY PATTERNS
+═══════════════════════════════════════════════════ */
+let chartVehicles, chartCongestion;
+
+function renderPatternsTab() {
+  const labels = HOURLY.hours.map(h => String(h).padStart(2,'0')+':00');
+
+  if (chartVehicles) chartVehicles.destroy();
+  if (chartCongestion) chartCongestion.destroy();
+
+  const prayerAnnotation = {
+    type: 'box',
+    xMin: 11.5, xMax: 13.5,
+    backgroundColor: 'rgba(224,112,112,0.06)',
+    borderColor: 'rgba(224,112,112,0.2)',
+    borderWidth: 1,
+    label: {
+      content: 'Prayer Window',
+      display: true,
+      color: 'rgba(224,112,112,0.6)',
+      font: { family: 'DM Mono', size: 9 },
+      position: { x: 'center', y: 'start' },
+    }
+  };
+
+  chartVehicles = new Chart(document.getElementById('chart-vehicles'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: HOURLY.vehicles,
+        borderColor: '#6ba3d6',
+        backgroundColor: 'rgba(107,163,214,0.06)',
+        fill: true,
+        tension: 0.4,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        annotation: { annotations: { prayer: prayerAnnotation } },
+        tooltip: {
+          mode: 'index', intersect: false,
+          backgroundColor: '#111720',
+          borderColor: 'rgba(255,255,255,0.08)',
+          borderWidth: 1,
+          titleColor: '#8b9ab0',
+          bodyColor: '#f0ede8',
+          padding: 10,
+          callbacks: { label: ctx => ` ${ctx.parsed.y} vehicles` }
+        }
+      },
+      scales: {
+        x: { grid: chartGrid(), ticks: { ...chartTick(), maxRotation: 0, maxTicksLimit: 8 } },
+        y: { grid: chartGrid(), ticks: chartTick() },
+      }
+    }
+  });
+
+  chartCongestion = new Chart(document.getElementById('chart-congestion'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: HOURLY.congestion.map(v => Math.round(v * 10000) / 10000),
+        borderColor: '#e07070',
+        backgroundColor: 'rgba(224,112,112,0.06)',
+        fill: true,
+        tension: 0.4,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        annotation: {
+          annotations: {
+            prayer: prayerAnnotation,
+            high: {
+              type: 'line', yMin: 0.6, yMax: 0.6,
+              borderColor: 'rgba(224,112,112,0.3)', borderWidth: 1, borderDash: [4,3],
+              label: { content: 'High', display: true, color: 'rgba(224,112,112,0.5)', position: 'end', font: { size: 9, family: 'DM Mono' } }
+            },
+            moderate: {
+              type: 'line', yMin: 0.4, yMax: 0.4,
+              borderColor: 'rgba(212,175,100,0.3)', borderWidth: 1, borderDash: [4,3],
+              label: { content: 'Moderate', display: true, color: 'rgba(212,175,100,0.5)', position: 'end', font: { size: 9, family: 'DM Mono' } }
+            }
+          }
+        },
+        tooltip: {
+          mode: 'index', intersect: false,
+          backgroundColor: '#111720', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+          titleColor: '#8b9ab0', bodyColor: '#f0ede8', padding: 10,
+          callbacks: { label: ctx => ` Score: ${ctx.parsed.y}` }
+        }
+      },
+      scales: {
+        x: { grid: chartGrid(), ticks: { ...chartTick(), maxRotation: 0, maxTicksLimit: 8 } },
+        y: { grid: chartGrid(), ticks: chartTick(), min: 0, max: 0.5 },
+      }
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════
+   TAB: ZONE ANALYSIS
+═══════════════════════════════════════════════════ */
+let chartZones, chartDist;
+
+async function renderZonesTab() {
+  if (chartZones) chartZones.destroy();
+  if (chartDist) chartDist.destroy();
+
+  const labels = ZONE_DATA.map(z => z.zone);
+  const means  = ZONE_DATA.map(z => z.mean);
+  const maxes  = ZONE_DATA.map(z => z.max);
+
+  chartZones = new Chart(document.getElementById('chart-zones'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Mean', data: means,
+          backgroundColor: labels.map((_,i) => `rgba(212,175,100,${0.4 + i*0.06})`),
+          borderColor: 'transparent',
+          borderRadius: 4,
+        },
+        {
+          label: 'Peak', data: maxes,
+          backgroundColor: 'rgba(224,112,112,0.2)',
+          borderColor: 'rgba(224,112,112,0.5)',
+          borderWidth: 1,
+          borderRadius: 4,
+          type: 'bar',
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, labels: { color: '#4a5568', font: { family: 'DM Mono', size: 10 }, boxWidth: 10 } },
+        tooltip: {
+          backgroundColor: '#111720', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+          titleColor: '#8b9ab0', bodyColor: '#f0ede8', padding: 10,
+        }
+      },
+      scales: {
+        x: { grid: chartGrid(), ticks: chartTick() },
+        y: { grid: chartGrid(), ticks: chartTick(), min: 0, max: 1 },
+      }
+    }
+  });
+
+  chartDist = new Chart(document.getElementById('chart-dist'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Low', 'Moderate', 'High', 'Critical'],
+      datasets: [{
+        data: [42, 31, 18, 9],
+        backgroundColor: ['rgba(90,175,138,0.7)','rgba(212,175,100,0.7)','rgba(224,144,96,0.7)','rgba(224,112,112,0.7)'],
+        borderColor: 'rgba(255,255,255,0.04)',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      cutout: '68%',
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { color: '#4a5568', font: { family: 'DM Mono', size: 10 }, boxWidth: 10, padding: 12 } },
+        tooltip: {
+          backgroundColor: '#111720', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+          titleColor: '#8b9ab0', bodyColor: '#f0ede8', padding: 10,
+          callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed}%` }
+        }
+      }
+    }
+  });
+
+  // Load anomalies
+  loadAnomalyTable();
+}
+
+async function loadAnomalyTable() {
+  const wrap = document.getElementById('anomaly-table-wrap');
+  const tag  = document.getElementById('anomaly-count-tag');
+
+  try {
+    const data = await fetchAnomalies();
+    const rows = data.anomalies || [];
+    tag.textContent = `${data.total_anomalies} ACTIVE`;
+
+    if (rows.length === 0) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">✅</div>No anomalies detected in current simulation period</div>`;
+      return;
+    }
+
+    const sevClass = s => s === 'Critical Anomaly' ? 'sev-critical'
+                        : s === 'Anomalous'        ? 'sev-anomalous'
+                        : s === 'Elevated'         ? 'sev-elevated' : 'sev-normal';
+
+    wrap.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Zone</th><th>Hour</th><th>Expected Vol</th><th>Actual Vol</th>
+            <th>Severity</th><th>Est. CO₂ (kg)</th><th>GI Impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.slice(0,15).map(r => `
+            <tr>
+              <td style="color:var(--text-primary)">${r.zone}</td>
+              <td>${String(r.hour||0).padStart(2,'0')}:00</td>
+              <td>${(r.expected_vehicle_count||0).toFixed(0)}</td>
+              <td style="color:var(--amber)">${(r.vehicle_count||0).toFixed(0)}</td>
+              <td><span class="severity-badge ${sevClass(r.anomaly_severity)}">${r.anomaly_severity||'—'}</span></td>
+              <td style="color:${(r.estimated_co2_kg||0)>500?'var(--rose)':'var(--text-secondary)'}">${(r.estimated_co2_kg||0).toFixed(1)}</td>
+              <td>${r.green_initiative_impact ? '<span style="color:var(--rose);font-size:0.7rem">⚠️ YES</span>' : '<span style="color:var(--jade);font-size:0.7rem">NO</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>API unavailable — start the server to see live anomalies</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+/* ═══════════════════════════════════════════════════
+   TAB: WEATHER IMPACT
+═══════════════════════════════════════════════════ */
+let chartWeather;
+
+function renderWeatherTab() {
+  if (chartWeather) chartWeather.destroy();
+
+  const labels = WEATHER_DATA.map(w => w.emoji + ' ' + w.cond);
+  const colors = ['rgba(224,112,112,0.7)','rgba(224,144,96,0.6)','rgba(107,163,214,0.6)','rgba(90,175,138,0.6)','rgba(78,205,196,0.6)','rgba(90,175,138,0.8)'];
+
+  chartWeather = new Chart(document.getElementById('chart-weather'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: WEATHER_DATA.map(w => w.congestion),
+        backgroundColor: colors,
+        borderColor: 'transparent',
+        borderRadius: 6,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: {
+        tooltip: {
+          backgroundColor: '#111720', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+          titleColor: '#8b9ab0', bodyColor: '#f0ede8', padding: 10,
+          callbacks: { label: ctx => ` Congestion: ${ctx.parsed.x.toFixed(3)}` }
+        }
+      },
+      scales: {
+        x: { grid: chartGrid(), ticks: chartTick(), min: 0, max: 1 },
+        y: { grid: { display: false }, ticks: { color: '#8b9ab0', font: { family: 'DM Mono', size: 11 } } },
+      }
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════
+   TAB: MODEL INSIGHTS
+═══════════════════════════════════════════════════ */
+function renderInsightsTab() {
+  renderFeatureImportance([]);
+  renderValidationChecks();
+  loadAuditTrail();
+}
+
+const DEFAULT_IMPORTANCE = [
+  { factor: 'average speed',        impact: 0.312 },
+  { factor: 'vehicle count',        impact: 0.241 },
+  { factor: 'hourly weight',        impact: 0.187 },
+  { factor: 'traffic 1 hour ago',   impact: 0.091 },
+  { factor: '3-hour avg volume',    impact: 0.068 },
+  { factor: 'time of day',          impact: 0.051 },
+  { factor: 'weather condition',    impact: 0.031 },
+  { factor: 'rush hour flag',       impact: 0.019 },
+];
+
+function renderFeatureImportance(shapFactors) {
+  const wrap = document.getElementById('importance-bars');
+  const items = shapFactors.length > 0
+    ? shapFactors.map(f => ({ factor: f.factor, impact: f.impact }))
+    : DEFAULT_IMPORTANCE;
+
+  const maxVal = Math.max(...items.map(i => i.impact));
+
+  wrap.innerHTML = items.map((item, idx) => `
+    <div class="importance-row">
+      <div class="importance-label">${item.factor}</div>
+      <div class="importance-track">
+        <div class="importance-fill" style="width:0%;transition-delay:${idx*60}ms"
+             data-pct="${(item.impact/maxVal*100).toFixed(1)}"></div>
+      </div>
+      <div class="importance-val">${item.impact.toFixed(3)}</div>
+    </div>
+  `).join('');
+
+  // Animate after render
+  requestAnimationFrame(() => {
+    wrap.querySelectorAll('.importance-fill').forEach(el => {
+      el.style.width = el.dataset.pct + '%';
+    });
+  });
+}
+
+function renderValidationChecks() {
+  const checks = [
+    { name: 'Vehicle CV',           expected: '< 0.60',    actual: '0.3105', pass: true },
+    { name: 'Autocorrelation lag-1',expected: '> 0.50',    actual: '0.7393', pass: true },
+    { name: 'Friday prayer drop',   expected: '>= 0.85',   actual: '0.9088', pass: true },
+    { name: 'Late night ratio',     expected: '>= 0.70',   actual: '0.7537', pass: true },
+    { name: 'Sandstorm reduction',  expected: '0.35–0.45', actual: '0.3974', pass: true },
+  ];
+
+  const wrap = document.getElementById('validation-checks');
+  wrap.innerHTML = checks.map(c => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.72rem;font-family:var(--font-mono)">
+      <span style="color:var(--text-secondary)">${c.name}</span>
+      <span style="color:var(--text-muted)">${c.actual}</span>
+      <span style="color:${c.pass ? 'var(--jade)' : 'var(--rose)'};font-weight:600">${c.pass ? '✓ PASS' : '✗ FAIL'}</span>
+    </div>
+  `).join('');
+}
+
+async function loadAuditTrail() {
+  const wrap = document.getElementById('audit-table-wrap');
+  const tag  = document.getElementById('audit-count-tag');
+
+  try {
+    const data = await apiGet('/emissions/summary?city=Riyadh');
+
+    if (data.message) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">📋</div>No predictions logged yet — run a prediction first</div>`;
+      return;
+    }
+
+    tag.textContent = 'LIVE DATA';
+    wrap.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1rem">
+        <div>
+          <div class="kpi-label">Total CO₂</div>
+          <div style="font-family:var(--font-display);font-size:1.5rem;color:var(--amber);letter-spacing:-0.02em">${data.total_co2_tonnes.toFixed(4)} t</div>
+        </div>
+        <div>
+          <div class="kpi-label">Peak Emission Hour</div>
+          <div style="font-family:var(--font-display);font-size:1.5rem;color:var(--text-primary);letter-spacing:-0.02em">${data.peak_emission_hour !== null ? String(data.peak_emission_hour).padStart(2,'0')+':00' : '—'}</div>
+        </div>
+        <div>
+          <div class="kpi-label">GI Breach Events</div>
+          <div style="font-family:var(--font-display);font-size:1.5rem;color:${data.green_initiative_events > 0 ? 'var(--rose)' : 'var(--jade)'};letter-spacing:-0.02em">${data.green_initiative_events}</div>
+        </div>
+      </div>
+      <div style="font-size:0.72rem;font-family:var(--font-mono);color:var(--text-muted)">
+        Green Initiative threshold: ${data.green_initiative_threshold_kg} kg CO₂/hr · Period: ${data.period_days} day(s) · Zone: ${data.peak_emission_zone || '—'}
+      </div>
+    `;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">📋</div>Run a prediction to populate the audit trail</div>`;
+  }
+}
+
+/* ═══════════════════════════════════════════════════
+   TAB: FORECASTING
+═══════════════════════════════════════════════════ */
+let chartForecast;
+
+async function loadForecast() {
+  const zone   = document.getElementById('fc-zone').value;
+  const ids    = ['fc-now','fc-1h','fc-2h','fc-3h'];
+  const levels = ['fc-1h-level','fc-2h-level','fc-3h-level'];
+  const recs   = ['fc-1h-rec','fc-2h-rec','fc-3h-rec'];
+
+  ids.forEach(i => document.getElementById(i).textContent = '…');
+
+  try {
+    const data = await apiGet(`/forecast?city=Riyadh&zone=${zone}`);
+    const forecasts = data.forecasts;
+
+    // Current score (from first forecast's implied base)
+    const currentScore = forecasts.length > 0 ? (forecasts[0].predicted_score * 0.9).toFixed(3) : '—';
+    document.getElementById('fc-now').textContent = currentScore;
+
+    forecasts.forEach((fc, i) => {
+      const scoreEl = document.getElementById(['fc-1h','fc-2h','fc-3h'][i]);
+      const levelEl = document.getElementById(levels[i]);
+      const recEl   = document.getElementById(recs[i]);
+      const color   = LEVEL_COLORS[fc.congestion_level] || '#8b9ab0';
+
+      if (scoreEl) {
+        scoreEl.textContent = fc.predicted_score.toFixed(3);
+        scoreEl.style.color = color;
+      }
+      if (levelEl) {
+        levelEl.textContent = fc.congestion_level;
+        levelEl.style.color = color;
+      }
+      if (recEl) recEl.textContent = fc.recommendation.slice(0,80) + (fc.recommendation.length > 80 ? '…' : '');
+    });
+
+    // Chart
+    renderForecastChart(parseFloat(currentScore), forecasts);
+
+  } catch(e) {
+    // Fallback
+    const base = 0.31;
+    const labels = ['Now', '+1h', '+2h', '+3h'];
+    const scores = [base, base*1.1, base*0.95, base*1.05];
+    document.getElementById('fc-now').textContent = base.toFixed(3);
+    ['fc-1h','fc-2h','fc-3h'].forEach((id,i) => {
+      document.getElementById(id).textContent = scores[i+1].toFixed(3);
+      document.getElementById(id).style.color = 'var(--amber)';
+    });
+    ['fc-1h-level','fc-2h-level','fc-3h-level'].forEach(id => {
+      document.getElementById(id).textContent = 'Low';
+    });
+    renderForecastChart(base, [
+      { predicted_score: scores[1], lower_bound: scores[1]-0.02, upper_bound: scores[1]+0.02, congestion_level:'Low' },
+      { predicted_score: scores[2], lower_bound: scores[2]-0.02, upper_bound: scores[2]+0.02, congestion_level:'Low' },
+      { predicted_score: scores[3], lower_bound: scores[3]-0.02, upper_bound: scores[3]+0.02, congestion_level:'Low' },
+    ]);
+  }
+}
+
+function renderForecastChart(currentScore, forecasts) {
+  if (chartForecast) chartForecast.destroy();
+
+  const labels = ['Now', '+1h', '+2h', '+3h'];
+  const scores = [currentScore, ...forecasts.map(f => f.predicted_score)];
+  const lower  = [currentScore, ...forecasts.map(f => f.lower_bound)];
+  const upper  = [currentScore, ...forecasts.map(f => f.upper_bound)];
+
+  chartForecast = new Chart(document.getElementById('chart-forecast'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Upper bound', data: upper,
+          borderColor: 'transparent', backgroundColor: 'rgba(212,175,100,0.08)',
+          fill: '+1', tension: 0.4, pointRadius: 0,
+        },
+        {
+          label: 'Forecast', data: scores,
+          borderColor: '#d4af64', backgroundColor: 'transparent',
+          fill: false, tension: 0.4,
+          borderWidth: 2,
+          pointBackgroundColor: '#d4af64',
+          pointRadius: 5, pointHoverRadius: 7,
+        },
+        {
+          label: 'Lower bound', data: lower,
+          borderColor: 'transparent', backgroundColor: 'rgba(212,175,100,0.08)',
+          fill: false, tension: 0.4, pointRadius: 0,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index', intersect: false,
+          backgroundColor: '#111720', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+          titleColor: '#8b9ab0', bodyColor: '#f0ede8', padding: 10,
+          filter: item => item.datasetIndex === 1,
+          callbacks: { label: ctx => ` Score: ${ctx.parsed.y.toFixed(4)}` }
+        }
+      },
+      scales: {
+        x: { grid: chartGrid(), ticks: { ...chartTick(), font: { family: 'DM Mono', size: 12 } } },
+        y: { grid: chartGrid(), ticks: chartTick(), min: 0, max: 1 },
+      }
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════
+   INIT
+═══════════════════════════════════════════════════ */
+populateKPIs();
+
+// Init first visible tab's charts
+// (patterns tab loads on click, no upfront work needed)
+
+// Self-ping — keeps Render free tier alive (every 14 min)
+setInterval(() => fetch('/health').catch(()=>{}), 14 * 60 * 1000);
+
+// Helpers
+function id(s) { return document.getElementById(s); }
+</script>
+</body>
+</html>

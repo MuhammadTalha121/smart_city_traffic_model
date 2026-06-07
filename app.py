@@ -1,12 +1,14 @@
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -29,8 +31,11 @@ load_dotenv()
 API_KEY         = os.getenv("API_KEY")
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:8501,http://localhost:3000",
+    "http://localhost:3000",
 ).split(",")
+
+# Dashboard HTML path — sits next to app.py
+DASHBOARD_PATH = Path(__file__).parent / "dashboard.html"
 
 limiter        = Limiter(key_func=get_remote_address)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -62,14 +67,14 @@ async def lifespan(app: FastAPI):
     df = apply_hourly_patterns(df, city="Riyadh")
     df = add_lag_features(df)
 
-    X, y, feature_cols    = prepare_features(df)
-    model, _, _           = train_xgboost(X, y)
+    X, y, feature_cols = prepare_features(df)
+    model, _, _        = train_xgboost(X, y)
 
-    app.state.df              = df
-    app.state.model           = model
-    app.state.feature_cols    = feature_cols
-    app.state.data_source     = "mock"
-    app.state.last_retrain    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    app.state.df           = df
+    app.state.model        = model
+    app.state.feature_cols = feature_cols
+    app.state.data_source  = "mock"
+    app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
     scheduler.start()
@@ -123,24 +128,71 @@ class BatchPredictRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Public endpoints — no auth required
+# Dashboard — no auth required
 # ---------------------------------------------------------------------------
 
-@app.get("/", tags=["info"])
-def root():
-    return {
-        "service"     : "Smart City Traffic Intelligence API",
-        "version"     : "4.1.0",
-        "status"      : "operational",
-        "data_source" : app.state.data_source,
-        "docs"        : "/docs",
-    }
+@app.get("/", response_class=HTMLResponse, tags=["dashboard"])
+def dashboard_root():
+    """
+    Serve the dashboard at root so the Render URL opens straight to the UI.
+    The API key is injected into the HTML at serve time so the dashboard
+    can call protected endpoints without exposing the key in the client URL.
+    """
+    if not DASHBOARD_PATH.exists():
+        return HTMLResponse(
+            content="<h2>dashboard.html not found — place it next to app.py</h2>",
+            status_code=404,
+        )
 
+    html = DASHBOARD_PATH.read_text(encoding="utf-8")
+
+    # Inject the API key so the dashboard JS can call /predict etc.
+    # The key is embedded in a JS variable scoped to the page — never
+    # appears in the URL or network logs as a query parameter.
+    injection = f"""
+<script>
+  // Injected at serve time — not committed to source control
+  window.__DASHBOARD_KEY__ = "{API_KEY or ''}";
+</script>
+"""
+    html = html.replace("</head>", injection + "</head>", 1)
+
+    # Replace the placeholder API_KEY reader with the injected value
+    html = html.replace(
+        "const API_KEY  = document.cookie.replace(/(?:(?:^|.*;\\s*)dk\\s*=\\s*([^;]*).*$)|^.*$/, '$1') || '';",
+        "const API_KEY  = window.__DASHBOARD_KEY__ || '';",
+    )
+
+    return HTMLResponse(content=html)
+
+
+@app.get("/dashboard", response_class=HTMLResponse, tags=["dashboard"])
+def dashboard_alias():
+    """Alias so /dashboard also works alongside the root route."""
+    return dashboard_root()
+
+
+# ---------------------------------------------------------------------------
+# Public info endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/health", tags=["info"])
 def health():
-    """Health check — no authentication required."""
-    return {"status": "healthy"}
+    """Health check — no authentication required. Used by self-ping."""
+    return {"status": "healthy", "version": "4.1.0"}
+
+
+@app.get("/api/info", tags=["info"])
+def api_info():
+    """Machine-readable service info — no auth required."""
+    return {
+        "service"    : "Smart City Traffic Intelligence API",
+        "version"    : "4.1.0",
+        "status"     : "operational",
+        "data_source": app.state.data_source,
+        "docs"       : "/docs",
+        "dashboard"  : "/",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +227,8 @@ def set_data_source(
             detail=f"Invalid source '{source}'. Choose from: {VALID_SOURCES}"
         )
     try:
-        adapter   = get_adapter(source)
-        sample_df = adapter.fetch(city)
+        adapter        = get_adapter(source)
+        sample_df      = adapter.fetch(city)
         app.state.data_source = source
         return {
             "active_source": source,
@@ -196,27 +248,23 @@ def set_data_source(
 @app.get("/pipeline/status", tags=["pipeline"])
 def pipeline_status(_key: str = Depends(require_api_key)):
     """Return current drift score and last retrain timestamp."""
-    drift_score    = compute_drift_score()
-    next_scheduled = "03:00 daily"
-
+    drift_score = compute_drift_score()
     return {
         "drift_score"    : drift_score,
         "drift_threshold": 1.3,
         "needs_retrain"  : drift_score >= 1.3,
         "last_retrain"   : app.state.last_retrain,
-        "next_scheduled" : next_scheduled,
+        "next_scheduled" : "03:00 daily",
     }
 
 
 @app.post("/pipeline/trigger", tags=["pipeline"])
 def pipeline_trigger(_key: str = Depends(require_api_key)):
-    """Manually trigger a pipeline run. Retrains if drift threshold is exceeded."""
+    """Manually trigger a pipeline run."""
     print(f"[Pipeline] Manual trigger at {datetime.now()}")
     result = run_pipeline(city="Riyadh")
-
     if result["retrained"]:
         app.state.last_retrain = result["timestamp"]
-
     return result
 
 
@@ -231,10 +279,7 @@ def predict(
     payload: PredictRequest,
     _key:    str = Depends(require_api_key),
 ):
-    """
-    Single zone prediction with SHAP explanation and emissions estimate.
-    60 req/min per IP.
-    """
+    """Single zone prediction with SHAP explanation and emissions estimate."""
     p      = payload.model_dump()
     result = predict_single(
         city            = p["city"],
@@ -274,7 +319,6 @@ def predict(
     X_row       = pd.DataFrame([row])[app.state.feature_cols]
     explanation = explain_prediction(app.state.model, X_row, app.state.feature_cols)
 
-    # Emissions estimate for this zone and hour
     emissions = compute_emissions(
         congestion_level_str = result["congestion_level"],
         vehicle_count        = p["vehicle_count"],
@@ -297,7 +341,7 @@ def predict_batch(
     payload: BatchPredictRequest,
     _key:    str = Depends(require_api_key),
 ):
-    """Batch prediction for up to 20 zones. 20 req/min per IP."""
+    """Batch prediction for up to 20 zones."""
     results = []
     for item in payload.predictions:
         p = item.model_dump()
@@ -318,7 +362,6 @@ def predict_batch(
         r["emissions"] = compute_emissions(
             congestion_level_str = r["congestion_level"],
             vehicle_count        = p["vehicle_count"],
-            duration_hours       = 1.0,
         )
         results.append(r)
     return {"city": payload.predictions[0].city, "results": results}
@@ -335,19 +378,18 @@ def anomalies(
     city:    str = "Riyadh",
     _key:    str = Depends(require_api_key),
 ):
-    """Current anomalies across all zones. 20 req/min per IP."""
+    """Current anomalies across all zones."""
     df         = app.state.df[app.state.df["city"] == city]
     anomaly_df = detect_anomalies(df)
     flagged    = anomaly_df[anomaly_df["anomaly_flag"] == 1].copy()
 
-    # Add estimated CO2 to each anomaly record and flag Green Initiative breaches
     records = []
     for rec in flagged.to_dict(orient="records"):
-        level      = rec.get("congestion_level") if "congestion_level" in rec else "High"
-        count      = rec.get("vehicle_count", 100)
-        emissions  = compute_emissions(level, count)
-        rec["estimated_co2_kg"]          = emissions["co2_kg"]
-        rec["green_initiative_impact"]   = emissions["co2_kg"] > GREEN_INITIATIVE_CO2_THRESHOLD_KG
+        level    = rec.get("congestion_level", "High") if "congestion_level" in rec else "High"
+        count    = rec.get("vehicle_count", 100)
+        em       = compute_emissions(level, count)
+        rec["estimated_co2_kg"]        = em["co2_kg"]
+        rec["green_initiative_impact"] = em["co2_kg"] > GREEN_INITIATIVE_CO2_THRESHOLD_KG
         records.append(rec)
 
     return {
@@ -366,13 +408,15 @@ def forecast(
     _key:    str = Depends(require_api_key),
 ):
     """1h / 2h / 3h congestion forecast with confidence intervals."""
-    df        = app.state.df[(app.state.df["city"] == city) & (app.state.df["zone"] == zone)]
+    df        = app.state.df[
+        (app.state.df["city"] == city) & (app.state.df["zone"] == zone)
+    ]
     forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
     return {"city": city, "zone": zone, "forecasts": forecasts}
 
 
 # ---------------------------------------------------------------------------
-# Emissions endpoints — authenticated  (PROMPT 011)
+# Emissions endpoints — authenticated
 # ---------------------------------------------------------------------------
 
 @app.get("/emissions/summary", tags=["emissions"])
@@ -380,47 +424,37 @@ def emissions_summary(
     city: str = "Riyadh",
     _key: str = Depends(require_api_key),
 ):
-    """
-    Aggregate CO2 emissions summary derived from the predictions audit log.
-
-    Reads predictions_log.csv and returns:
-    - total_co2_tonnes   : cumulative CO2 across all logged predictions
-    - peak_emission_hour : hour of day with highest average co2_kg
-    - peak_emission_zone : zone with highest cumulative co2_kg
-    - green_initiative_events : number of predictions that exceeded the threshold
-    - period_days        : span of the log in days
-    """
+    """Aggregate CO2 emissions summary from the predictions audit log."""
     log_path = "predictions_log.csv"
 
     if not os.path.exists(log_path):
         return {
-            "city"                    : city,
-            "message"                 : "No predictions logged yet. Call /predict to populate the log.",
-            "total_co2_tonnes"        : 0.0,
-            "peak_emission_hour"      : None,
-            "peak_emission_zone"      : None,
-            "green_initiative_events" : 0,
-            "period_days"             : 0,
+            "city"                         : city,
+            "message"                      : "No predictions logged yet.",
+            "total_co2_tonnes"             : 0.0,
+            "peak_emission_hour"           : None,
+            "peak_emission_zone"           : None,
+            "green_initiative_events"      : 0,
+            "period_days"                  : 0,
+            "green_initiative_threshold_kg": GREEN_INITIATIVE_CO2_THRESHOLD_KG,
         }
 
     log_df = pd.read_csv(log_path)
-
-    # Filter by city if the column exists
     if "city" in log_df.columns:
         log_df = log_df[log_df["city"] == city]
 
     if log_df.empty:
         return {
-            "city"                    : city,
-            "message"                 : f"No predictions logged for {city}.",
-            "total_co2_tonnes"        : 0.0,
-            "peak_emission_hour"      : None,
-            "peak_emission_zone"      : None,
-            "green_initiative_events" : 0,
-            "period_days"             : 0,
+            "city"                         : city,
+            "message"                      : f"No predictions logged for {city}.",
+            "total_co2_tonnes"             : 0.0,
+            "peak_emission_hour"           : None,
+            "peak_emission_zone"           : None,
+            "green_initiative_events"      : 0,
+            "period_days"                  : 0,
+            "green_initiative_threshold_kg": GREEN_INITIATIVE_CO2_THRESHOLD_KG,
         }
 
-    # co2_kg column may be absent in older logs — recompute if needed
     if "co2_kg" not in log_df.columns or log_df["co2_kg"].isna().all():
         log_df["co2_kg"] = log_df.apply(
             lambda r: compute_emissions(
@@ -446,18 +480,18 @@ def emissions_summary(
     period_days = 0
     if "timestamp" in log_df.columns:
         try:
-            timestamps  = pd.to_datetime(log_df["timestamp"], errors="coerce").dropna()
-            if len(timestamps) > 1:
-                period_days = int((timestamps.max() - timestamps.min()).days) + 1
+            ts = pd.to_datetime(log_df["timestamp"], errors="coerce").dropna()
+            if len(ts) > 1:
+                period_days = int((ts.max() - ts.min()).days) + 1
         except Exception:
             pass
 
     return {
-        "city"                    : city,
-        "total_co2_tonnes"        : total_co2_tonnes,
-        "peak_emission_hour"      : peak_hour,
-        "peak_emission_zone"      : peak_zone,
-        "green_initiative_events" : green_events,
-        "period_days"             : period_days,
+        "city"                         : city,
+        "total_co2_tonnes"             : total_co2_tonnes,
+        "peak_emission_hour"           : peak_hour,
+        "peak_emission_zone"           : peak_zone,
+        "green_initiative_events"      : green_events,
+        "period_days"                  : period_days,
         "green_initiative_threshold_kg": GREEN_INITIATIVE_CO2_THRESHOLD_KG,
     }
