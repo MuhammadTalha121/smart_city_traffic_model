@@ -488,6 +488,65 @@ def compute_accident_risk(
     }
 
 
+def compute_signal_timing(
+    congestion_score: float,
+    vehicle_count: float,
+    hour: int,
+    is_weekend: int,
+) -> Dict:
+    """
+    Compute recommended adaptive signal timing for a zone.
+
+    Base cycle is 90 seconds (standard urban cycle).
+    Green phase proportion scales with congestion level:
+    - Low      → 0.35 green
+    - Moderate → 0.45 green
+    - High     → 0.55 green
+    - Critical → 0.65 green
+
+    Saudi-specific overrides:
+    - Friday prayer window (12–13, weekend): 0.20 green — minimal demand
+    - Late night (21–23): 0.70 green — high speed, low volume, maximise throughput
+
+    Returns
+    -------
+    dict with cycle_seconds, green_seconds, red_seconds,
+    phase_ratio, timing_rationale
+    """
+    CYCLE_SECONDS = 90
+
+    level = congestion_level(congestion_score)
+
+    BASE_GREEN_RATIOS = {
+        'Low'     : 0.35,
+        'Moderate': 0.45,
+        'High'    : 0.55,
+        'Critical': 0.65,
+    }
+
+    phase_ratio = BASE_GREEN_RATIOS[level]
+    rationale   = f'{level} congestion — standard {int(phase_ratio * 100)}% green phase'
+
+    # Saudi overrides take precedence over congestion-based ratio
+    if is_weekend and hour in (12, 13):
+        phase_ratio = 0.20
+        rationale   = 'Friday prayer window — minimal demand, reduced green phase'
+    elif hour in (21, 22, 23):
+        phase_ratio = 0.70
+        rationale   = 'Late night — high speed, low volume; extended green for throughput'
+
+    green_seconds = round(CYCLE_SECONDS * phase_ratio)
+    red_seconds   = CYCLE_SECONDS - green_seconds
+
+    return {
+        'cycle_seconds'   : CYCLE_SECONDS,
+        'green_seconds'   : green_seconds,
+        'red_seconds'     : red_seconds,
+        'phase_ratio'     : round(phase_ratio, 2),
+        'timing_rationale': rationale,
+    }
+
+
 def get_intervention(zone: str, hour: int, congestion_level_str: str) -> Dict:
     """
     Return demand-shifting and intervention recommendations for a zone.

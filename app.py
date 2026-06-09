@@ -20,6 +20,7 @@ from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, get_intervention, compute_accident_risk,
+    compute_signal_timing,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -372,6 +373,13 @@ def predict(
         rush_hour        = p["rush_hour"],
     )
 
+    result["signal_timing"] = compute_signal_timing(
+        congestion_score = result["congestion_score"],
+        vehicle_count    = p["vehicle_count"],
+        hour             = p["hour"],
+        is_weekend       = p["is_weekend"],
+    )
+
     log_prediction(result, explanation)
     return result
 
@@ -521,6 +529,51 @@ def safety_hotspots(
         "city"        : city,
         "total_zones" : len(results),
         "hotspots"    : results,
+    }
+
+
+@app.get("/signals/recommended", tags=["signals"])
+@limiter.limit("20/minute")
+def signals_recommended(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Recommended adaptive signal timing for all zones right now,
+    sorted by congestion_score descending. 20 req/min per IP.
+    """
+    df      = app.state.df[app.state.df["city"] == city]
+    zones   = df["zone"].unique()
+    results = []
+
+    for zone in zones:
+        zone_df = df[df["zone"] == zone]
+        latest  = zone_df.sort_values("timestamp").iloc[-1]
+        score   = float(latest["congestion_score"])
+        hour    = int(latest["hour"])
+        is_wknd = int(latest.get("is_weekend", 0))
+        vehicles = float(latest.get("vehicle_count", 0))
+
+        timing = compute_signal_timing(
+            congestion_score = score,
+            vehicle_count    = vehicles,
+            hour             = hour,
+            is_weekend       = is_wknd,
+        )
+        results.append({
+            "zone"            : zone,
+            "hour"            : hour,
+            "congestion_score": round(score, 4),
+            "signal_timing"   : timing,
+        })
+
+    results.sort(key=lambda x: x["congestion_score"], reverse=True)
+
+    return {
+        "city"       : city,
+        "total_zones": len(results),
+        "signals"    : results,
     }
 
 

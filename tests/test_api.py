@@ -205,3 +205,41 @@ def test_safety_hotspots_returns_ranked_list(client):
         assert "risk_level"          in h
         assert "primary_risk_factor" in h
         assert 0.0 <= h["risk_score"] <= 1.0
+
+
+def test_signals_recommended_no_auth_returns_401(client):
+    """/signals/recommended must require authentication."""
+    response = client.get("/signals/recommended?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_signals_recommended_returns_all_zones(client):
+    """/signals/recommended must return signal timing for all zones sorted by congestion."""
+    response = client.get(
+        "/signals/recommended?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "city"        in data
+    assert "total_zones" in data
+    assert "signals"     in data
+    assert isinstance(data["signals"], list)
+    assert len(data["signals"]) == data["total_zones"]
+
+    # Verify sorted descending by congestion_score
+    scores = [s["congestion_score"] for s in data["signals"]]
+    assert scores == sorted(scores, reverse=True), (
+        "Signals not sorted by congestion_score descending"
+    )
+
+    # Verify signal_timing structure on each entry
+    for s in data["signals"]:
+        st = s["signal_timing"]
+        assert "cycle_seconds"    in st
+        assert "green_seconds"    in st
+        assert "red_seconds"      in st
+        assert "phase_ratio"      in st
+        assert "timing_rationale" in st
+        assert st["cycle_seconds"] == 90
+        assert st["green_seconds"] + st["red_seconds"] == 90

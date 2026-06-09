@@ -293,3 +293,41 @@ def test_clear_low_congestion_produces_safe():
         f"Expected Safe, got '{result['risk_level']}' (score={result['risk_score']:.4f})"
     )
     assert 0.0 <= result["risk_score"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# PROMPT 015 — Adaptive signal timing tests
+# ---------------------------------------------------------------------------
+
+def test_critical_congestion_produces_longer_green():
+    """Critical congestion must produce a longer green phase than Low congestion."""
+    from src.model import compute_signal_timing
+
+    low_timing = compute_signal_timing(
+        congestion_score=0.10, vehicle_count=50, hour=10, is_weekend=0
+    )
+    critical_timing = compute_signal_timing(
+        congestion_score=0.85, vehicle_count=450, hour=10, is_weekend=0
+    )
+
+    assert critical_timing["green_seconds"] > low_timing["green_seconds"], (
+        f"Critical green ({critical_timing['green_seconds']}s) not longer than "
+        f"Low green ({low_timing['green_seconds']}s)"
+    )
+    assert critical_timing["phase_ratio"] == 0.65
+    assert low_timing["phase_ratio"] == 0.35
+
+
+def test_prayer_window_produces_short_green():
+    """Friday prayer window (weekend, hour 12-13) must produce reduced green phase."""
+    from src.model import compute_signal_timing
+
+    result = compute_signal_timing(
+        congestion_score=0.50, vehicle_count=200, hour=12, is_weekend=1
+    )
+
+    assert result["phase_ratio"] == 0.20, (
+        f"Prayer window phase_ratio was {result['phase_ratio']} — expected 0.20"
+    )
+    assert result["green_seconds"] == 18  # 90 * 0.20
+    assert "prayer" in result["timing_rationale"].lower()
