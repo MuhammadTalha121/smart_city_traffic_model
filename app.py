@@ -19,7 +19,7 @@ from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_featu
 from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
-    log_prediction, get_intervention,
+    log_prediction, get_intervention, compute_accident_risk,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -364,6 +364,14 @@ def predict(
         congestion_level_str = result["congestion_level"],
     )
 
+    result["accident_risk"] = compute_accident_risk(
+        congestion_score = result["congestion_score"],
+        weather          = p["weather"],
+        hour             = p["hour"],
+        is_weekend       = p["is_weekend"],
+        rush_hour        = p["rush_hour"],
+    )
+
     log_prediction(result, explanation)
     return result
 
@@ -465,6 +473,54 @@ def interventions_active(
         "city"               : city,
         "total_interventions": len(results),
         "interventions"      : results,
+    }
+
+
+@app.get("/safety/hotspots", tags=["safety"])
+@limiter.limit("20/minute")
+def safety_hotspots(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    All zones ranked by current accident risk score, highest first.
+    Includes primary risk factor for each zone. 20 req/min per IP.
+    """
+    df      = app.state.df[app.state.df["city"] == city]
+    zones   = df["zone"].unique()
+    results = []
+
+    for zone in zones:
+        zone_df = df[df["zone"] == zone]
+        latest  = zone_df.sort_values("timestamp").iloc[-1]
+        score   = float(latest["congestion_score"])
+        hour    = int(latest["hour"])
+        weather = str(latest["weather"])
+        is_wknd = int(latest.get("is_weekend", 0))
+        rush    = int(latest.get("rush_hour", 0))
+
+        risk = compute_accident_risk(
+            congestion_score = score,
+            weather          = weather,
+            hour             = hour,
+            is_weekend       = is_wknd,
+            rush_hour        = rush,
+        )
+        results.append({
+            "zone"            : zone,
+            "hour"            : hour,
+            "weather"         : weather,
+            "congestion_score": round(score, 4),
+            **risk,
+        })
+
+    results.sort(key=lambda x: x["risk_score"], reverse=True)
+
+    return {
+        "city"        : city,
+        "total_zones" : len(results),
+        "hotspots"    : results,
     }
 
 

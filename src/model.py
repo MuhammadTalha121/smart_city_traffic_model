@@ -8,10 +8,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
 import joblib
 from typing import Tuple, Dict
-from src.config import (
-    CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES,
-    FUEL_CONSUMPTION_LPH, CO2_KG_PER_LITRE,
-)
+from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES
 
 
 FEATURE_COLS = [
@@ -114,42 +111,6 @@ def get_recommendation(level: str, zone: str, weather: str, city: str) -> str:
         'Critical': f'ALERT: {zone} critically congested.{sandstorm_note} Initiate emergency traffic management.'
     }
     return recommendations[level]
-
-
-def compute_emissions(
-    congestion_level_str: str,
-    vehicle_count: float,
-    duration_hours: float = 1.0,
-) -> Dict:
-    """
-    Estimate fuel consumption and CO2 output for a zone over a given duration.
-
-    Formula
-    -------
-    fuel_litres = consumption_rate_lph * (vehicle_count / 100) * duration_hours
-    co2_kg      = fuel_litres * CO2_KG_PER_LITRE
-    co2_tonnes  = co2_kg / 1000
-
-    Parameters
-    ----------
-    congestion_level_str : One of Low, Moderate, High, Critical.
-    vehicle_count        : Number of vehicles in the zone.
-    duration_hours       : Duration to estimate over (default 1 hour).
-
-    Returns
-    -------
-    dict with fuel_litres, co2_kg, co2_tonnes.
-    """
-    rate        = FUEL_CONSUMPTION_LPH.get(congestion_level_str, FUEL_CONSUMPTION_LPH['Moderate'])
-    fuel_litres = rate * (vehicle_count / 100) * duration_hours
-    co2_kg      = fuel_litres * CO2_KG_PER_LITRE
-    co2_tonnes  = co2_kg / 1000
-
-    return {
-        'fuel_litres': round(fuel_litres, 3),
-        'co2_kg'     : round(co2_kg, 3),
-        'co2_tonnes' : round(co2_tonnes, 6),
-    }
 
 
 def predict_single(city: str, zone: str, hour: int, vehicle_count: float,
@@ -449,9 +410,168 @@ def explain_prediction(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
     }
 
 
+def compute_accident_risk(
+    congestion_score: float,
+    weather: str,
+    hour: int,
+    is_weekend: int,
+    rush_hour: int,
+) -> Dict:
+    """
+    Compute an accident risk score for a zone based on traffic conditions.
+
+    Risk factors applied in order:
+    - Base risk scales with congestion_score (40% weight)
+    - Weather multiplier: sandstorm 2.5x, rain 1.8x, fog 1.6x,
+      dust 1.4x, humid 1.1x, clear 1.0x
+    - Rush hour adds 0.15 (high density + high speed variance)
+    - Late night (21–23) adds 0.12 (Saudi-specific: high speed, low volume)
+    - Friday prayer window (12–13, weekend) subtracts 0.10 (minimal vehicles)
+
+    Risk levels:
+    - Safe        < 0.30
+    - Elevated   0.30–0.50
+    - High Risk  0.50–0.70
+    - Critical   > 0.70
+
+    Returns
+    -------
+    dict with risk_score, risk_level, primary_risk_factor
+    """
+    WEATHER_RISK_MULTIPLIERS = {
+        'sandstorm': 2.5,
+        'rain'     : 1.8,
+        'fog'      : 1.6,
+        'dust'     : 1.4,
+        'humid'    : 1.1,
+        'clear'    : 1.0,
+    }
+
+    base_risk  = congestion_score * 0.4
+    weather_mult = WEATHER_RISK_MULTIPLIERS.get(weather, 1.0)
+    risk       = base_risk * weather_mult
+
+    if rush_hour:
+        risk += 0.15
+    if hour in (21, 22, 23):
+        risk += 0.12
+    if is_weekend and hour in (12, 13):
+        risk -= 0.10
+
+    risk = float(np.clip(risk, 0.0, 1.0))
+
+    # Determine primary risk factor
+    if weather in ('sandstorm', 'rain', 'fog', 'dust'):
+        primary_risk_factor = f'{weather} conditions'
+    elif rush_hour:
+        primary_risk_factor = 'rush hour density'
+    elif hour in (21, 22, 23):
+        primary_risk_factor = 'late night high-speed activity'
+    elif congestion_score > 0.5:
+        primary_risk_factor = 'high congestion volume'
+    else:
+        primary_risk_factor = 'standard traffic conditions'
+
+    if risk < 0.30:
+        risk_level = 'Safe'
+    elif risk < 0.50:
+        risk_level = 'Elevated'
+    elif risk < 0.70:
+        risk_level = 'High Risk'
+    else:
+        risk_level = 'Critical Risk'
+
+    return {
+        'risk_score'         : round(risk, 4),
+        'risk_level'         : risk_level,
+        'primary_risk_factor': primary_risk_factor,
+    }
+
+
+def get_intervention(zone: str, hour: int, congestion_level_str: str) -> Dict:
+    """
+    Return demand-shifting and intervention recommendations for a zone.
+
+    Three urgency tiers:
+    - Monitor  (Low / Moderate) — no action needed
+    - Advise   (High)           — suggest metro or off-peak departure
+    - Intervene (Critical)      — metro + carpool + departure window
+
+    Parameters
+    ----------
+    zone               : e.g. 'Zone_1'
+    hour               : 0–23
+    congestion_level_str: 'Low' | 'Moderate' | 'High' | 'Critical'
+
+    Returns
+    -------
+    dict with keys: operator_action, commuter_advice, metro_station,
+                    carpool_available, recommended_departure, urgency
+    """
+    from src.config import METRO_STATIONS, CARPOOL_LANES, OFF_PEAK_WINDOWS
+
+    metro_station    = METRO_STATIONS.get(zone)
+    carpool_available = zone in CARPOOL_LANES
+
+    # Determine relevant off-peak window by hour
+    if 6 <= hour <= 11:
+        window = OFF_PEAK_WINDOWS['morning']
+    elif 14 <= hour <= 20:
+        window = OFF_PEAK_WINDOWS['evening']
+    else:
+        window = None
+
+    recommended_departure = window['recommended'] if window else None
+
+    if congestion_level_str in ('Low', 'Moderate'):
+        urgency          = 'Monitor'
+        operator_action  = f'{zone} operating within normal parameters. No intervention required.'
+        commuter_advice  = 'No action needed. Roads are clear.'
+
+    elif congestion_level_str == 'High':
+        urgency         = 'Advise'
+        metro_hint      = f' Consider {metro_station}.' if metro_station else ''
+        departure_hint  = (
+            f" Recommended departure: {window['recommended']} to avoid congestion until {window['avoid_until']}."
+            if window else ''
+        )
+        operator_action = (
+            f'Monitor {zone} closely. Prepare to activate alternate routes '
+            f'and adaptive signal timing.'
+        )
+        commuter_advice = (
+            f'High congestion in {zone}.{metro_hint}{departure_hint}'
+        )
+
+    else:  # Critical
+        urgency         = 'Intervene'
+        metro_hint      = f' Take {metro_station} to bypass congestion.' if metro_station else ''
+        carpool_hint    = f' Carpool lane active in {zone}.' if carpool_available else ''
+        departure_hint  = (
+            f" Depart at {window['recommended']} or wait until after {window['avoid_until']}."
+            if window else ''
+        )
+        operator_action = (
+            f'CRITICAL: Deploy traffic officers to {zone}. Activate alternate routes, '
+            f'carpool lanes, and emergency signal override.'
+        )
+        commuter_advice = (
+            f'Critical congestion in {zone}.{metro_hint}{carpool_hint}{departure_hint}'
+        )
+
+    return {
+        'urgency'              : urgency,
+        'operator_action'      : operator_action,
+        'commuter_advice'      : commuter_advice,
+        'metro_station'        : metro_station,
+        'carpool_available'    : carpool_available,
+        'recommended_departure': recommended_departure,
+    }
+
+
 def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv'):
     """
-    Append a prediction, its explanation, and emissions data to the audit log CSV.
+    Append a prediction and its explanation to the audit log CSV.
     """
     import os
     from datetime import datetime
@@ -467,9 +587,7 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
         'top_factor_1'   : explanation['top_factors'][0]['factor'] if len(explanation['top_factors']) > 0 else '',
         'top_factor_2'   : explanation['top_factors'][1]['factor'] if len(explanation['top_factors']) > 1 else '',
         'top_factor_3'   : explanation['top_factors'][2]['factor'] if len(explanation['top_factors']) > 2 else '',
-        'plain_english'  : explanation.get('plain_english', ''),
-        'co2_kg'         : prediction.get('emissions', {}).get('co2_kg', ''),
-        'fuel_litres'    : prediction.get('emissions', {}).get('fuel_litres', ''),
+        'plain_english'  : explanation.get('plain_english', '')
     }
 
     log_df     = pd.DataFrame([row])

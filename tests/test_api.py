@@ -170,3 +170,38 @@ def test_interventions_active_returns_list(client):
         assert "metro_station"         in iv
         assert "carpool_available"     in iv
         assert "recommended_departure" in iv
+
+
+def test_safety_hotspots_no_auth_returns_401(client):
+    """/safety/hotspots must require authentication."""
+    response = client.get("/safety/hotspots?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_safety_hotspots_returns_ranked_list(client):
+    """/safety/hotspots must return all zones ranked by risk_score descending."""
+    response = client.get(
+        "/safety/hotspots?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "city"        in data
+    assert "total_zones" in data
+    assert "hotspots"    in data
+    assert isinstance(data["hotspots"], list)
+    assert len(data["hotspots"]) == data["total_zones"]
+
+    # Verify sorted descending by risk_score
+    scores = [h["risk_score"] for h in data["hotspots"]]
+    assert scores == sorted(scores, reverse=True), (
+        "Hotspots not sorted by risk_score descending"
+    )
+
+    # Verify required keys on each hotspot
+    for h in data["hotspots"]:
+        assert "zone"                in h
+        assert "risk_score"          in h
+        assert "risk_level"          in h
+        assert "primary_risk_factor" in h
+        assert 0.0 <= h["risk_score"] <= 1.0

@@ -252,3 +252,44 @@ def test_intervention_low_returns_monitor():
         f"Expected urgency 'Monitor' for Low, got '{result['urgency']}'"
     )
     assert "No action" in result["commuter_advice"]
+
+
+# ---------------------------------------------------------------------------
+# PROMPT 014 — Accident risk scoring tests
+# ---------------------------------------------------------------------------
+
+def test_sandstorm_rush_hour_produces_high_risk():
+    """Sandstorm + rush hour must push risk into High Risk or Critical Risk."""
+    from src.model import compute_accident_risk
+
+    result = compute_accident_risk(
+        congestion_score = 0.55,
+        weather          = "sandstorm",
+        hour             = 8,
+        is_weekend       = 0,
+        rush_hour        = 1,
+    )
+    assert result["risk_score"] > 0.50, (
+        f"Sandstorm + rush hour risk was {result['risk_score']:.4f} — expected > 0.50"
+    )
+    assert result["risk_level"] in ("High Risk", "Critical Risk"), (
+        f"Expected High Risk or Critical Risk, got '{result['risk_level']}'"
+    )
+    assert "sandstorm" in result["primary_risk_factor"]
+
+
+def test_clear_low_congestion_produces_safe():
+    """Clear weather, low congestion, no rush hour must produce Safe risk level."""
+    from src.model import compute_accident_risk
+
+    result = compute_accident_risk(
+        congestion_score = 0.10,
+        weather          = "clear",
+        hour             = 10,
+        is_weekend       = 0,
+        rush_hour        = 0,
+    )
+    assert result["risk_level"] == "Safe", (
+        f"Expected Safe, got '{result['risk_level']}' (score={result['risk_score']:.4f})"
+    )
+    assert 0.0 <= result["risk_score"] <= 1.0
