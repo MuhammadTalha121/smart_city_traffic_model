@@ -19,7 +19,7 @@ from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_featu
 from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
-    log_prediction,
+    log_prediction, get_intervention,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -358,6 +358,12 @@ def predict(
     result["explanation"]   = explanation["top_factors"]
     result["plain_english"] = explanation["plain_english"]
 
+    result["intervention"] = get_intervention(
+        zone               = p["zone"],
+        hour               = p["hour"],
+        congestion_level_str = result["congestion_level"],
+    )
+
     log_prediction(result, explanation)
     return result
 
@@ -409,6 +415,56 @@ def anomalies(
         "city"           : city,
         "total_anomalies": len(flagged),
         "anomalies"      : flagged,
+    }
+
+
+@app.get("/interventions/active", tags=["monitoring"])
+@limiter.limit("20/minute")
+def interventions_active(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    All zones currently at High or Critical congestion with intervention
+    recommendations. Sorted Critical first. 20 req/min per IP.
+    """
+    from src.model import congestion_level as cl
+
+    df      = app.state.df[app.state.df["city"] == city]
+    zones   = df["zone"].unique()
+    results = []
+
+    for zone in zones:
+        zone_df = df[df["zone"] == zone]
+        latest  = zone_df.sort_values("timestamp").iloc[-1]
+        score   = float(latest["congestion_score"])
+        hour    = int(latest["hour"])
+        weather = str(latest["weather"])
+        level   = cl(score)
+
+        if level in ("High", "Critical"):
+            intervention = get_intervention(
+                zone                = zone,
+                hour                = hour,
+                congestion_level_str= level,
+            )
+            results.append({
+                "zone"            : zone,
+                "hour"            : hour,
+                "weather"         : weather,
+                "congestion_score": round(score, 4),
+                "congestion_level": level,
+                "intervention"    : intervention,
+            })
+
+    priority = {"Critical": 0, "High": 1}
+    results.sort(key=lambda x: priority.get(x["congestion_level"], 2))
+
+    return {
+        "city"               : city,
+        "total_interventions": len(results),
+        "interventions"      : results,
     }
 
 

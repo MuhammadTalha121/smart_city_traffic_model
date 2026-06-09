@@ -126,3 +126,19 @@ HAJJ_OUTBOUND: Dict[int, float] = {
 
 # Zones along pilgrimage routes — receive an additional 1.8x multiplier.
 HAJJ_ROUTE_ZONES: List[str] = ['Zone_1', 'Zone_3']
+
+# --- Intervention and demand-shifting constants (PROMPT 013) ---
+
+METRO_STATIONS: Dict[str, str] = {
+    'Zone_1': 'King Abdullah Financial District Station',
+    'Zone_2': 'King Fahd Road Station',
+    'Zone_3': 'Olaya Station',
+    'Zone_4': 'Al Malaz Station',
+}
+
+CARPOOL_LANES: List[str] = ['Zone_1', 'Zone_2']
+
+OFF_PEAK_WINDOWS: Dict[str, Dict[str, str]] = {
+    'morning': {'recommended': '06:30', 'avoid_until': '09:30'},
+    'evening': {'recommended': '15:30', 'avoid_until': '18:30'},
+}

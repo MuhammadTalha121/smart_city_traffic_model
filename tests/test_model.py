@@ -218,3 +218,37 @@ def test_standard_mode_has_no_hajj_phase():
     assert (df_std["hajj_phase"] == "none").all(), (
         "hajj_phase should be 'none' for all rows in standard mode"
     )
+
+
+# ---------------------------------------------------------------------------
+# PROMPT 013 — Intervention recommendation tests
+# ---------------------------------------------------------------------------
+
+def test_intervention_critical_returns_intervene():
+    """Critical congestion must return urgency='Intervene' with metro and carpool data."""
+    from src.model import get_intervention
+
+    result = get_intervention(zone="Zone_1", hour=8, congestion_level_str="Critical")
+
+    assert result["urgency"] == "Intervene", (
+        f"Expected urgency 'Intervene' for Critical, got '{result['urgency']}'"
+    )
+    assert result["metro_station"] is not None, "Critical zone should have a metro station"
+    assert result["carpool_available"] is True, "Zone_1 should have carpool lane available"
+    assert result["recommended_departure"] is not None, (
+        "Critical at hour 8 should recommend a departure time"
+    )
+    assert "operator_action" in result
+    assert "commuter_advice" in result
+
+
+def test_intervention_low_returns_monitor():
+    """Low congestion must return urgency='Monitor' with no disruption advice."""
+    from src.model import get_intervention
+
+    result = get_intervention(zone="Zone_1", hour=3, congestion_level_str="Low")
+
+    assert result["urgency"] == "Monitor", (
+        f"Expected urgency 'Monitor' for Low, got '{result['urgency']}'"
+    )
+    assert "No action" in result["commuter_advice"]

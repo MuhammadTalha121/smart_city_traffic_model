@@ -138,3 +138,35 @@ def test_schedule_active_returns_valid_structure(client):
     assert "days_until" in data, "days_until key missing"
     assert isinstance(data["schedule"], str)
     assert data["city"] == "Riyadh"
+
+
+def test_interventions_active_no_auth_returns_401(client):
+    """/interventions/active must require authentication."""
+    response = client.get("/interventions/active?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_interventions_active_returns_list(client):
+    """/interventions/active must return a list of interventions with required keys."""
+    response = client.get(
+        "/interventions/active?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "city"                in data
+    assert "total_interventions" in data
+    assert "interventions"       in data
+    assert isinstance(data["interventions"], list)
+
+    for item in data["interventions"]:
+        assert item["congestion_level"] in ("High", "Critical"), (
+            f"Unexpected level '{item['congestion_level']}' in /interventions/active"
+        )
+        iv = item["intervention"]
+        assert "urgency"               in iv
+        assert "operator_action"       in iv
+        assert "commuter_advice"       in iv
+        assert "metro_station"         in iv
+        assert "carpool_available"     in iv
+        assert "recommended_departure" in iv
