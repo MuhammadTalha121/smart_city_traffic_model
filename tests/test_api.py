@@ -36,23 +36,6 @@ def test_health_endpoint_no_auth_returns_200(client):
     assert response.json()["status"] == "healthy"
 
 
-def test_dashboard_serves_html(client):
-    """Dashboard at root returns valid HTML — no Streamlit dependency needed."""
-    response = client.get("/")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "Smart City Traffic Intelligence" in response.text
-    assert "DM Sans" in response.text        # correct font loaded
-    assert "chart.js" in response.text       # charting library loaded
-
-
-def test_dashboard_alias_works(client):
-    """/dashboard alias also returns the HTML dashboard."""
-    response = client.get("/dashboard")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-
-
 def test_predict_no_key_returns_401(client):
     response = client.post("/predict", json=VALID_PAYLOAD)
     assert response.status_code == 401
@@ -82,22 +65,20 @@ def test_predict_valid_key_returns_prediction(client):
     assert 0.0 <= data["congestion_score"] <= 1.0
 
 
-def test_predict_valid_key_returns_emissions(client):
-    """PROMPT 011 — /predict response must include an emissions dict."""
+def test_predict_includes_schedule_and_hajj_mode(client):
+    """Predict response must include schedule string and hajj_mode flag."""
+    payload  = {**VALID_PAYLOAD, "hajj_mode": False}
     response = client.post(
         "/predict",
-        json=VALID_PAYLOAD,
+        json=payload,
         headers={"X-API-Key": TEST_KEY},
     )
     assert response.status_code == 200
     data = response.json()
-    assert "emissions" in data
-    em = data["emissions"]
-    assert "fuel_litres"           in em
-    assert "co2_kg"                in em
-    assert "co2_tonnes"            in em
-    assert "green_initiative_flag" in em
-    assert em["co2_kg"] > 0
+    assert "schedule"  in data, "schedule key missing from /predict response"
+    assert "hajj_mode" in data, "hajj_mode key missing from /predict response"
+    assert isinstance(data["schedule"],  str)
+    assert isinstance(data["hajj_mode"], bool)
 
 
 def test_predict_invalid_hour_returns_422(client):
@@ -137,16 +118,23 @@ def test_forecast_endpoint_returns_three_horizons(client):
         assert "congestion_level" in fc
 
 
-def test_emissions_summary_endpoint(client):
-    """PROMPT 011 — /emissions/summary returns expected structure."""
-    client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+def test_schedule_active_no_auth_returns_401(client):
+    """schedule/active must require authentication."""
+    response = client.get("/schedule/active?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_schedule_active_returns_valid_structure(client):
+    """schedule/active must return schedule, next_event, days_until, city."""
     response = client.get(
-        "/emissions/summary?city=Riyadh",
+        "/schedule/active?city=Riyadh",
         headers={"X-API-Key": TEST_KEY},
     )
     assert response.status_code == 200
     data = response.json()
-    assert "city"                          in data
-    assert "total_co2_tonnes"              in data
-    assert "green_initiative_events"       in data
-    assert "green_initiative_threshold_kg" in data
+    assert "schedule"   in data, "schedule key missing"
+    assert "city"       in data, "city key missing"
+    assert "next_event" in data, "next_event key missing"
+    assert "days_until" in data, "days_until key missing"
+    assert isinstance(data["schedule"], str)
+    assert data["city"] == "Riyadh"

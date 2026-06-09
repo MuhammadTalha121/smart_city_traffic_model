@@ -4,7 +4,8 @@ import sklearn
 from sklearn import *
 from src.config import (
     CITY_PROFILES, HOURLY_MULTIPLIERS, WEATHER_SPEED_IMPACT,
-    FRIDAY_PRAYER_HOURS, SAUDI_CITIES
+    FRIDAY_PRAYER_HOURS, SAUDI_CITIES,
+    HAJJ_INBOUND, HAJJ_PEAK, HAJJ_OUTBOUND, HAJJ_ROUTE_ZONES,
 )
 
 
@@ -58,8 +59,20 @@ def generate_traffic_data(city: str = 'Riyadh', n_days: int = 30,
     return df
 
 
+def _resolve_hajj_multiplier(hour: int, phase_dict: dict) -> float:
+    """
+    Return the Hajj multiplier for a given hour by finding the
+    nearest anchor hour in the phase dictionary.
+    """
+    anchors = sorted(phase_dict.keys())
+    # Find the closest anchor hour (round down, then take nearest)
+    lower   = max((a for a in anchors if a <= hour), default=anchors[0])
+    return phase_dict[lower]
+
+
 def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
-                           ramadan: bool = False) -> pd.DataFrame:
+                           ramadan: bool = False,
+                           hajj: bool = False) -> pd.DataFrame:
     """
     Apply city-specific hourly traffic multipliers and Saudi behavioral patterns.
 
@@ -68,6 +81,8 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
     df      : Output of generate_traffic_data()
     city    : City name to determine schedule type
     ramadan : Whether to apply Ramadan traffic schedule
+    hajj    : Whether to apply Hajj mass-gathering schedule.
+              Hajj overrides Ramadan when both are True.
 
     Returns
     -------
@@ -75,18 +90,70 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
     """
     df = df.copy()
 
-    schedule_key      = 'ramadan' if ramadan else ('saudi' if city in SAUDI_CITIES else 'standard')
-    multipliers       = HOURLY_MULTIPLIERS[schedule_key]
+    # --- Determine base schedule ---
+    if hajj:
+        # Hajj overrides Ramadan; use saudi base multipliers and then
+        # apply Hajj phase-specific adjustments below.
+        schedule_key = 'saudi'
+    elif ramadan:
+        schedule_key = 'ramadan'
+    else:
+        schedule_key = 'saudi' if city in SAUDI_CITIES else 'standard'
+
+    multipliers           = HOURLY_MULTIPLIERS[schedule_key]
     df['hour_multiplier'] = df['hour'].map(multipliers)
     df['vehicle_count']   = (df['vehicle_count'] * df['hour_multiplier']).clip(0, 500)
 
+    # --- Hajj phase overlays ---
+    if hajj:
+        # The synthetic data always starts 2025-01-01.
+        # We simulate three Hajj phases across the dataset rows using
+        # the row index offset modulo 5 (5-day event cycle).
+        # Phase mapping: day offset 0–1 → inbound, 2–3 → peak, 4 → outbound.
+        PHASE_MAPS = {
+            'inbound' : HAJJ_INBOUND,
+            'peak'    : HAJJ_PEAK,
+            'outbound': HAJJ_OUTBOUND,
+        }
+
+        def _day_offset_to_phase(day_offset: int) -> str:
+            if day_offset <= 1:
+                return 'inbound'
+            elif day_offset <= 3:
+                return 'peak'
+            else:
+                return 'outbound'
+
+        # Compute day offset within the 5-day cycle based on timestamp
+        day_series   = (df['timestamp'] - df['timestamp'].min()).dt.days % 5
+        df['hajj_phase'] = day_series.map(_day_offset_to_phase)
+
+        # Apply Hajj hourly multiplier on top of existing vehicle_count
+        def _hajj_mult(row):
+            phase_dict = PHASE_MAPS[row['hajj_phase']]
+            return _resolve_hajj_multiplier(row['hour'], phase_dict)
+
+        hajj_multipliers  = df.apply(_hajj_mult, axis=1)
+        df['vehicle_count'] = (df['vehicle_count'] * hajj_multipliers).clip(0, 500)
+
+        # Extra 1.8x for pilgrimage route zones
+        route_mask = df['zone'].isin(HAJJ_ROUTE_ZONES)
+        df.loc[route_mask, 'vehicle_count'] = (
+            df.loc[route_mask, 'vehicle_count'] * 1.8
+        ).clip(0, 500)
+    else:
+        df['hajj_phase'] = 'none'
+
+    # --- Weather speed impact ---
     for condition, factor in WEATHER_SPEED_IMPACT.items():
         df.loc[df['weather'] == condition, 'avg_speed'] *= factor
 
     df.loc[df['event'] == 1,     'vehicle_count'] *= 1.5
     df.loc[df['rush_hour'] == 1, 'vehicle_count'] *= 1.2
 
-    if city in SAUDI_CITIES:
+    # --- Saudi-specific patterns ---
+    if city in SAUDI_CITIES and not hajj:
+        # Friday prayer drop is suppressed during Hajj (crowds override prayer routing)
         friday_mask = (
             (df['day_of_week'] == 'Friday') &
             (df['hour'].isin(FRIDAY_PRAYER_HOURS))
@@ -97,7 +164,8 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
         df['friday_prayer_drop'] = 0
 
     df['is_late_night'] = df['hour'].isin([21, 22, 23, 0]).astype(int)
-    df['is_ramadan']    = int(ramadan)
+    df['is_ramadan']    = int(ramadan and not hajj)
+    df['is_hajj']       = int(hajj)
 
     df['avg_speed']     = df['avg_speed'].clip(20, 100)
     df['vehicle_count'] = df['vehicle_count'].clip(0, 500)
@@ -176,6 +244,109 @@ def validate_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
 
     print("\n" + "=" * 60)
     print(f"  Data Validation Report — {city}")
+    print("=" * 60)
+    print(report.to_string(index=False))
+    print("=" * 60)
+    passed = (report['Status'] == 'PASS').sum()
+    print(f"  {passed} / {len(report)} checks passed")
+    print("=" * 60 + "\n")
+
+    return report
+
+
+def validate_hajj_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
+    """
+    Validate that Hajj mode produces statistically distinct traffic patterns.
+
+    Checks that Hajj peak hour vehicle_count is at least 2.5x the standard
+    Friday midday average — confirming the phase multipliers are applied correctly.
+
+    Returns
+    -------
+    pd.DataFrame with columns: Check | Expected | Actual | Status
+    """
+    df_standard = apply_hourly_patterns(
+        generate_traffic_data(city=city, n_days=n_days), city=city
+    )
+    df_hajj = apply_hourly_patterns(
+        generate_traffic_data(city=city, n_days=n_days), city=city, hajj=True
+    )
+
+    results = []
+
+    def record(check, expected, actual, passed):
+        results.append({
+            'Check'   : check,
+            'Expected': expected,
+            'Actual'  : round(float(actual), 4),
+            'Status'  : 'PASS' if passed else 'FAIL'
+        })
+
+    # Hajj peak phase (days 2–3), peak hour 12 — zone with route multiplier
+    hajj_peak_rows = df_hajj[
+        (df_hajj['hajj_phase'] == 'peak') &
+        (df_hajj['hour'] == 12) &
+        (df_hajj['zone'] == 'Zone_1')
+    ]
+    hajj_peak_mean = hajj_peak_rows['vehicle_count'].mean() if len(hajj_peak_rows) > 0 else 0.0
+
+    friday_midday_mean = df_standard[
+        (df_standard['day_of_week'] == 'Friday') &
+        (df_standard['hour'].isin(FRIDAY_PRAYER_HOURS))
+    ]['vehicle_count'].mean()
+
+    # Friday midday has prayer drop — compare against standard weekday midday instead
+    weekday_midday_mean = df_standard[
+        (~df_standard['day_of_week'].isin(['Friday', 'Saturday'])) &
+        (df_standard['hour'] == 12)
+    ]['vehicle_count'].mean()
+
+    ratio = hajj_peak_mean / max(weekday_midday_mean, 1.0)
+    record(
+        'Hajj peak hour (Zone_1, 12:00) vs standard weekday midday',
+        '>= 2.5x',
+        ratio,
+        ratio >= 2.5
+    )
+
+    # Check that hajj_phase column exists
+    has_phase_col = 'hajj_phase' in df_hajj.columns
+    record(
+        'hajj_phase column present in output',
+        'True',
+        float(has_phase_col),
+        has_phase_col
+    )
+
+    # Check three distinct phases exist
+    phases        = set(df_hajj['hajj_phase'].unique()) - {'none'}
+    all_phases    = phases == {'inbound', 'peak', 'outbound'}
+    record(
+        'All three Hajj phases present (inbound, peak, outbound)',
+        'True',
+        float(all_phases),
+        all_phases
+    )
+
+    # Route zones should have higher vehicle_count than non-route zones during peak
+    peak_route     = df_hajj[
+        (df_hajj['hajj_phase'] == 'peak') & (df_hajj['zone'].isin(HAJJ_ROUTE_ZONES))
+    ]['vehicle_count'].mean()
+    peak_non_route = df_hajj[
+        (df_hajj['hajj_phase'] == 'peak') & (~df_hajj['zone'].isin(HAJJ_ROUTE_ZONES))
+    ]['vehicle_count'].mean()
+    route_higher   = peak_route > peak_non_route
+    record(
+        'Hajj route zones higher than non-route zones during peak',
+        'True',
+        float(route_higher),
+        route_higher
+    )
+
+    report = pd.DataFrame(results)
+
+    print("\n" + "=" * 60)
+    print(f"  Hajj Mode Validation Report — {city}")
     print("=" * 60)
     print(report.to_string(index=False))
     print("=" * 60)

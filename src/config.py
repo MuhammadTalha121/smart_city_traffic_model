@@ -94,23 +94,35 @@ PALETTE = {
     'grid'      : '#EAECEE'
 }
 
-# ---------------------------------------------------------------------------
-# Emissions constants — PROMPT 011
-# Fuel consumption in litres per 100 vehicles per hour at each congestion level.
-# Based on stop-and-go fuel consumption curves from urban mobility literature.
-# CO2 factor: standard petrol combustion, IPCC value.
-# ---------------------------------------------------------------------------
-
+# --- Emissions constants (PROMPT 011) ---
 FUEL_CONSUMPTION_LPH: Dict[str, float] = {
     'Low'     : 6.5,
     'Moderate': 9.2,
     'High'    : 13.8,
     'Critical': 18.4,
 }
+CO2_KG_PER_LITRE: float  = 2.31
+AVG_ZONE_AREA_KM2: float = 2.5
 
-CO2_KG_PER_LITRE: float  = 2.31    # kg CO2 per litre of petrol combusted
-AVG_ZONE_AREA_KM2: float = 2.5     # average zone coverage area in km²
+# --- Hajj schedule constants (PROMPT 012) ---
 
-# Green Initiative threshold: events generating > 500 kg CO2 in one hour
-# are flagged as significant under the Saudi Green Initiative reporting framework.
-GREEN_INITIATIVE_CO2_THRESHOLD_KG: float = 500.0
+HAJJ_DATES: Dict[int, Dict[str, str]] = {
+    2025: {'start': '2025-06-04', 'end': '2025-06-09'},
+    2026: {'start': '2026-05-24', 'end': '2026-05-29'},
+}
+
+# Hourly multipliers for each Hajj phase.
+# Keys are anchor hours; intermediate hours interpolate via nearest-key lookup
+# in apply_hourly_patterns().
+HAJJ_INBOUND: Dict[int, float] = {
+    0: 0.3, 6: 1.8, 9: 2.2, 12: 2.5, 15: 2.0, 18: 1.8, 21: 1.5
+}
+HAJJ_PEAK: Dict[int, float] = {
+    0: 1.2, 6: 2.2, 9: 2.8, 12: 3.0, 15: 2.8, 18: 2.5, 21: 2.0
+}
+HAJJ_OUTBOUND: Dict[int, float] = {
+    0: 0.8, 6: 2.5, 9: 2.2, 12: 2.0, 15: 1.8, 18: 1.5, 21: 0.9
+}
+
+# Zones along pilgrimage routes — receive an additional 1.8x multiplier.
+HAJJ_ROUTE_ZONES: List[str] = ['Zone_1', 'Zone_3']
