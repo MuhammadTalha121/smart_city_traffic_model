@@ -22,7 +22,7 @@ from src.model import (
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, get_intervention, compute_accident_risk,
     compute_signal_timing, compute_emissions, estimate_response_time,
-    get_delivery_windows,
+    get_delivery_windows, compute_prediction_interval,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -373,6 +373,17 @@ def predict(
     X_row       = pd.DataFrame([row])[app.state.feature_cols]
     explanation = explain_prediction(app.state.model, X_row, app.state.feature_cols)
 
+    prediction_interval = compute_prediction_interval(
+        model        = app.state.model,
+        X_row        = X_row,
+        feature_cols = app.state.feature_cols,
+        df           = app.state.city_dfs.get(p["city"], app.state.df),
+        zone         = p["zone"],
+        n_bootstrap  = 50,
+    )
+
+
+    result["prediction_interval"] = prediction_interval
     result["explanation"]   = explanation["top_factors"]
     result["plain_english"] = explanation["plain_english"]
 
@@ -402,7 +413,8 @@ def predict(
         vehicle_count        = p["vehicle_count"],
     )
 
-    log_prediction(result, explanation)
+    log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
+    
     return result
 
 
