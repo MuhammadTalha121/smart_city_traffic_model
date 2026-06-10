@@ -338,3 +338,54 @@ def test_freight_windows_returns_valid_structure(client):
     restricted = set(FREIGHT_RESTRICTED_HOURS.get("Riyadh", {}).get("Zone_1", []))
     overlap    = restricted.intersection(set(data["recommended_windows"]))
     assert len(overlap) == 0, f"Recommended windows contain restricted hours: {overlap}"
+
+
+
+def test_history_patterns_no_auth_returns_401(client):
+    response = client.get("/history/patterns?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_history_patterns_returns_valid_structure(client):
+    # Seed a prediction first so the log exists
+    client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+
+    response = client.get(
+        "/history/patterns?city=Riyadh&days=30",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "city"                in data
+    assert "period_days"         in data
+    assert "total_records"       in data
+    assert "avg_congestion_score" in data
+    assert "weather_breakdown"   in data
+    assert "hourly_averages"     in data
+
+
+def test_history_trend_no_auth_returns_401(client):
+    response = client.get("/history/trend?city=Riyadh&zone=Zone_1")
+    assert response.status_code == 401
+
+
+def test_history_trend_returns_correct_keys(client):
+    client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+
+    response = client.get(
+        "/history/trend?city=Riyadh&zone=Zone_1&days=7",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "city"        in data
+    assert "zone"        in data
+    assert "period_days" in data
+    assert "dates"       in data
+    assert "avg_scores"  in data
+    assert "trend"       in data
+    assert data["trend"] in ("improving", "worsening", "stable")
+    assert isinstance(data["dates"],      list)
+    assert isinstance(data["avg_scores"], list)
