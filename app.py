@@ -828,3 +828,169 @@ def freight_windows(
         "best_hour"           : result["best_hour"],
         "rationale"           : result["rationale"],
     }
+
+
+
+
+@app.get("/history/patterns", tags=["history"])
+@limiter.limit("20/minute")
+def history_patterns(
+    request: Request,
+    city:    str = "Riyadh",
+    zone:    str = None,
+    weather: str = None,
+    days:    int = 30,
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Query historical congestion patterns from the predictions audit log.
+
+    Filters by city, zone (optional), weather condition (optional),
+    and number of days back. Returns avg congestion, peak hour,
+    weather breakdown, and hourly averages. 20 req/min per IP.
+    """
+    log_path = "predictions_log.csv"
+
+    if not os.path.exists(log_path):
+        return {
+            "city"               : city,
+            "period_days"        : days,
+            "total_records"      : 0,
+            "avg_congestion_score": None,
+            "peak_hour"          : None,
+            "peak_congestion"    : None,
+            "weather_breakdown"  : {},
+            "hourly_averages"    : {},
+            "note"               : "No predictions logged yet.",
+        }
+
+    log_df = pd.read_csv(log_path)
+
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff  = pd.Timestamp.now() - pd.Timedelta(days=days)
+        log_df  = log_df[log_df["timestamp"] >= cutoff]
+
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+    if zone and "zone" in log_df.columns:
+        log_df = log_df[log_df["zone"] == zone]
+    if weather and "weather" in log_df.columns:
+        log_df = log_df[log_df["weather"] == weather]
+
+    if log_df.empty:
+        return {
+            "city"               : city,
+            "period_days"        : days,
+            "total_records"      : 0,
+            "avg_congestion_score": None,
+            "peak_hour"          : None,
+            "peak_congestion"    : None,
+            "weather_breakdown"  : {},
+            "hourly_averages"    : {},
+        }
+
+    avg_score = round(float(log_df["congestion_score"].mean()), 4)
+
+    hourly_avg   = {}
+    peak_hour    = None
+    peak_cong    = None
+    if "hour" in log_df.columns:
+        ha        = log_df.groupby("hour")["congestion_score"].mean()
+        hourly_avg = {int(h): round(float(v), 4) for h, v in ha.items()}
+        peak_hour  = int(ha.idxmax())
+        peak_cong  = round(float(ha.max()), 4)
+
+    weather_breakdown = {}
+    if "weather" in log_df.columns:
+        wb = log_df.groupby("weather")["congestion_score"].mean()
+        weather_breakdown = {w: round(float(v), 4) for w, v in wb.items()}
+
+    return {
+        "city"               : city,
+        "zone"               : zone,
+        "weather_filter"     : weather,
+        "period_days"        : days,
+        "total_records"      : len(log_df),
+        "avg_congestion_score": avg_score,
+        "peak_hour"          : peak_hour,
+        "peak_congestion"    : peak_cong,
+        "weather_breakdown"  : weather_breakdown,
+        "hourly_averages"    : hourly_avg,
+    }
+
+
+@app.get("/history/trend", tags=["history"])
+@limiter.limit("20/minute")
+def history_trend(
+    request: Request,
+    city:    str = "Riyadh",
+    zone:    str = "Zone_1",
+    days:    int = 7,
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Daily average congestion trend for the past N days.
+
+    Returns dates, daily averages, and trend direction
+    (improving / worsening / stable). 20 req/min per IP.
+    """
+    log_path = "predictions_log.csv"
+
+    if not os.path.exists(log_path):
+        return {
+            "city"       : city,
+            "zone"       : zone,
+            "period_days": days,
+            "dates"      : [],
+            "avg_scores" : [],
+            "trend"      : "stable",
+            "note"       : "No predictions logged yet.",
+        }
+
+    log_df = pd.read_csv(log_path)
+
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff  = pd.Timestamp.now() - pd.Timedelta(days=days)
+        log_df  = log_df[log_df["timestamp"] >= cutoff]
+
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+    if "zone" in log_df.columns:
+        log_df = log_df[log_df["zone"] == zone]
+
+    if log_df.empty or "timestamp" not in log_df.columns:
+        return {
+            "city"       : city,
+            "zone"       : zone,
+            "period_days": days,
+            "dates"      : [],
+            "avg_scores" : [],
+            "trend"      : "stable",
+        }
+
+    log_df["date"] = log_df["timestamp"].dt.date
+    daily          = log_df.groupby("date")["congestion_score"].mean().sort_index()
+
+    dates      = [str(d) for d in daily.index]
+    avg_scores = [round(float(v), 4) for v in daily.values]
+
+    trend = "stable"
+    if len(avg_scores) >= 3:
+        first_half  = sum(avg_scores[:len(avg_scores)//2]) / max(len(avg_scores)//2, 1)
+        second_half = sum(avg_scores[len(avg_scores)//2:]) / max(len(avg_scores) - len(avg_scores)//2, 1)
+        delta       = second_half - first_half
+        if delta > 0.02:
+            trend = "worsening"
+        elif delta < -0.02:
+            trend = "improving"
+
+    return {
+        "city"       : city,
+        "zone"       : zone,
+        "period_days": days,
+        "dates"      : dates,
+        "avg_scores" : avg_scores,
+        "trend"      : trend,
+    }
