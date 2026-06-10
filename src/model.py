@@ -659,7 +659,7 @@ def get_intervention(zone: str, hour: int, congestion_level_str: str) -> Dict:
     }
 
 
-def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv'):
+def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv', interval_width: float = None):
     """
     Append a prediction and its explanation to the audit log CSV.
     """
@@ -680,6 +680,7 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
         'plain_english'   : explanation.get('plain_english', ''),
         'co2_kg'          : prediction.get('emissions', {}).get('co2_kg', ''),
         'fuel_litres'     : prediction.get('emissions', {}).get('fuel_litres', ''),
+        'interval_width'  : interval_width if interval_width is not None else '',
     }
 
     log_df     = pd.DataFrame([row])
@@ -820,4 +821,88 @@ def get_delivery_windows(city: str, zone: str, df: pd.DataFrame) -> Dict:
         'avoid_hours'        : avoid_hours,
         'best_hour'          : best_hour,
         'rationale'          : rationale,
+    }
+
+def compute_prediction_interval(
+    model,
+    X_row: pd.DataFrame,
+    feature_cols: list,
+    df: pd.DataFrame,
+    zone: str,
+    n_bootstrap: int = 50,
+) -> Dict:
+    """
+    Estimate a 90% prediction interval for a single inference using bootstrap.
+
+    Resamples a subsample of the training data n_bootstrap times, trains
+    a lightweight XGBoost on each, predicts for X_row, and returns the
+    5th and 95th percentile of the prediction distribution.
+
+    Parameters
+    ----------
+    model        : Trained XGBoost model (used for feature column reference only).
+    X_row        : Single-row DataFrame prepared for inference.
+    feature_cols : Feature column list from prepare_features().
+    df           : Full city DataFrame (source of bootstrap samples).
+    zone         : Zone name to filter bootstrap samples.
+    n_bootstrap  : Number of bootstrap iterations (default 50).
+
+    Returns
+    -------
+    dict with lower_bound, upper_bound, confidence_width, confidence_level.
+    """
+    from src.data import apply_hourly_patterns, add_lag_features
+
+    zone_df = df[df['zone'] == zone].copy()
+
+    if len(zone_df) < 20:
+        score = float(model.predict(X_row)[0])
+        return {
+            'lower_bound'      : round(max(0.0, score - 0.05), 4),
+            'upper_bound'      : round(min(1.0, score + 0.05), 4),
+            'confidence_width' : 0.10,
+            'confidence_level' : '90%',
+        }
+
+    available = [f for f in feature_cols if f in zone_df.columns]
+    if 'congestion_score' not in zone_df.columns:
+        return {
+            'lower_bound'      : 0.0,
+            'upper_bound'      : 1.0,
+            'confidence_width' : 1.0,
+            'confidence_level' : '90%',
+        }
+
+    X_pool = zone_df[available].copy()
+    y_pool = zone_df['congestion_score'].copy()
+
+    sample_size = min(200, len(X_pool))
+    preds       = []
+
+    for _ in range(n_bootstrap):
+        idx     = np.random.choice(len(X_pool), size=sample_size, replace=True)
+        X_b     = X_pool.iloc[idx]
+        y_b     = y_pool.iloc[idx]
+
+        boot_model = xgb.XGBRegressor(
+            n_estimators = 50,
+            max_depth    = 4,
+            learning_rate= 0.1,
+            subsample    = 0.8,
+            random_state = np.random.randint(0, 10000),
+            verbosity    = 0,
+        )
+        boot_model.fit(X_b, y_b, verbose=False)
+        pred = float(boot_model.predict(X_row[available])[0])
+        preds.append(np.clip(pred, 0.0, 1.0))
+
+    lower = round(float(np.percentile(preds, 5)),  4)
+    upper = round(float(np.percentile(preds, 95)), 4)
+    width = round(upper - lower, 4)
+
+    return {
+        'lower_bound'      : lower,
+        'upper_bound'      : upper,
+        'confidence_width' : width,
+        'confidence_level' : '90%',
     }
