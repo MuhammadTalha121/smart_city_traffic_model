@@ -391,3 +391,75 @@ def test_response_time_same_zone_returns_overhead_only():
     assert result['distance_km']       == 0.0
     assert result['estimated_minutes'] == 2.0
     assert result['warning']           is None
+
+
+
+# ---------------------------------------------------------------------------
+#— Prediction confidence interval tests
+# ---------------------------------------------------------------------------
+
+def test_prediction_interval_lower_less_than_upper(trained_model):
+    """Lower bound must always be less than or equal to upper bound."""
+    from src.model import compute_prediction_interval
+
+    model, feature_cols, df = trained_model
+
+    row = {
+        "vehicle_count"        : 300,
+        "avg_speed"            : 40,
+        "hour"                 : 8,
+        "rush_hour"            : 1,
+        "is_weekend"           : 0,
+        "is_late_night"        : 0,
+        "event"                : 0,
+        "hour_multiplier"      : 1.4,
+        "weather"              : WEATHER_ENCODING.get("clear", 0),
+        "road_type"            : ROAD_ENCODING.get("highway", 1),
+        "zone"                 : ZONE_ENCODING.get("Zone_1", 0),
+        "day_of_week"          : DAY_ENCODING.get("Monday", 0),
+        "vehicle_count_lag_1h" : 300,
+        "vehicle_count_lag_2h" : 300,
+        "congestion_lag_1h"    : 0.0,
+        "rolling_mean_3h"      : 300,
+        "rolling_std_3h"       : 0.0,
+    }
+    X_row  = pd.DataFrame([row])[feature_cols]
+    result = compute_prediction_interval(model, X_row, feature_cols, df, zone="Zone_1")
+
+    assert result["lower_bound"]       <= result["upper_bound"]
+    assert result["confidence_level"]  == "90%"
+    assert result["confidence_width"]  >= 0.0
+    assert 0.0 <= result["lower_bound"] <= 1.0
+    assert 0.0 <= result["upper_bound"] <= 1.0
+
+
+def test_wide_interval_on_uncertain_inputs(trained_model):
+    """High-variability zone (sandstorm + high vehicle count) should produce nonzero width."""
+    from src.model import compute_prediction_interval
+
+    model, feature_cols, df = trained_model
+
+    row = {
+        "vehicle_count"        : 490,
+        "avg_speed"            : 25,
+        "hour"                 : 8,
+        "rush_hour"            : 1,
+        "is_weekend"           : 0,
+        "is_late_night"        : 0,
+        "event"                : 1,
+        "hour_multiplier"      : 1.5,
+        "weather"              : WEATHER_ENCODING.get("sandstorm", 5),
+        "road_type"            : ROAD_ENCODING.get("highway", 1),
+        "zone"                 : ZONE_ENCODING.get("Zone_1", 0),
+        "day_of_week"          : DAY_ENCODING.get("Monday", 0),
+        "vehicle_count_lag_1h" : 490,
+        "vehicle_count_lag_2h" : 480,
+        "congestion_lag_1h"    : 0.8,
+        "rolling_mean_3h"      : 485,
+        "rolling_std_3h"       : 5.0,
+    }
+    X_row  = pd.DataFrame([row])[feature_cols]
+    result = compute_prediction_interval(model, X_row, feature_cols, df, zone="Zone_1")
+
+    assert result["confidence_width"] > 0.0
+    assert result["lower_bound"] <= result["upper_bound"]
