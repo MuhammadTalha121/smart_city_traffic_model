@@ -389,3 +389,23 @@ def test_history_trend_returns_correct_keys(client):
     assert data["trend"] in ("improving", "worsening", "stable")
     assert isinstance(data["dates"],      list)
     assert isinstance(data["avg_scores"], list)
+
+
+def test_predict_returns_prediction_interval(client):
+    """PROMPT 020 — /predict response must include a prediction_interval dict."""
+    response = client.post(
+        "/predict",
+        json=VALID_PAYLOAD,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "prediction_interval" in data
+    pi = data["prediction_interval"]
+    assert "lower_bound"       in pi
+    assert "upper_bound"       in pi
+    assert "confidence_width"  in pi
+    assert "confidence_level"  in pi
+    assert pi["lower_bound"]   <= pi["upper_bound"]
+    assert pi["confidence_level"] == "90%"
