@@ -667,19 +667,87 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
     from datetime import datetime
 
     row = {
-        'timestamp'      : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'city'           : prediction.get('city'),
-        'zone'           : prediction.get('zone'),
-        'hour'           : prediction.get('hour'),
-        'weather'        : prediction.get('weather'),
+        'timestamp'       : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'city'            : prediction.get('city'),
+        'zone'            : prediction.get('zone'),
+        'hour'            : prediction.get('hour'),
+        'weather'         : prediction.get('weather'),
         'congestion_score': prediction.get('congestion_score'),
         'congestion_level': prediction.get('congestion_level'),
-        'top_factor_1'   : explanation['top_factors'][0]['factor'] if len(explanation['top_factors']) > 0 else '',
-        'top_factor_2'   : explanation['top_factors'][1]['factor'] if len(explanation['top_factors']) > 1 else '',
-        'top_factor_3'   : explanation['top_factors'][2]['factor'] if len(explanation['top_factors']) > 2 else '',
-        'plain_english'  : explanation.get('plain_english', '')
+        'top_factor_1'    : explanation['top_factors'][0]['factor'] if len(explanation['top_factors']) > 0 else '',
+        'top_factor_2'    : explanation['top_factors'][1]['factor'] if len(explanation['top_factors']) > 1 else '',
+        'top_factor_3'    : explanation['top_factors'][2]['factor'] if len(explanation['top_factors']) > 2 else '',
+        'plain_english'   : explanation.get('plain_english', ''),
+        'co2_kg'          : prediction.get('emissions', {}).get('co2_kg', ''),
+        'fuel_litres'     : prediction.get('emissions', {}).get('fuel_litres', ''),
     }
 
     log_df     = pd.DataFrame([row])
     write_header = not os.path.exists(log_path)
     log_df.to_csv(log_path, mode='a', header=write_header, index=False)
+
+
+def estimate_response_time(
+    origin_zone: str,
+    target_zone: str,
+    congestion_level: str,
+    city: str = 'Riyadh',
+) -> Dict:
+    """
+    Estimate emergency vehicle travel time between two zones.
+
+    Parameters
+    ----------
+    origin_zone      : Zone where the emergency station is located.
+    target_zone      : Zone where the incident occurred.
+    congestion_level : Current congestion level on the route.
+    city             : City name (for context in warnings).
+
+    Returns
+    -------
+    dict with distance_km, estimated_minutes, congestion_impact, warning.
+    """
+    from src.config import (
+        ZONE_DISTANCES_KM, EMERGENCY_SPEED_KMPH, WHO_RESPONSE_THRESHOLD_MINS
+    )
+
+    BASE_OVERHEAD_MINS = 2.0
+
+    if origin_zone == target_zone:
+        return {
+            'origin_zone'       : origin_zone,
+            'target_zone'       : target_zone,
+            'distance_km'       : 0.0,
+            'estimated_minutes' : round(BASE_OVERHEAD_MINS, 1),
+            'congestion_impact' : congestion_level,
+            'warning'           : None,
+        }
+
+    key         = tuple(sorted([origin_zone, target_zone]))
+    distance_km = ZONE_DISTANCES_KM.get(key)
+
+    if distance_km is None:
+        distance_km = float(
+            sum(ZONE_DISTANCES_KM.values()) / len(ZONE_DISTANCES_KM)
+        )
+
+    speed_kmph  = EMERGENCY_SPEED_KMPH.get(congestion_level, 60)
+    travel_mins = (distance_km / speed_kmph) * 60
+    total_mins  = round(travel_mins + BASE_OVERHEAD_MINS, 1)
+
+    warning = None
+    if total_mins > WHO_RESPONSE_THRESHOLD_MINS:
+        warning = (
+            f"Response time {total_mins} min exceeds WHO "
+            f"{WHO_RESPONSE_THRESHOLD_MINS}-min threshold. "
+            f"Consider dispatching from nearest available unit."
+        )
+
+    return {
+        'origin_zone'       : origin_zone,
+        'target_zone'       : target_zone,
+        'distance_km'       : round(distance_km, 1),
+        'estimated_minutes' : total_mins,
+        'congestion_impact' : congestion_level,
+        'warning'           : warning,
+    }

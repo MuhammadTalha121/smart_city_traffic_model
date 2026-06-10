@@ -142,3 +142,46 @@ OFF_PEAK_WINDOWS: Dict[str, Dict[str, str]] = {
     'morning': {'recommended': '06:30', 'avoid_until': '09:30'},
     'evening': {'recommended': '15:30', 'avoid_until': '18:30'},
 }
+
+
+# ---------------------------------------------------------------------------
+# PROMPT 017 — Emergency Vehicle Response Time
+# ---------------------------------------------------------------------------
+
+EMERGENCY_STATIONS: Dict[str, Dict] = {
+    'Riyadh': {
+        'Central': {'zone': 'Zone_1', 'lat': 24.688, 'lon': 46.722},
+        'North':   {'zone': 'Zone_3', 'lat': 24.774, 'lon': 46.738},
+    },
+    'NEOM': {
+        'Central': {'zone': 'Zone_1', 'lat': 28.250, 'lon': 35.500},
+    },
+    'Dubai': {
+        'Central': {'zone': 'Zone_1', 'lat': 25.204, 'lon': 55.270},
+    },
+    'Karachi': {
+        'Central': {'zone': 'Zone_1', 'lat': 24.860, 'lon': 67.001},
+    },
+}
+
+ZONE_DISTANCES_KM: Dict[tuple, float] = {
+    ('Zone_1', 'Zone_2'): 3.2,
+    ('Zone_1', 'Zone_3'): 5.8,
+    ('Zone_1', 'Zone_4'): 7.1,
+    ('Zone_1', 'Zone_5'): 9.4,
+    ('Zone_2', 'Zone_3'): 4.1,
+    ('Zone_2', 'Zone_4'): 5.9,
+    ('Zone_2', 'Zone_5'): 8.2,
+    ('Zone_3', 'Zone_4'): 3.3,
+    ('Zone_3', 'Zone_5'): 6.1,
+    ('Zone_4', 'Zone_5'): 4.2,
+}
+
+EMERGENCY_SPEED_KMPH: Dict[str, int] = {
+    'Low':      75,
+    'Moderate': 60,
+    'High':     45,
+    'Critical': 30,
+}
+
+WHO_RESPONSE_THRESHOLD_MINS: int = 8

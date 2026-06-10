@@ -277,3 +277,34 @@ def test_cities_compare_returns_all_configured_cities(client):
         assert "peak_hour"            in c
         assert "total_anomalies"      in c
         assert "avg_risk_score"       in c
+
+
+def test_emergency_response_time_no_auth_returns_401(client):
+    response = client.get("/emergency/response-time?city=Riyadh&target_zone=Zone_3")
+    assert response.status_code == 401
+
+
+def test_emergency_response_time_returns_estimates(client):
+    response = client.get(
+        "/emergency/response-time?city=Riyadh&target_zone=Zone_3",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "target_zone"               in data
+    assert "current_congestion_level"  in data
+    assert "fastest_estimated_minutes" in data
+    assert "who_threshold_mins"        in data
+    assert isinstance(data["estimates"], list)
+    assert len(data["estimates"]) >= 1
+
+    est = data["estimates"][0]
+    assert "station_name"      in est
+    assert "origin_zone"       in est
+    assert "distance_km"       in est
+    assert "estimated_minutes" in est
+    assert "congestion_impact" in est
+
+    minutes = [e["estimated_minutes"] for e in data["estimates"]]
+    assert minutes == sorted(minutes)

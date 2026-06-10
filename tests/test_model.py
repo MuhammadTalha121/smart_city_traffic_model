@@ -366,3 +366,28 @@ def test_critical_emissions_higher_than_low():
         f"Critical co2_kg ({critical_result['co2_kg']}) not higher than "
         f"Low co2_kg ({low_result['co2_kg']})"
     )
+
+# ---------------------------------------------------------------------------
+# PROMPT 017 — Emergency response time tests
+# ---------------------------------------------------------------------------
+
+def test_critical_congestion_increases_response_time():
+    """Critical congestion produces longer response time than Low."""
+    from src.model import estimate_response_time
+
+    low      = estimate_response_time('Zone_1', 'Zone_3', 'Low',      'Riyadh')
+    critical = estimate_response_time('Zone_1', 'Zone_3', 'Critical', 'Riyadh')
+
+    assert critical['estimated_minutes'] > low['estimated_minutes']
+    assert critical['distance_km'] == low['distance_km']
+    assert critical['warning'] is not None
+
+
+def test_response_time_same_zone_returns_overhead_only():
+    """Same origin and target returns only the 2-minute dispatch overhead."""
+    from src.model import estimate_response_time
+
+    result = estimate_response_time('Zone_1', 'Zone_1', 'Low', 'Riyadh')
+    assert result['distance_km']       == 0.0
+    assert result['estimated_minutes'] == 2.0
+    assert result['warning']           is None

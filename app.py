@@ -21,7 +21,7 @@ from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, get_intervention, compute_accident_risk,
-    compute_signal_timing, compute_emissions,
+    compute_signal_timing, compute_emissions, estimate_response_time,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -746,3 +746,55 @@ def forecast(
     df        = city_df[city_df["zone"] == zone]
     forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
     return {"city": city, "zone": zone, "forecasts": forecasts}
+
+
+@app.get("/emergency/response-time", tags=["safety"])
+@limiter.limit("20/minute")
+def emergency_response_time(
+    request: Request,
+    city:        str = "Riyadh",
+    target_zone: str = "Zone_1",
+    _key:        str = Depends(require_api_key),
+):
+    """
+    Estimate emergency vehicle response time from all stations to a target zone.
+
+    Uses current congestion level for that zone to compute effective speed,
+    calculates travel time from each configured station.
+    Flags responses exceeding the WHO 8-minute threshold. 20 req/min per IP.
+    """
+    from src.config import EMERGENCY_STATIONS
+
+    df      = app.state.city_dfs.get(city, app.state.df)
+    zone_df = df[df["zone"] == target_zone]
+
+    if zone_df.empty:
+        current_level = "Low"
+    else:
+        from src.model import congestion_level as cl
+        latest_score  = float(zone_df["congestion_score"].iloc[-1])
+        current_level = cl(latest_score)
+
+    stations  = EMERGENCY_STATIONS.get(city, EMERGENCY_STATIONS.get("Riyadh", {}))
+    estimates = []
+
+    for station_name, station_info in stations.items():
+        result                 = estimate_response_time(
+            origin_zone      = station_info["zone"],
+            target_zone      = target_zone,
+            congestion_level = current_level,
+            city             = city,
+        )
+        result["station_name"] = station_name
+        estimates.append(result)
+
+    estimates.sort(key=lambda x: x["estimated_minutes"])
+
+    return {
+        "city"                      : city,
+        "target_zone"               : target_zone,
+        "current_congestion_level"  : current_level,
+        "fastest_estimated_minutes" : estimates[0]["estimated_minutes"] if estimates else None,
+        "who_threshold_mins"        : 8,
+        "estimates"                 : estimates,
+    }
