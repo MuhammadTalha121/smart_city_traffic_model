@@ -22,6 +22,7 @@ from src.model import (
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, get_intervention, compute_accident_risk,
     compute_signal_timing, compute_emissions, estimate_response_time,
+    get_delivery_windows,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -797,4 +798,33 @@ def emergency_response_time(
         "fastest_estimated_minutes" : estimates[0]["estimated_minutes"] if estimates else None,
         "who_threshold_mins"        : 8,
         "estimates"                 : estimates,
+    }
+
+
+
+@app.get("/freight/windows", tags=["freight"])
+@limiter.limit("20/minute")
+def freight_windows(
+    request: Request,
+    city:    str = "Riyadh",
+    zone:    str = "Zone_1",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Recommend optimal delivery windows for freight vehicles in a zone.
+
+    Returns hours with low congestion outside restricted and prayer windows.
+    Logistics companies use this to schedule deliveries without adding to
+    peak congestion. 20 req/min per IP.
+    """
+    df     = app.state.city_dfs.get(city, app.state.df)
+    result = get_delivery_windows(city=city, zone=zone, df=df)
+
+    return {
+        "city"                : city,
+        "zone"                : zone,
+        "recommended_windows" : result["recommended_windows"],
+        "avoid_hours"         : result["avoid_hours"],
+        "best_hour"           : result["best_hour"],
+        "rationale"           : result["rationale"],
     }

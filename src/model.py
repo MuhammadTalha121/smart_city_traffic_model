@@ -751,3 +751,73 @@ def estimate_response_time(
         'congestion_impact' : congestion_level,
         'warning'           : warning,
     }
+
+
+
+def get_delivery_windows(city: str, zone: str, df: pd.DataFrame) -> Dict:
+    """
+    Recommend optimal freight delivery windows for a zone.
+
+    Logic:
+    - Find hours where mean congestion_score < 0.35 for that zone
+    - Exclude FREIGHT_RESTRICTED_HOURS for that city/zone
+    - Exclude Friday prayer window (12–13) for Saudi cities
+    - Return recommended windows, hours to avoid, best single hour, rationale
+
+    Parameters
+    ----------
+    city : City name.
+    zone : Zone name.
+    df   : Full traffic DataFrame for that city (from app.state.city_dfs).
+
+    Returns
+    -------
+    dict with recommended_windows, avoid_hours, best_hour, rationale.
+    """
+    from src.config import FREIGHT_RESTRICTED_HOURS, FRIDAY_PRAYER_HOURS, SAUDI_CITIES
+
+    zone_df = df[df['zone'] == zone]
+
+    hourly_congestion = (
+        zone_df.groupby('hour')['congestion_score'].mean().to_dict()
+    )
+
+    restricted = set(
+        FREIGHT_RESTRICTED_HOURS
+        .get(city, {})
+        .get(zone, [])
+    )
+
+    if city in SAUDI_CITIES:
+        for h in FRIDAY_PRAYER_HOURS:
+            restricted.add(h)
+
+    recommended_windows = sorted([
+        h for h, score in hourly_congestion.items()
+        if score < 0.35 and h not in restricted
+    ])
+
+    avoid_hours = sorted(list(restricted))
+
+    if recommended_windows:
+        best_hour = min(
+            recommended_windows,
+            key=lambda h: hourly_congestion.get(h, 1.0)
+        )
+        rationale = (
+            f"Hour {best_hour:02d}:00 has the lowest average congestion "
+            f"({hourly_congestion.get(best_hour, 0):.3f}) outside restricted windows."
+        )
+    else:
+        best_hour = None
+        rationale = (
+            "No unrestricted low-congestion window found. "
+            "Consider early morning (02:00–05:00) or negotiate access."
+        )
+
+    return {
+        'recommended_windows': recommended_windows,
+        'avoid_hours'        : avoid_hours,
+        'best_hour'          : best_hour,
+        'rationale'          : rationale,
+    }

@@ -368,7 +368,7 @@ def test_critical_emissions_higher_than_low():
     )
 
 # ---------------------------------------------------------------------------
-# PROMPT 017 — Emergency response time tests
+# — Emergency response time tests
 # ---------------------------------------------------------------------------
 
 def test_critical_congestion_increases_response_time():

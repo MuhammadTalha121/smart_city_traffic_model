@@ -185,3 +185,23 @@ EMERGENCY_SPEED_KMPH: Dict[str, int] = {
 }
 
 WHO_RESPONSE_THRESHOLD_MINS: int = 8
+
+
+FREIGHT_RESTRICTED_HOURS: Dict[str, Dict[str, list]] = {
+    'Riyadh': {
+        'Zone_1': [7, 8, 9, 17, 18, 19],   # KAFD financial district
+        'Zone_2': [7, 8, 17, 18],
+        'Zone_3': [12, 13],                  # prayer window extra restriction
+    },
+    'NEOM': {
+        'Zone_1': [7, 8, 17, 18],
+    },
+    'Dubai': {
+        'Zone_1': [7, 8, 9, 17, 18, 19],
+        'Zone_2': [7, 8, 17, 18],
+    },
+    'Karachi': {
+        'Zone_1': [8, 9, 17, 18],
+        'Zone_2': [8, 9, 17, 18],
+    },
+}

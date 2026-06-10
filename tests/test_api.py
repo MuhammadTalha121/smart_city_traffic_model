@@ -246,7 +246,7 @@ def test_signals_recommended_returns_all_zones(client):
 
 
 # ---------------------------------------------------------------------------
-# PROMPT 016 — Multi-city comparison test
+# Multi-city comparison test
 # ---------------------------------------------------------------------------
 
 def test_cities_compare_returns_all_configured_cities(client):
@@ -308,3 +308,33 @@ def test_emergency_response_time_returns_estimates(client):
 
     minutes = [e["estimated_minutes"] for e in data["estimates"]]
     assert minutes == sorted(minutes)
+
+
+
+def test_freight_windows_no_auth_returns_401(client):
+    response = client.get("/freight/windows?city=Riyadh&zone=Zone_1")
+    assert response.status_code == 401
+
+
+def test_freight_windows_returns_valid_structure(client):
+    response = client.get(
+        "/freight/windows?city=Riyadh&zone=Zone_1",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "city"                 in data
+    assert "zone"                 in data
+    assert "recommended_windows"  in data
+    assert "avoid_hours"          in data
+    assert "best_hour"            in data
+    assert "rationale"            in data
+    assert isinstance(data["recommended_windows"], list)
+    assert isinstance(data["avoid_hours"], list)
+
+    # Restricted hours must not appear in recommended windows
+    from src.config import FREIGHT_RESTRICTED_HOURS
+    restricted = set(FREIGHT_RESTRICTED_HOURS.get("Riyadh", {}).get("Zone_1", []))
+    overlap    = restricted.intersection(set(data["recommended_windows"]))
+    assert len(overlap) == 0, f"Recommended windows contain restricted hours: {overlap}"
