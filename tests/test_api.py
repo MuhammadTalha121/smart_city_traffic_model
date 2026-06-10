@@ -243,3 +243,37 @@ def test_signals_recommended_returns_all_zones(client):
         assert "timing_rationale" in st
         assert st["cycle_seconds"] == 90
         assert st["green_seconds"] + st["red_seconds"] == 90
+
+
+# ---------------------------------------------------------------------------
+# PROMPT 016 — Multi-city comparison test
+# ---------------------------------------------------------------------------
+
+def test_cities_compare_returns_all_configured_cities(client):
+    """/cities/compare must return a snapshot for all four configured cities."""
+    response = client.get(
+        "/cities/compare",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "cities"       in data
+    assert "total_cities" in data
+    assert data["total_cities"] == 4
+
+    names = {c["city"] for c in data["cities"]}
+    assert names == {"Riyadh", "NEOM", "Dubai", "Karachi"}, (
+        f"Expected all four cities, got {names}"
+    )
+
+    # Verify sorted descending by avg_congestion_score
+    scores = [c["avg_congestion_score"] for c in data["cities"]]
+    assert scores == sorted(scores, reverse=True)
+
+    # Verify required keys on each city snapshot
+    for c in data["cities"]:
+        assert "avg_congestion_score" in c
+        assert "max_zone"             in c
+        assert "peak_hour"            in c
+        assert "total_anomalies"      in c
+        assert "avg_risk_score"       in c

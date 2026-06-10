@@ -331,3 +331,38 @@ def test_prayer_window_produces_short_green():
     )
     assert result["green_seconds"] == 18  # 90 * 0.20
     assert "prayer" in result["timing_rationale"].lower()
+
+
+# ---------------------------------------------------------------------------
+# PROMPT 011 — Emissions tests
+# ---------------------------------------------------------------------------
+
+def test_compute_emissions_returns_valid_output():
+    """compute_emissions must return fuel_litres, co2_kg, co2_tonnes all > 0."""
+    from src.model import compute_emissions
+
+    result = compute_emissions(
+        congestion_level_str="High",
+        vehicle_count=200,
+        duration_hours=1.0,
+    )
+    assert "fuel_litres" in result
+    assert "co2_kg"      in result
+    assert "co2_tonnes"  in result
+    assert result["fuel_litres"] > 0
+    assert result["co2_kg"]      > 0
+    assert result["co2_tonnes"]  > 0
+    assert result["co2_kg"] == round(result["fuel_litres"] * 2.31, 4)
+
+
+def test_critical_emissions_higher_than_low():
+    """Critical congestion must produce higher CO2 output than Low congestion."""
+    from src.model import compute_emissions
+
+    low_result      = compute_emissions("Low",      vehicle_count=200)
+    critical_result = compute_emissions("Critical", vehicle_count=200)
+
+    assert critical_result["co2_kg"] > low_result["co2_kg"], (
+        f"Critical co2_kg ({critical_result['co2_kg']}) not higher than "
+        f"Low co2_kg ({low_result['co2_kg']})"
+    )
