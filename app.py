@@ -7,6 +7,7 @@ from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODI
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -20,7 +21,7 @@ from src.model import (
     train_xgboost, prepare_features, predict_single,
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, get_intervention, compute_accident_risk,
-    compute_signal_timing,
+    compute_signal_timing, compute_emissions,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score
@@ -111,19 +112,24 @@ def _get_active_schedule(city: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Train model, start scheduler, share state across endpoints."""
-    df = generate_traffic_data(city="Riyadh")
-    df = apply_hourly_patterns(df, city="Riyadh")
-    df = add_lag_features(df)
+    """Train model on Riyadh, generate data for all cities, start scheduler."""
+    city_dfs = {}
+    for city in ["Riyadh", "NEOM", "Dubai", "Karachi"]:
+        df = generate_traffic_data(city=city)
+        df = apply_hourly_patterns(df, city=city)
+        df = add_lag_features(df)
+        city_dfs[city] = df
 
-    X, y, feature_cols    = prepare_features(df)
-    model, _, _           = train_xgboost(X, y)
+    # Train on Riyadh as primary model
+    X, y, feature_cols = prepare_features(city_dfs["Riyadh"])
+    model, _, _        = train_xgboost(X, y)
 
-    app.state.df              = df
-    app.state.model           = model
-    app.state.feature_cols    = feature_cols
-    app.state.data_source     = "mock"
-    app.state.last_retrain    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    app.state.df           = city_dfs["Riyadh"]   # default city for existing endpoints
+    app.state.city_dfs     = city_dfs
+    app.state.model        = model
+    app.state.feature_cols = feature_cols
+    app.state.data_source  = "mock"
+    app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
     scheduler.start()
@@ -196,6 +202,16 @@ def root():
 def health():
     """Health check — no authentication required."""
     return {"status": "healthy"}
+
+
+@app.get("/dashboard", response_class=HTMLResponse, tags=["info"])
+def dashboard():
+    """Serve the operations dashboard. No authentication required."""
+    dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    if not os.path.exists(dashboard_path):
+        raise HTTPException(status_code=404, detail="dashboard.html not found at repo root.")
+    with open(dashboard_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +396,11 @@ def predict(
         is_weekend       = p["is_weekend"],
     )
 
+    result["emissions"] = compute_emissions(
+        congestion_level_str = result["congestion_level"],
+        vehicle_count        = p["vehicle_count"],
+    )
+
     log_prediction(result, explanation)
     return result
 
@@ -424,7 +445,7 @@ def anomalies(
     _key:    str = Depends(require_api_key),
 ):
     """Current anomalies across all zones. 20 req/min per IP."""
-    df         = app.state.df[app.state.df["city"] == city]
+    df         = app.state.city_dfs.get(city, app.state.df)
     anomaly_df = detect_anomalies(df)
     flagged    = anomaly_df[anomaly_df["anomaly_flag"] == 1].to_dict(orient="records")
     return {
@@ -447,7 +468,7 @@ def interventions_active(
     """
     from src.model import congestion_level as cl
 
-    df      = app.state.df[app.state.df["city"] == city]
+    df      = app.state.city_dfs.get(city, app.state.df)
     zones   = df["zone"].unique()
     results = []
 
@@ -495,7 +516,7 @@ def safety_hotspots(
     All zones ranked by current accident risk score, highest first.
     Includes primary risk factor for each zone. 20 req/min per IP.
     """
-    df      = app.state.df[app.state.df["city"] == city]
+    df      = app.state.city_dfs.get(city, app.state.df)
     zones   = df["zone"].unique()
     results = []
 
@@ -543,7 +564,7 @@ def signals_recommended(
     Recommended adaptive signal timing for all zones right now,
     sorted by congestion_score descending. 20 req/min per IP.
     """
-    df      = app.state.df[app.state.df["city"] == city]
+    df      = app.state.city_dfs.get(city, app.state.df)
     zones   = df["zone"].unique()
     results = []
 
@@ -577,6 +598,141 @@ def signals_recommended(
     }
 
 
+@app.get("/emissions/summary", tags=["emissions"])
+@limiter.limit("20/minute")
+def emissions_summary(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Aggregated CO2 and fuel summary from the predictions log.
+    Reads predictions_log.csv and returns totals, peak hour, peak zone.
+    """
+    import os
+
+    log_path = "predictions_log.csv"
+    if not os.path.exists(log_path):
+        return {
+            "city"                  : city,
+            "total_co2_tonnes"      : 0.0,
+            "peak_emission_hour"    : None,
+            "peak_emission_zone"    : None,
+            "period_days"           : 0,
+            "note"                  : "No predictions logged yet.",
+        }
+
+    log_df = pd.read_csv(log_path)
+    if log_df.empty or "congestion_score" not in log_df.columns:
+        return {
+            "city"              : city,
+            "total_co2_tonnes"  : 0.0,
+            "peak_emission_hour": None,
+            "peak_emission_zone": None,
+            "period_days"       : 0,
+        }
+
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+
+    if log_df.empty:
+        return {"city": city, "total_co2_tonnes": 0.0, "peak_emission_hour": None,
+                "peak_emission_zone": None, "period_days": 0}
+
+    # Compute co2_kg per logged row using stored level and a default vehicle count
+    from src.config import FUEL_CONSUMPTION_LPH, CO2_KG_PER_LITRE
+
+    def _row_co2(row):
+        level = row.get("congestion_level", "Low")
+        rate  = FUEL_CONSUMPTION_LPH.get(level, FUEL_CONSUMPTION_LPH["Low"])
+        return rate * (150 / 100) * CO2_KG_PER_LITRE  # use avg 150 vehicles as default
+
+    log_df["_co2_kg"] = log_df.apply(_row_co2, axis=1)
+
+    total_co2_kg     = log_df["_co2_kg"].sum()
+    total_co2_tonnes = round(total_co2_kg / 1000, 6)
+
+    peak_hour = None
+    peak_zone = None
+    if "hour" in log_df.columns:
+        peak_hour = int(log_df.groupby("hour")["_co2_kg"].sum().idxmax())
+    if "zone" in log_df.columns:
+        peak_zone = str(log_df.groupby("zone")["_co2_kg"].sum().idxmax())
+
+    period_days = 0
+    if "timestamp" in log_df.columns:
+        try:
+            timestamps  = pd.to_datetime(log_df["timestamp"])
+            period_days = max(1, (timestamps.max() - timestamps.min()).days)
+        except Exception:
+            period_days = 1
+
+    return {
+        "city"              : city,
+        "total_co2_tonnes"  : total_co2_tonnes,
+        "peak_emission_hour": peak_hour,
+        "peak_emission_zone": peak_zone,
+        "period_days"       : period_days,
+    }
+
+
+@app.get("/cities/compare", tags=["multi-city"])
+@limiter.limit("20/minute")
+def cities_compare(
+    request: Request,
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Current traffic snapshot for all configured cities.
+
+    Returns avg_congestion_score, most congested zone, peak hour,
+    total anomalies, and avg_risk_score per city.
+    Sorted by avg_congestion_score descending.
+    """
+    from src.model import congestion_level as cl, compute_accident_risk
+
+    results = []
+
+    for city, df in app.state.city_dfs.items():
+        avg_congestion = round(float(df["congestion_score"].mean()), 4)
+
+        zone_means  = df.groupby("zone")["congestion_score"].mean()
+        max_zone    = str(zone_means.idxmax())
+
+        hour_means  = df.groupby("hour")["congestion_score"].mean()
+        peak_hour   = int(hour_means.idxmax())
+
+        anomaly_df      = detect_anomalies(df)
+        total_anomalies = int((anomaly_df["anomaly_flag"] == 1).sum())
+
+        # Sample risk score from the latest row of the worst zone
+        worst_df  = df[df["zone"] == max_zone].sort_values("timestamp")
+        latest    = worst_df.iloc[-1]
+        risk      = compute_accident_risk(
+            congestion_score = float(latest["congestion_score"]),
+            weather          = str(latest["weather"]),
+            hour             = int(latest["hour"]),
+            is_weekend       = int(latest.get("is_weekend", 0)),
+            rush_hour        = int(latest.get("rush_hour", 0)),
+        )
+
+        results.append({
+            "city"               : city,
+            "avg_congestion_score": avg_congestion,
+            "max_zone"           : max_zone,
+            "peak_hour"          : peak_hour,
+            "total_anomalies"    : total_anomalies,
+            "avg_risk_score"     : risk["risk_score"],
+        })
+
+    results.sort(key=lambda x: x["avg_congestion_score"], reverse=True)
+
+    return {
+        "cities"      : results,
+        "total_cities": len(results),
+    }
+
+
 @app.get("/forecast", tags=["forecasting"])
 @limiter.limit("20/minute")
 def forecast(
@@ -586,6 +742,7 @@ def forecast(
     _key:    str = Depends(require_api_key),
 ):
     """1h / 2h / 3h congestion forecast with confidence intervals."""
-    df        = app.state.df[(app.state.df["city"] == city) & (app.state.df["zone"] == zone)]
+    city_df   = app.state.city_dfs.get(city, app.state.df)
+    df        = city_df[city_df["zone"] == zone]
     forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
     return {"city": city, "zone": zone, "forecasts": forecasts}
