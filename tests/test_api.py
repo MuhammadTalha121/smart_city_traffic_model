@@ -409,3 +409,63 @@ def test_predict_returns_prediction_interval(client):
     assert "confidence_level"  in pi
     assert pi["lower_bound"]   <= pi["upper_bound"]
     assert pi["confidence_level"] == "90%"
+
+
+def test_alerts_history_no_auth_returns_401(client):
+    response = client.get("/alerts/history?city=Riyadh&hours=24")
+    assert response.status_code == 401
+
+
+def test_alerts_history_returns_valid_structure(client):
+    response = client.get(
+        "/alerts/history?city=Riyadh&hours=24",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "city"         in data
+    assert "hours"        in data
+    assert "total_alerts" in data
+    assert "alerts"       in data
+    assert isinstance(data["alerts"], list)
+    assert data["total_alerts"] == len(data["alerts"])
+
+
+def test_check_thresholds_returns_list(client):
+    """check_thresholds() always returns a list — empty or populated."""
+    from src.pipeline import check_thresholds
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+
+    df = generate_traffic_data(city="Riyadh", n_days=7)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+
+    result = check_thresholds(df, city="Riyadh")
+    assert isinstance(result, list)
+
+
+def test_no_alerts_when_all_clear():
+    """All-low-congestion data produces no alerts."""
+    from src.pipeline import check_thresholds
+    import pandas as pd
+    import numpy as np
+
+    n = 120
+    df = pd.DataFrame({
+        'city'            : 'Riyadh',
+        'zone'            : np.tile(['Zone_1','Zone_2','Zone_3','Zone_4','Zone_5'], n // 5),
+        'timestamp'       : pd.date_range('2025-01-01', periods=n, freq='h'),
+        'hour'            : np.tile(range(24), n // 24 + 1)[:n],
+        'vehicle_count'   : np.full(n, 10.0),
+        'avg_speed'       : np.full(n, 90.0),
+        'congestion_score': np.full(n, 0.05),
+        'weather'         : 'clear',
+        'is_weekend'      : 0,
+        'rush_hour'       : 0,
+    })
+
+    alerts = check_thresholds(df, city="Riyadh")
+    assert isinstance(alerts, list)
+    congestion_alerts = [a for a in alerts if a['metric'] == 'congestion_score']
+    assert len(congestion_alerts) == 0
