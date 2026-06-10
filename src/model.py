@@ -488,6 +488,37 @@ def compute_accident_risk(
     }
 
 
+def compute_emissions(
+    congestion_level_str: str,
+    vehicle_count: float,
+    duration_hours: float = 1.0,
+) -> Dict:
+    """
+    Estimate fuel consumption and CO2 emissions for a zone.
+
+    Formula:
+    - fuel_litres = FUEL_CONSUMPTION_LPH[level] * (vehicle_count / 100) * duration
+    - co2_kg      = fuel_litres * CO2_KG_PER_LITRE
+    - co2_tonnes  = co2_kg / 1000
+
+    Returns
+    -------
+    dict with fuel_litres, co2_kg, co2_tonnes
+    """
+    from src.config import FUEL_CONSUMPTION_LPH, CO2_KG_PER_LITRE
+
+    rate         = FUEL_CONSUMPTION_LPH.get(congestion_level_str, FUEL_CONSUMPTION_LPH['Low'])
+    fuel_litres  = rate * (vehicle_count / 100) * duration_hours
+    co2_kg       = fuel_litres * CO2_KG_PER_LITRE
+    co2_tonnes   = co2_kg / 1000
+
+    return {
+        'fuel_litres': round(fuel_litres, 4),
+        'co2_kg'     : round(co2_kg, 4),
+        'co2_tonnes' : round(co2_tonnes, 6),
+    }
+
+
 def compute_signal_timing(
     congestion_score: float,
     vehicle_count: float,
