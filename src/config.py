@@ -145,7 +145,7 @@ OFF_PEAK_WINDOWS: Dict[str, Dict[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
-# PROMPT 017 — Emergency Vehicle Response Time
+#  — Emergency Vehicle Response Time
 # ---------------------------------------------------------------------------
 
 EMERGENCY_STATIONS: Dict[str, Dict] = {
@@ -204,4 +204,17 @@ FREIGHT_RESTRICTED_HOURS: Dict[str, Dict[str, list]] = {
         'Zone_1': [8, 9, 17, 18],
         'Zone_2': [8, 9, 17, 18],
     },
+}
+
+
+
+# ---------------------------------------------------------------------------
+# — Operator Alert Thresholds
+# ---------------------------------------------------------------------------
+
+ALERT_THRESHOLDS: Dict[str, float] = {
+    'congestion_critical' : 0.75,
+    'risk_critical'       : 0.70,
+    'anomaly_ratio'       : 3.0,
+    'response_time_mins'  : 8.0,
 }

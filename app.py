@@ -25,9 +25,11 @@ from src.model import (
     get_delivery_windows, compute_prediction_interval,
 )
 from src.adapters import get_adapter
-from src.pipeline import run_pipeline, compute_drift_score
+from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 
 load_dotenv()
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
 API_KEY         = os.getenv("API_KEY")
 ALLOWED_ORIGINS = os.getenv(
@@ -133,6 +135,19 @@ async def lifespan(app: FastAPI):
     app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
+
+    def _scheduled_alerts():
+        for city, city_df in app.state.city_dfs.items():
+            alerts = check_thresholds(city_df, city=city)
+            if alerts:
+                log_alert(alerts)
+                deliver_webhook_alert(alerts, WEBHOOK_URL)
+                print(f"[Alert] {len(alerts)} alert(s) fired for {city}")
+
+    scheduler.add_job(_scheduled_alerts, "interval", minutes=15)
+    print("[Scheduler] Alert threshold monitoring scheduled every 15 minutes")
+
+
     scheduler.start()
     print("[Scheduler] Nightly retraining scheduled at 03:00")
 
@@ -414,7 +429,7 @@ def predict(
     )
 
     log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
-    
+
     return result
 
 
@@ -1006,3 +1021,50 @@ def history_trend(
         "avg_scores" : avg_scores,
         "trend"      : trend,
     }
+
+
+@app.get("/alerts/history", tags=["monitoring"])
+@limiter.limit("20/minute")
+def alerts_history(
+    request: Request,
+    city:    str = "Riyadh",
+    hours:   int = 24,
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Return all alerts triggered in the past N hours from the alerts log.
+
+    Reads alerts_log.csv, filters by city and time window.
+    Returns total count and full alert list sorted newest first.
+    20 req/min per IP.
+    """
+    log_path = "alerts_log.csv"
+
+    if not os.path.exists(log_path):
+        return {
+            "city"        : city,
+            "hours"       : hours,
+            "total_alerts": 0,
+            "alerts"      : [],
+            "note"        : "No alerts logged yet.",
+        }
+
+    log_df = pd.read_csv(log_path)
+
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff = pd.Timestamp.now() - pd.Timedelta(hours=hours)
+        log_df = log_df[log_df["timestamp"] >= cutoff]
+
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+
+    log_df = log_df.sort_values("timestamp", ascending=False)
+
+    return {
+        "city"        : city,
+        "hours"       : hours,
+        "total_alerts": len(log_df),
+        "alerts"      : log_df.to_dict(orient="records"),
+    }
+
