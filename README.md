@@ -62,6 +62,26 @@ That is exactly what this system is.
 
 ---
 
+## 📐 System Architecture
+
+For a **comprehensive technical architecture diagram** and all **20+ technical functionalities**, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+This includes:
+- ✅ Complete Mermaid system architecture diagram (15+ components)
+- ✅ Data ingestion & adapter patterns
+- ✅ API security & rate limiting framework
+- ✅ Feature engineering pipeline
+- ✅ ML model training & evaluation
+- ✅ Multi-horizon forecasting
+- ✅ Anomaly detection with severity levels
+- ✅ Emissions & sustainability tracking
+- ✅ Automated retraining & drift monitoring
+- ✅ City configuration & multi-tenancy support
+
+**Perfect for startup pitch decks, enterprise reviews, and technical documentation.**
+
+---
+
 ## Architecture
 
 ```
@@ -266,9 +286,9 @@ X-API-Key: your_key_here
   "city": "Riyadh",
   "zone": "Zone_1",
   "forecasts": [
-    {"hours_ahead": 1, "forecast_hour": 9,  "predicted_score": 0.0412, "lower_bound": 0.0, "upper_bound": 0.1109, "congestion_level": "Low", "recommendation": "Zone_1 is clear. Normal operations."},
-    {"hours_ahead": 2, "forecast_hour": 10, "predicted_score": 0.0343, "lower_bound": 0.0, "upper_bound": 0.1040, "congestion_level": "Low", "recommendation": "Zone_1 is clear. Normal operations."},
-    {"hours_ahead": 3, "forecast_hour": 11, "predicted_score": 0.0343, "lower_bound": 0.0, "upper_bound": 0.1040, "congestion_level": "Low", "recommendation": "Zone_1 is clear. Normal operations."}
+    {"hours_ahead": 1, "forecast_hour": 9,  "predicted_score": 0.0412, "lower_bound": 0.0, "upper_bound": 0.1109, "congestion_level": "Low", "recommendation": "Zone_1 is clear. Normal operations.[...]
+    {"hours_ahead": 2, "forecast_hour": 10, "predicted_score": 0.0343, "lower_bound": 0.0, "upper_bound": 0.1040, "congestion_level": "Low", "recommendation": "Zone_1 is clear. Normal operations.[...]
+    {"hours_ahead": 3, "forecast_hour": 11, "predicted_score": 0.0343, "lower_bound": 0.0, "upper_bound": 0.1040, "congestion_level": "Low", "recommendation": "Zone_1 is clear. Normal operations.[...]
   ]
 }
 ```
@@ -341,14 +361,14 @@ Invoke-WebRequest -Uri "http://localhost:8000/health"
 # No key → 401
 Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
   -ContentType "application/json" `
-  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multiplier":1.4}'
+  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multip[...]
 
 # Valid key → prediction
 $key = (Get-Content .env | Where-Object { $_ -match "^API_KEY=" }) -replace "^API_KEY=",""
 Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method POST `
   -ContentType "application/json" `
   -Headers @{"X-API-Key" = $key} `
-  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multiplier":1.4}'
+  -Body '{"city":"Riyadh","zone":"Zone_1","hour":8,"vehicle_count":320,"avg_speed":35,"weather":"clear","road_type":"highway","rush_hour":1,"is_weekend":0,"is_late_night":0,"event":0,"hour_multip[...]
 ```
 
 ---
