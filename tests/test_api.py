@@ -469,3 +469,67 @@ def test_no_alerts_when_all_clear():
     assert isinstance(alerts, list)
     congestion_alerts = [a for a in alerts if a['metric'] == 'congestion_score']
     assert len(congestion_alerts) == 0
+
+
+
+def test_roads_service_level_no_auth_returns_401(client):
+    response = client.get("/roads/service-level?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_roads_service_level_returns_all_zones(client):
+    response = client.get(
+        "/roads/service-level?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "city"  in data
+    assert "zones" in data
+    assert len(data["zones"]) == 5
+
+    for z in data["zones"]:
+        assert "zone"              in z
+        assert "sdi"               in z
+        assert "level_of_service"  in z
+        assert "free_flow_speed"   in z
+        assert "current_speed"     in z
+        assert "speed_loss_kmph"   in z
+        assert z["level_of_service"] in ('A', 'B', 'C', 'D', 'E', 'F')
+        assert 0.0 <= z["sdi"] <= 1.0
+
+    # Sorted by SDI descending
+    sdis = [z["sdi"] for z in data["zones"]]
+    assert sdis == sorted(sdis, reverse=True)
+
+
+
+def test_safety_pedestrian_no_auth_returns_401(client):
+    response = client.get("/safety/pedestrian?city=Riyadh")
+    assert response.status_code == 401
+
+
+def test_safety_pedestrian_returns_ranked_zones(client):
+    response = client.get(
+        "/safety/pedestrian?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "city"  in data
+    assert "zones" in data
+    assert len(data["zones"]) == 5
+
+    for z in data["zones"]:
+        assert "zone"                   in z
+        assert "pedestrian_risk_score"  in z
+        assert "risk_category"          in z
+        assert "primary_hazard"         in z
+        assert "intervention_required"  in z
+        assert z["risk_category"] in ('Safe', 'Moderate', 'Dangerous', 'Critical')
+        assert 0.0 <= z["pedestrian_risk_score"] <= 1.0
+
+    scores = [z["pedestrian_risk_score"] for z in data["zones"]]
+    assert scores == sorted(scores, reverse=True)
