@@ -32,7 +32,7 @@ from src.model import (
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
-from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input
+from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
 
 
 load_dotenv()
@@ -1362,6 +1362,30 @@ def analytics_quota(
         "quota_warning"    : pct_used >= 80.0,
         "quota_exceeded"   : calls_today >= DAILY_QUOTA_LIMIT,
     }
+
+
+@app.get("/sla/report", tags=["sla"])
+def sla_report(
+    days: int  = 30,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Full SLA compliance report for the past N days. Admin only.
+
+    Targets: uptime >= 99%, avg response < 500ms, p95 < 1000ms.
+    """
+    return compute_sla_metrics(days=days)
+
+
+@app.get("/sla/current", tags=["sla"])
+def sla_current():
+    """
+    Last 24-hour SLA metrics. Public — no authentication required.
+
+    Used for public status page.
+    """
+    return compute_sla_metrics(days=1)
+
 
 
 @app.get("/data/quality", tags=["monitoring"])

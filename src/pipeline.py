@@ -418,3 +418,78 @@ def validate_prediction_input(payload: dict) -> dict:
         "warnings": warnings,
         "errors"  : errors,
     }
+
+
+
+def compute_sla_metrics(days: int = 30) -> dict:
+    """
+    Compute SLA compliance metrics from usage_log.csv.
+
+    SLA targets:
+        uptime    >= 99.0%   (successful requests / total)
+        avg_response < 500ms
+        p95_response < 1000ms
+
+    Returns period_days, uptime_pct, sla_uptime_met, avg_response_ms,
+    p95_response_ms, p99_response_ms, sla_response_met, error_rate_pct,
+    total_requests, met_all_slas.
+    """
+    log_path = "usage_log.csv"
+
+    empty = {
+        "period_days"      : days,
+        "total_requests"   : 0,
+        "uptime_pct"       : 100.0,
+        "sla_uptime_met"   : True,
+        "avg_response_ms"  : None,
+        "p95_response_ms"  : None,
+        "p99_response_ms"  : None,
+        "sla_response_met" : True,
+        "error_rate_pct"   : 0.0,
+        "met_all_slas"     : True,
+        "message"          : "No usage data yet.",
+    }
+
+    if not os.path.exists(log_path):
+        return empty
+
+    log_df = pd.read_csv(log_path)
+
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+        log_df = log_df[log_df["timestamp"] >= cutoff]
+
+    if log_df.empty:
+        return empty
+
+    total       = len(log_df)
+    errors      = int((log_df["response_code"] >= 500).sum()) if "response_code" in log_df.columns else 0
+    successes   = int((log_df["response_code"] < 400).sum()) if "response_code" in log_df.columns else total
+    uptime_pct  = round(successes / total * 100, 3)
+    error_pct   = round(errors / total * 100, 3)
+
+    avg_rt = p95_rt = p99_rt = None
+    if "response_time_ms" in log_df.columns:
+        rt = log_df["response_time_ms"].dropna()
+        if len(rt):
+            avg_rt = round(float(rt.mean()), 1)
+            p95_rt = round(float(rt.quantile(0.95)), 1)
+            p99_rt = round(float(rt.quantile(0.99)), 1)
+
+    sla_uptime   = uptime_pct >= 99.0
+    sla_response = (avg_rt is not None and avg_rt < 500) and (p95_rt is not None and p95_rt < 1000)
+    met_all      = sla_uptime and sla_response
+
+    return {
+        "period_days"      : days,
+        "total_requests"   : total,
+        "uptime_pct"       : uptime_pct,
+        "sla_uptime_met"   : sla_uptime,
+        "avg_response_ms"  : avg_rt,
+        "p95_response_ms"  : p95_rt,
+        "p99_response_ms"  : p99_rt,
+        "sla_response_met" : sla_response,
+        "error_rate_pct"   : error_pct,
+        "met_all_slas"     : met_all,
+    }

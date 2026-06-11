@@ -615,3 +615,24 @@ def test_valid_input_includes_no_warnings(client):
     response = client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
     assert response.status_code == 200
     assert response.json().get("input_warnings", []) == []
+
+
+
+
+def test_sla_report_returns_valid_structure(client):
+    """PROMPT 029 — /sla/report must return expected SLA keys."""
+    response = client.get("/sla/report?days=30", headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    data = response.json()
+    assert "uptime_pct"      in data
+    assert "sla_uptime_met"  in data
+    assert "avg_response_ms" in data
+    assert "met_all_slas"    in data
+    assert "total_requests"  in data
+
+
+def test_sla_current_is_public(client):
+    """PROMPT 029 — /sla/current must be accessible without authentication."""
+    response = client.get("/sla/current")
+    assert response.status_code == 200
+    assert "uptime_pct" in response.json()
