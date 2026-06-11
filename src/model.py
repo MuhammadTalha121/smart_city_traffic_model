@@ -906,3 +906,130 @@ def compute_prediction_interval(
         'confidence_width' : width,
         'confidence_level' : '90%',
     }
+
+
+
+def compute_speed_degradation_index(
+    avg_speed: float,
+    road_type: str,
+    weather:   str,
+) -> Dict:
+    """
+    Compute the Speed Degradation Index (SDI) and HCM Level of Service.
+
+    SDI = (free_flow_speed - avg_speed) / free_flow_speed, clipped to [0, 1].
+    LOS classification follows the Highway Capacity Manual thresholds.
+
+    Parameters
+    ----------
+    avg_speed : Current average speed in km/h.
+    road_type : One of highway, arterial, local.
+    weather   : Current weather condition (used for context in output only).
+
+    Returns
+    -------
+    dict with sdi, level_of_service, free_flow_speed, current_speed, speed_loss_kmph.
+    """
+    from src.config import FREE_FLOW_SPEED_KMPH
+
+    free_flow   = FREE_FLOW_SPEED_KMPH.get(road_type, 70)
+    sdi         = float(np.clip((free_flow - avg_speed) / free_flow, 0.0, 1.0))
+    speed_loss  = round(max(0.0, free_flow - avg_speed), 1)
+
+    if   sdi < 0.10: los = 'A'
+    elif sdi < 0.20: los = 'B'
+    elif sdi < 0.35: los = 'C'
+    elif sdi < 0.50: los = 'D'
+    elif sdi < 0.70: los = 'E'
+    else           : los = 'F'
+
+    return {
+        'sdi'             : round(sdi, 4),
+        'level_of_service': los,
+        'free_flow_speed' : free_flow,
+        'current_speed'   : round(float(avg_speed), 1),
+        'speed_loss_kmph' : speed_loss,
+    }
+
+
+def compute_pedestrian_risk(
+    vehicle_count: float,
+    avg_speed:     float,
+    hour:          int,
+    weather:       str,
+    road_type:     str,
+) -> Dict:
+    """
+    Score pedestrian danger for a zone based on traffic and environmental features.
+
+    Base risk = (vehicle_count / 500) * (avg_speed / 100)
+    Multipliers applied in order: road_type, time-of-day, weather, prayer window.
+    Result clipped to [0.0, 1.0].
+
+    Risk categories:
+      Safe      < 0.25
+      Moderate  0.25–0.50
+      Dangerous 0.50–0.75
+      Critical  > 0.75
+
+    Parameters
+    ----------
+    vehicle_count : Number of vehicles in the zone.
+    avg_speed     : Average speed in km/h.
+    hour          : Hour of day (0–23).
+    weather       : Weather condition string.
+    road_type     : One of 'highway', 'arterial', 'local'.
+
+    Returns
+    -------
+    dict with pedestrian_risk_score, risk_category, primary_hazard.
+    """
+    base_risk = (vehicle_count / 500.0) * (avg_speed / 100.0)
+
+    road_multipliers = {'highway': 1.4, 'arterial': 1.0, 'local': 0.8}
+    base_risk *= road_multipliers.get(road_type, 1.0)
+
+    if hour in [21, 22, 23]:
+        base_risk *= 1.3
+        time_hazard = 'late_night_high_speed'
+    elif hour in [7, 8, 17, 18]:
+        base_risk *= 1.1
+        time_hazard = 'rush_hour_volume'
+    else:
+        time_hazard = None
+
+    weather_multipliers = {
+        'sandstorm': 1.5,
+        'fog'      : 1.3,
+        'rain'     : 1.3,
+        'dust'     : 1.2,
+        'humid'    : 1.0,
+        'clear'    : 1.0,
+    }
+    base_risk *= weather_multipliers.get(weather, 1.0)
+
+    if hour in [12, 13]:
+        base_risk *= 0.6
+        time_hazard = 'prayer_window_low_traffic'
+
+    score = float(np.clip(base_risk, 0.0, 1.0))
+
+    if   score < 0.25: category = 'Safe'
+    elif score < 0.50: category = 'Moderate'
+    elif score < 0.75: category = 'Dangerous'
+    else:              category = 'Critical'
+
+    if weather in ('sandstorm', 'fog', 'rain'):
+        primary_hazard = f'{weather}_visibility_reduction'
+    elif time_hazard:
+        primary_hazard = time_hazard
+    elif road_type == 'highway':
+        primary_hazard = 'high_speed_road'
+    else:
+        primary_hazard = 'vehicle_volume'
+
+    return {
+        'pedestrian_risk_score': round(score, 4),
+        'risk_category'        : category,
+        'primary_hazard'       : primary_hazard,
+    }
