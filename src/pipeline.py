@@ -372,13 +372,49 @@ def parse_key_registry(env_value: str) -> Dict[str, Dict]:
     return registry
 
 
-def build_key_registry() -> Dict[str, Dict]:
-    """Build registry from API_KEYS. Falls back to legacy API_KEY as wildcard admin."""
-    api_keys_env = os.getenv('API_KEYS', '').strip()
-    if api_keys_env:
-        return parse_key_registry(api_keys_env)
-    legacy_key = os.getenv('API_KEY', '').strip()
-    if legacy_key:
-        return {legacy_key: {'city': '*', 'role': 'admin'}}
-    return {}
+def validate_prediction_input(payload: dict) -> dict:
+    """
+    Validate an incoming prediction payload against plausibility ranges.
 
+    Checks vehicle_count, avg_speed, hour_multiplier, weather, zone,
+    and road_type. Returns valid (bool), warnings (list), errors (list).
+    """
+    from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING
+
+    errors   = []
+    warnings = []
+
+    vehicle_count = payload.get("vehicle_count")
+    if vehicle_count is not None:
+        if vehicle_count < 0 or vehicle_count > 500:
+            errors.append(f"vehicle_count {vehicle_count} out of range [0, 500].")
+        elif vehicle_count > 450:
+            warnings.append(f"vehicle_count {vehicle_count} is unusually high (> 450).")
+
+    avg_speed = payload.get("avg_speed")
+    if avg_speed is not None:
+        if avg_speed < 20 or avg_speed > 100:
+            errors.append(f"avg_speed {avg_speed} out of range [20, 100].")
+
+    hour_multiplier = payload.get("hour_multiplier")
+    if hour_multiplier is not None:
+        if hour_multiplier < 0.05 or hour_multiplier > 3.0:
+            errors.append(f"hour_multiplier {hour_multiplier} out of range [0.05, 3.0].")
+
+    weather = payload.get("weather")
+    if weather is not None and weather not in WEATHER_ENCODING:
+        errors.append(f"weather '{weather}' not in {list(WEATHER_ENCODING.keys())}.")
+
+    zone = payload.get("zone")
+    if zone is not None and zone not in ZONE_ENCODING:
+        errors.append(f"zone '{zone}' not in {list(ZONE_ENCODING.keys())}.")
+
+    road_type = payload.get("road_type")
+    if road_type is not None and road_type not in ROAD_ENCODING:
+        errors.append(f"road_type '{road_type}' not in {list(ROAD_ENCODING.keys())}.")
+
+    return {
+        "valid"   : len(errors) == 0,
+        "warnings": warnings,
+        "errors"  : errors,
+    }

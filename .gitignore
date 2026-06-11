@@ -57,3 +57,6 @@ __pycache__/
 predictions_log.csv
 
 alerts_log.csv
+
+
+usage_log.csv

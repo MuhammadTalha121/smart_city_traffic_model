@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WebSocket Live Test — Smart City Traffic</title>
+<style>
+  body { font-family: monospace; background: #0d1117; color: #c9d1db; padding: 2rem; }
+  h1 { color: #d4af64; font-size: 1rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  #status { color: #5aaf8a; margin-bottom: 1rem; font-size: 0.85rem; }
+  #status.disconnected { color: #e07070; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+  th { text-align: left; padding: 0.4rem 0.75rem; border-bottom: 1px solid #1e2a3a;
+       color: #4a5568; font-weight: 400; letter-spacing: 0.06em; text-transform: uppercase; }
+  td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #0d1420; }
+  .Low { color: #5aaf8a; } .Moderate { color: #d4af64; }
+  .High { color: #e09060; } .Critical { color: #e07070; }
+  .Safe { color: #5aaf8a; } .Elevated { color: #d4af64; }
+  .High.Risk { color: #e09060; } .Critical.Risk { color: #e07070; }
+  #log { margin-top: 1.5rem; font-size: 0.72rem; color: #4a5568; max-height: 120px; overflow-y: auto; }
+  input, button { background: #111720; border: 1px solid #1e2a3a; color: #c9d1db;
+                  padding: 0.4rem 0.75rem; border-radius: 4px; font-family: monospace; }
+  button { cursor: pointer; color: #d4af64; border-color: rgba(212,175,100,0.3); margin-left: 0.5rem; }
+  button:hover { background: #1a2433; }
+  .controls { margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  label { font-size: 0.72rem; color: #4a5568; letter-spacing: 0.05em; }
+</style>
+</head>
+<body>
+
+<h1>🚦 WebSocket Live Feed — Smart City Traffic Intelligence</h1>
+
+<div class="controls">
+  <label>HOST</label>
+  <input id="host" value="localhost:8000" style="width:180px">
+  <label>CITY</label>
+  <input id="city" value="Riyadh" style="width:100px">
+  <label>API KEY</label>
+  <input id="apikey" type="password" placeholder="your_api_key" style="width:200px">
+  <button onclick="connect()">Connect</button>
+  <button onclick="disconnect()">Disconnect</button>
+</div>
+
+<div id="status" class="disconnected">● DISCONNECTED</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Zone</th><th>Score</th><th>Level</th>
+      <th>Risk</th><th>Anomaly</th><th>Vehicles</th>
+      <th>Speed km/h</th><th>Weather</th><th>Hour</th>
+    </tr>
+  </thead>
+  <tbody id="zone-rows"></tbody>
+</table>
+
+<div id="log"></div>
+
+<script>
+let ws = null;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent = new Date().toLocaleTimeString() + ' — ' + msg + '\n' + el.textContent;
+}
+
+function connect() {
+  const host   = document.getElementById('host').value.trim();
+  const city   = document.getElementById('city').value.trim();
+  const apikey = document.getElementById('apikey').value.trim();
+  const url    = `ws://${host}/ws/live/${city}?api_key=${encodeURIComponent(apikey)}`;
+
+  if (ws) ws.close();
+
+  ws = new WebSocket(url);
+  log('Connecting to ' + url);
+
+  ws.onopen = () => {
+    document.getElementById('status').textContent = '● CONNECTED — updates every 30s';
+    document.getElementById('status').className = '';
+    log('Connected');
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.error) { log('Server error: ' + data.error); return; }
+      renderZones(data.zones || []);
+      log('Snapshot received — ' + (data.zones || []).length + ' zones, ts=' + data.timestamp);
+    } catch(e) {
+      log('Parse error: ' + e.message);
+    }
+  };
+
+  ws.onerror = (e) => {
+    document.getElementById('status').textContent = '● ERROR';
+    document.getElementById('status').className = 'disconnected';
+    log('WebSocket error');
+  };
+
+  ws.onclose = (e) => {
+    document.getElementById('status').textContent = '● DISCONNECTED (code=' + e.code + ')';
+    document.getElementById('status').className = 'disconnected';
+    log('Closed — code ' + e.code + (e.code === 1008 ? ' (auth rejected)' : ''));
+  };
+}
+
+function disconnect() {
+  if (ws) { ws.close(); ws = null; }
+}
+
+function renderZones(zones) {
+  const tbody = document.getElementById('zone-rows');
+  tbody.innerHTML = zones.map(z => `
+    <tr>
+      <td style="color:#f0ede8;font-weight:500">${z.zone}</td>
+      <td>${z.congestion_score.toFixed(4)}</td>
+      <td class="${z.congestion_level}">${z.congestion_level}</td>
+      <td class="${z.risk_level.replace(' ','.')}">${z.risk_level}</td>
+      <td style="color:${z.anomaly_flag ? '#e07070' : '#5aaf8a'}">${z.anomaly_flag ? '⚠ YES' : 'NO'}</td>
+      <td>${z.vehicle_count}</td>
+      <td>${z.avg_speed}</td>
+      <td>${z.weather}</td>
+      <td>${String(z.hour).padStart(2,'0')}:00</td>
+    </tr>
+  `).join('');
+}
+</script>
+</body>
+</html>

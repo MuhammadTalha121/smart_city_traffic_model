@@ -874,6 +874,8 @@ def compute_prediction_interval(
         }
 
     X_pool = zone_df[available].copy()
+    X_pool = X_pool.apply(pd.to_numeric, errors='coerce').fillna(0)
+
     y_pool = zone_df['congestion_score'].copy()
 
     sample_size = min(200, len(X_pool))
@@ -882,6 +884,8 @@ def compute_prediction_interval(
     for _ in range(n_bootstrap):
         idx     = np.random.choice(len(X_pool), size=sample_size, replace=True)
         X_b     = X_pool.iloc[idx]
+        X_b = X_b.apply(pd.to_numeric, errors='coerce').fillna(0)
+
         y_b     = y_pool.iloc[idx]
 
         boot_model = xgb.XGBRegressor(

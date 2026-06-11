@@ -533,3 +533,85 @@ def test_safety_pedestrian_returns_ranked_zones(client):
 
     scores = [z["pedestrian_risk_score"] for z in data["zones"]]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_usage_log_created_after_request(client):
+    """After any authenticated request, usage_log.csv must exist."""
+    import os
+    client.get("/health")
+    client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+    assert os.path.exists("usage_log.csv")
+
+
+def test_analytics_usage_no_auth_returns_401(client):
+    response = client.get("/analytics/usage?days=30")
+    assert response.status_code == 401
+
+
+def test_analytics_usage_returns_valid_structure(client):
+    client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+
+    response = client.get(
+        "/analytics/usage?days=30",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "period_days"          in data
+    assert "total_calls"          in data
+    assert "calls_by_endpoint"    in data
+    assert "calls_by_day"         in data
+    assert "avg_response_time_ms" in data
+    assert "top_endpoint"         in data
+    assert data["total_calls"]    >= 0
+
+
+def test_analytics_quota_returns_valid_structure(client):
+    response = client.get(
+        "/analytics/quota",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "date"           in data
+    assert "calls_today"    in data
+    assert "daily_limit"    in data
+    assert "pct_used"       in data
+    assert "quota_warning"  in data
+    assert "quota_exceeded" in data
+    assert data["daily_limit"] == 10000
+    assert isinstance(data["quota_warning"],  bool)
+    assert isinstance(data["quota_exceeded"], bool)
+
+
+
+def test_websocket_rejects_invalid_key(client):
+    """WebSocket must close with 1008 on invalid or missing API key."""
+    with pytest.raises(Exception):
+        # fastapi TestClient raises on abnormal WebSocket close
+        with client.websocket_connect("/ws/live/Riyadh?api_key=totally-wrong-key") as ws:
+            ws.receive_json()
+
+
+
+def test_out_of_range_vehicle_count_returns_422(client):
+    """PROMPT 028 — vehicle_count > 500 must be rejected."""
+    bad_payload = {**VALID_PAYLOAD, "vehicle_count": 9999}
+    response = client.post("/predict", json=bad_payload, headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 422
+
+
+def test_invalid_weather_returns_422(client):
+    """PROMPT 028 — unknown weather condition must be rejected."""
+    bad_payload = {**VALID_PAYLOAD, "weather": "tornado"}
+    response = client.post("/predict", json=bad_payload, headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 422
+
+
+def test_valid_input_includes_no_warnings(client):
+    """PROMPT 028 — clean input must produce empty input_warnings list."""
+    response = client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    assert response.json().get("input_warnings", []) == []

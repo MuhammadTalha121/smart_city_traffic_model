@@ -17,6 +17,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+
 from src.config import HAJJ_DATES, SAUDI_CITIES
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
@@ -29,7 +32,7 @@ from src.model import (
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
-from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry
+from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input
 
 
 load_dotenv()
@@ -418,6 +421,14 @@ def predict(
     """
     _assert_city_permitted(auth, payload.city)
 
+    p          = payload.model_dump()
+    validation = validate_prediction_input(p)
+    if not validation["valid"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Input validation failed.", "errors": validation["errors"]},
+        )
+
     p      = payload.model_dump()
     result = predict_single(
         city            = p["city"],
@@ -517,6 +528,7 @@ def predict(
         road_type     = p["road_type"],
     )
     result["pedestrian_risk"] = pedestrian_risk
+    result["input_warnings"] = validation["warnings"]
 
     log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
 
@@ -1352,6 +1364,66 @@ def analytics_quota(
     }
 
 
+@app.get("/data/quality", tags=["monitoring"])
+def data_quality(
+    city:  str = "Riyadh",
+    hours: int = 24,
+    auth:  Dict = Depends(require_api_key),
+):
+    """Summarise input quality flags from the predictions audit log."""
+    _assert_city_permitted(auth, city)
+
+    log_path = "predictions_log.csv"
+
+    if not os.path.exists(log_path):
+        return {
+            "city": city, "hours": hours,
+            "total_predictions": 0, "flagged_predictions": 0,
+            "flag_rate_pct": 0.0, "common_warnings": [],
+            "message": "No predictions logged yet.",
+        }
+
+    log_df = pd.read_csv(log_path)
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff = pd.Timestamp.now() - pd.Timedelta(hours=hours)
+        log_df = log_df[log_df["timestamp"] >= cutoff]
+
+    total = len(log_df)
+    if total == 0:
+        return {
+            "city": city, "hours": hours,
+            "total_predictions": 0, "flagged_predictions": 0,
+            "flag_rate_pct": 0.0, "common_warnings": [],
+        }
+
+    warning_counts: dict = {}
+    flagged = 0
+    for _, row in log_df.iterrows():
+        result = validate_prediction_input(row.to_dict())
+        if result["warnings"] or not result["valid"]:
+            flagged += 1
+        for w in result["warnings"]:
+            warning_counts[w] = warning_counts.get(w, 0) + 1
+
+    common_warnings = [
+        {"warning": k, "count": v}
+        for k, v in sorted(warning_counts.items(), key=lambda x: -x[1])[:5]
+    ]
+
+    return {
+        "city"               : city,
+        "hours"              : hours,
+        "total_predictions"  : total,
+        "flagged_predictions": flagged,
+        "flag_rate_pct"      : round(flagged / total * 100, 2),
+        "common_warnings"    : common_warnings,
+    }
+
+
 @app.post('/reports/weekly', tags=['reports'])
 def reports_weekly(
     city: str  = 'Riyadh',
@@ -1365,3 +1437,144 @@ def reports_weekly(
         media_type   = 'text/html',
         filename     = f'traffic_report_{city.lower()}_weekly.html',
     )
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — real-time zone congestion streaming
+# ---------------------------------------------------------------------------
+
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+
+@app.websocket("/ws/live/{city}")
+async def ws_live(websocket: WebSocket, city: str, api_key: str = ""):
+    """
+    Stream live congestion snapshots for all zones in a city every 30 seconds.
+
+    Authentication: pass api_key as a query parameter.
+    Closes with code 1008 (policy violation) on invalid or missing key.
+
+    Snapshot format per zone:
+        {zone, congestion_score, congestion_level, risk_score,
+         anomaly_flag, timestamp}
+    """
+    # --- Auth ---
+    resolved_key = _resolve_api_key(api_key)
+    if not resolved_key:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+
+    try:
+        while True:
+            snapshot = _build_city_snapshot(city)
+            await websocket.send_json(snapshot)
+            await asyncio.sleep(30)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+
+
+def _resolve_api_key(key: str) -> bool:
+    """
+    Validate a raw key string against the configured key registry.
+
+    Returns True if key is valid, False otherwise.
+    Supports both single API_KEY and multi-tenant API_KEYS registry.
+    """
+    if not key:
+        return False
+
+    # Multi-tenant registry (PROMPT 025)
+    if hasattr(app.state, "key_registry") and app.state.key_registry:
+        return key in app.state.key_registry
+
+    # Single-key fallback
+    return key == API_KEY
+
+
+def _build_city_snapshot(city: str) -> dict:
+    """
+    Build a current congestion snapshot for all zones in a city.
+
+    Uses app.state.city_dfs if available (PROMPT 016 multi-city),
+    falls back to app.state.df filtered by city.
+    """
+    from datetime import datetime
+    from src.model import congestion_level, compute_accident_risk
+
+    try:
+        if hasattr(app.state, "city_dfs") and city in app.state.city_dfs:
+            df = app.state.city_dfs[city]
+        else:
+            df = app.state.df[app.state.df["city"] == city]
+
+        if df.empty:
+            return {
+                "city": city,
+                "timestamp": datetime.now().isoformat(),
+                "error": f"No data for city: {city}",
+                "zones": [],
+            }
+
+        latest = (
+            df.sort_values("timestamp")
+            .groupby("zone")
+            .last()
+            .reset_index()
+        )
+
+        zones = []
+        for _, row in latest.iterrows():
+            score = float(row.get("congestion_score", 0.0))
+            level = congestion_level(score)
+            weather = str(row.get("weather", "clear"))
+            hour = int(row.get("hour", 0))
+            vehicle_count = float(row.get("vehicle_count", 0))
+            avg_speed = float(row.get("avg_speed", 60))
+            road_type = str(row.get("road_type", "arterial"))
+            is_weekend = int(row.get("is_weekend", 0))
+            rush_hour = int(row.get("rush_hour", 0))
+
+            risk_result = compute_accident_risk(
+                congestion_score=score,
+                weather=weather,
+                hour=hour,
+                is_weekend=is_weekend,
+                rush_hour=rush_hour,
+            )
+
+            anomaly_flag = int(row.get("anomaly_flag", 0)) if "anomaly_flag" in row else 0
+
+            zones.append({
+                "zone": str(row["zone"]),
+                "congestion_score": round(score, 4),
+                "congestion_level": level,
+                "risk_score": risk_result.get("risk_score", 0.0),
+                "risk_level": risk_result.get("risk_level", "Safe"),
+                "anomaly_flag": anomaly_flag,
+                "vehicle_count": round(vehicle_count, 0),
+                "avg_speed": round(avg_speed, 1),
+                "weather": weather,
+                "hour": hour,
+            })
+
+        return {
+            "city": city,
+            "timestamp": datetime.now().isoformat(),
+            "zone_count": len(zones),
+            "zones": zones,
+        }
+
+    except Exception as e:
+        return {
+            "city": city,
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e),
+            "zones": [],
+        }
