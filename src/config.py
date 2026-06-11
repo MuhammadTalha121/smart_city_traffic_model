@@ -218,3 +218,15 @@ ALERT_THRESHOLDS: Dict[str, float] = {
     'anomaly_ratio'       : 3.0,
     'response_time_mins'  : 8.0,
 }
+
+
+
+# ---------------------------------------------------------------------------
+#  Road Segment Speed Degradation Index
+# ---------------------------------------------------------------------------
+
+FREE_FLOW_SPEED_KMPH: Dict[str, int] = {
+    'highway' : 100,
+    'arterial': 70,
+    'local'   : 50,
+}
