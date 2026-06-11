@@ -23,6 +23,7 @@ from src.model import (
     log_prediction, get_intervention, compute_accident_risk,
     compute_signal_timing, compute_emissions, estimate_response_time,
     get_delivery_windows, compute_prediction_interval,
+    compute_speed_degradation_index, compute_pedestrian_risk,
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
@@ -427,6 +428,22 @@ def predict(
         congestion_level_str = result["congestion_level"],
         vehicle_count        = p["vehicle_count"],
     )
+
+    sdi = compute_speed_degradation_index(
+        avg_speed = p["avg_speed"],
+        road_type = p["road_type"],
+        weather   = p["weather"],
+    )
+    result["sdi"] = sdi
+
+    pedestrian_risk        = compute_pedestrian_risk(
+        vehicle_count = p["vehicle_count"],
+        avg_speed     = p["avg_speed"],
+        hour          = p["hour"],
+        weather       = p["weather"],
+        road_type     = p["road_type"],
+    )
+    result["pedestrian_risk"] = pedestrian_risk
 
     log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
 
@@ -1068,3 +1085,93 @@ def alerts_history(
         "alerts"      : log_df.to_dict(orient="records"),
     }
 
+
+
+@app.get("/roads/service-level", tags=["roads"])
+@limiter.limit("20/minute")
+def roads_service_level(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Return HCM Level of Service (A–F) and SDI for all zones.
+
+    Uses the latest avg_speed and road_type per zone from the city DataFrame.
+    Sorted by SDI descending (worst service level first).
+    20 req/min per IP.
+    """
+    df      = app.state.city_dfs.get(city, app.state.df)
+    results = []
+
+    for zone in df['zone'].unique():
+        zone_df = df[df['zone'] == zone]
+        if zone_df.empty:
+            continue
+        latest    = zone_df.iloc[-1]
+        avg_speed = float(latest.get('avg_speed', 65))
+        road_type = str(latest.get('road_type', 'arterial'))
+        weather   = str(latest.get('weather', 'clear'))
+
+        sdi_result = compute_speed_degradation_index(avg_speed, road_type, weather)
+        results.append({
+            'zone'             : zone,
+            'road_type'        : road_type,
+            'weather'          : weather,
+            **sdi_result,
+        })
+
+    results.sort(key=lambda x: x['sdi'], reverse=True)
+
+    return {
+        'city'   : city,
+        'zones'  : results,
+    }
+
+
+
+@app.get("/safety/pedestrian", tags=["safety"])
+@limiter.limit("20/minute")
+def safety_pedestrian(
+    request: Request,
+    city:    str = "Riyadh",
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Return all zones ranked by pedestrian risk score, worst first.
+
+    Zones where pedestrian_risk_score > 0.60 are flagged as requiring
+    intervention. Uses latest observation per zone. 20 req/min per IP.
+    """
+    df      = app.state.city_dfs.get(city, app.state.df)
+    results = []
+
+    for zone in df['zone'].unique():
+        zone_df = df[df['zone'] == zone]
+        if zone_df.empty:
+            continue
+
+        latest = zone_df.iloc[-1]
+
+        risk = compute_pedestrian_risk(
+            vehicle_count = float(latest.get('vehicle_count', 100)),
+            avg_speed     = float(latest.get('avg_speed', 65)),
+            hour          = int(latest.get('hour', 12)),
+            weather       = str(latest.get('weather', 'clear')),
+            road_type     = str(latest.get('road_type', 'arterial')),
+        )
+
+        results.append({
+            'zone'                  : zone,
+            'pedestrian_risk_score' : risk['pedestrian_risk_score'],
+            'risk_category'         : risk['risk_category'],
+            'primary_hazard'        : risk['primary_hazard'],
+            'intervention_required' : risk['pedestrian_risk_score'] > 0.60,
+        })
+
+    results.sort(key=lambda x: x['pedestrian_risk_score'], reverse=True)
+
+    return {
+        'city'   : city,
+        'zones'  : results,
+    }
