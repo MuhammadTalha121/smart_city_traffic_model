@@ -463,3 +463,80 @@ def test_wide_interval_on_uncertain_inputs(trained_model):
 
     assert result["confidence_width"] > 0.0
     assert result["lower_bound"] <= result["upper_bound"]
+
+
+# ---------------------------------------------------------------------------
+# Speed degradation index tests
+# ---------------------------------------------------------------------------
+
+def test_sandstorm_produces_high_sdi():
+    """Sandstorm on a highway must produce SDI >= 0.50 (LOS E or F)."""
+    from src.model import compute_speed_degradation_index
+
+    # Sandstorm multiplier 0.60 → avg_speed ≈ 65 * 0.60 = 39 km/h on highway
+    result = compute_speed_degradation_index(
+        avg_speed = 39.0,
+        road_type = 'highway',
+        weather   = 'sandstorm',
+    )
+    assert result['sdi'] >= 0.50, (
+        f"Sandstorm SDI was {result['sdi']} — expected >= 0.50 (LOS E or F)"
+    )
+    assert result['level_of_service'] in ('E', 'F'), (
+        f"Expected LOS E or F for sandstorm, got {result['level_of_service']}"
+    )
+    assert result['free_flow_speed'] == 100
+    assert result['speed_loss_kmph'] > 0
+
+
+def test_free_flow_speed_produces_los_a():
+    """Full free-flow speed must produce SDI near 0 and LOS A."""
+    from src.model import compute_speed_degradation_index
+
+    result = compute_speed_degradation_index(
+        avg_speed = 100.0,
+        road_type = 'highway',
+        weather   = 'clear',
+    )
+    assert result['sdi'] == 0.0
+    assert result['level_of_service'] == 'A'
+    assert result['speed_loss_kmph']  == 0.0
+
+
+
+
+# ---------------------------------------------------------------------------
+#  Pedestrian safety score tests
+# ---------------------------------------------------------------------------
+
+def test_sandstorm_late_night_produces_high_pedestrian_risk():
+    """Sandstorm + late night on a highway must produce Dangerous or Critical risk."""
+    from src.model import compute_pedestrian_risk
+
+    result = compute_pedestrian_risk(
+        vehicle_count = 300,
+        avg_speed     = 80,
+        hour          = 22,
+        weather       = 'sandstorm',
+        road_type     = 'highway',
+    )
+    assert result['pedestrian_risk_score'] > 0.50, (
+        f"Expected > 0.50, got {result['pedestrian_risk_score']}"
+    )
+    assert result['risk_category'] in ('Dangerous', 'Critical')
+    assert 'sandstorm' in result['primary_hazard']
+
+
+def test_prayer_window_produces_low_pedestrian_risk():
+    """Friday prayer window (hour 12) must reduce pedestrian risk significantly."""
+    from src.model import compute_pedestrian_risk
+
+    result = compute_pedestrian_risk(
+        vehicle_count = 200,
+        avg_speed     = 60,
+        hour          = 12,
+        weather       = 'clear',
+        road_type     = 'arterial',
+    )
+    assert result['pedestrian_risk_score'] < 0.25
+    assert result['risk_category'] == 'Safe'
