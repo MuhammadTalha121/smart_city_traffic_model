@@ -1,3 +1,4 @@
+from typing import Dict
 import os
 import joblib
 import pandas as pd
@@ -289,3 +290,95 @@ def log_alert(alerts: list, log_path: str = 'alerts_log.csv') -> None:
     log_df       = pd.DataFrame(rows)
     write_header = not os.path.exists(log_path)
     log_df.to_csv(log_path, mode='a', header=write_header, index=False)
+
+
+
+
+def parse_key_registry(env_value: str) -> Dict[str, Dict]:
+    """Parse API_KEYS env var into a registry dict. Format: key:city:role,key:city:role"""
+    registry = {}
+    if not env_value:
+        return registry
+    for entry in env_value.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(':')
+        if len(parts) != 3:
+            print(f"[KeyRegistry] Skipping malformed entry: {entry!r}")
+            continue
+        key, city, role = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if not key:
+            continue
+        if role not in ('operator', 'admin'):
+            role = 'operator'
+        registry[key] = {'city': city, 'role': role}
+    return registry
+
+
+def build_key_registry() -> Dict[str, Dict]:
+    """Build registry from API_KEYS. Falls back to legacy API_KEY as wildcard admin."""
+    api_keys_env = os.getenv('API_KEYS', '').strip()
+    if api_keys_env:
+        return parse_key_registry(api_keys_env)
+    legacy_key = os.getenv('API_KEY', '').strip()
+    if legacy_key:
+        return {legacy_key: {'city': '*', 'role': 'admin'}}
+    return {}
+
+
+
+
+from typing import Dict
+
+USAGE_LOG = "usage_log.csv"
+
+
+def log_api_usage(endpoint: str, method: str, key: str,
+                  status: int, duration_ms: float) -> None:
+    """Append one usage record to usage_log.csv. Stores only first 8 chars of key."""
+    row = {
+        'timestamp'       : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'endpoint'        : endpoint,
+        'method'          : method,
+        'api_key_hash'    : key[:8] if key else 'anonymous',
+        'response_code'   : status,
+        'response_time_ms': round(duration_ms, 2),
+    }
+    log_df       = pd.DataFrame([row])
+    write_header = not os.path.exists(USAGE_LOG)
+    log_df.to_csv(USAGE_LOG, mode='a', header=write_header, index=False)
+
+
+def parse_key_registry(env_value: str) -> Dict[str, Dict]:
+    """Parse API_KEYS env var. Format: key:city:role,key:city:role"""
+    registry = {}
+    if not env_value:
+        return registry
+    for entry in env_value.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(':')
+        if len(parts) != 3:
+            print(f"[KeyRegistry] Skipping malformed entry: {entry!r}")
+            continue
+        key, city, role = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if not key:
+            continue
+        if role not in ('operator', 'admin'):
+            role = 'operator'
+        registry[key] = {'city': city, 'role': role}
+    return registry
+
+
+def build_key_registry() -> Dict[str, Dict]:
+    """Build registry from API_KEYS. Falls back to legacy API_KEY as wildcard admin."""
+    api_keys_env = os.getenv('API_KEYS', '').strip()
+    if api_keys_env:
+        return parse_key_registry(api_keys_env)
+    legacy_key = os.getenv('API_KEY', '').strip()
+    if legacy_key:
+        return {legacy_key: {'city': '*', 'role': 'admin'}}
+    return {}
+

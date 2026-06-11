@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+from typing import Dict
 import pandas as pd
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
 
@@ -27,8 +28,12 @@ from src.model import (
 )
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
+from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry
+
 
 load_dotenv()
+
+DAILY_QUOTA_LIMIT = int(os.getenv("DAILY_QUOTA_LIMIT", "10000"))
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
@@ -45,13 +50,37 @@ scheduler      = BackgroundScheduler()
 VALID_SOURCES = ["weather", "osm", "mock"]
 
 
-def require_api_key(key: str = Depends(api_key_header)):
-    """Validate the X-API-Key header on every protected endpoint."""
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="Server has no API key configured.")
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
-    return key
+def _get_registry() -> Dict[str, Dict]:
+    try:
+        return app.state.key_registry
+    except AttributeError:
+        return {}
+
+def require_api_key(key: str = Depends(api_key_header)) -> Dict:
+    """Validate X-API-Key. Returns {key, city, role}."""
+    registry = _get_registry()
+    if not registry:
+        raise HTTPException(status_code=500, detail='Server has no API keys configured.')
+    if not key or key not in registry:
+        raise HTTPException(status_code=401, detail='Invalid or missing API key.')
+    entry = registry[key]
+    return {'key': key, 'city': entry['city'], 'role': entry['role']}
+
+def require_admin(auth: Dict = Depends(require_api_key)) -> Dict:
+    """Extend require_api_key with admin role enforcement."""
+    if auth['role'] != 'admin':
+        raise HTTPException(status_code=403, detail='This endpoint requires admin role.')
+    return auth
+
+def _assert_city_permitted(auth: Dict, requested_city: str) -> None:
+    """Raise 403 if key city scope does not cover requested_city."""
+    if auth['city'] == '*':
+        return
+    if auth['city'].lower() != requested_city.lower():
+        raise HTTPException(
+            status_code=403,
+            detail=f"API key is scoped to '{auth['city']}' — cannot access '{requested_city}'.",
+        )
 
 
 def _scheduled_pipeline():
@@ -117,6 +146,7 @@ def _get_active_schedule(city: str) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Train model on Riyadh, generate data for all cities, start scheduler."""
+    app.state.key_registry = build_key_registry()
     city_dfs = {}
     for city in ["Riyadh", "NEOM", "Dubai", "Karachi"]:
         df = generate_traffic_data(city=city)
@@ -174,6 +204,43 @@ app.add_middleware(
     allow_methods     = ["GET", "POST"],
     allow_headers     = ["*"],
 )
+
+
+@app.middleware("http")
+async def usage_logging_middleware(request: Request, call_next):
+    """
+    Log every request to usage_log.csv after processing.
+
+    Captures endpoint, method, hashed API key (first 8 chars),
+    HTTP status code, and response time in milliseconds.
+    Never logs request body or full API key.
+    """
+    import time
+
+    start    = time.monotonic()
+    response = await call_next(request)
+    duration = round((time.monotonic() - start) * 1000, 1)
+
+    raw_key    = request.headers.get("X-API-Key", "anonymous")
+    key_hash   = raw_key[:8] if raw_key != "anonymous" else "anonymous"
+    endpoint   = request.url.path
+    method     = request.method
+    status     = response.status_code
+    timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    log_path = "usage_log.csv"
+    row = pd.DataFrame([{
+        "timestamp"      : timestamp,
+        "endpoint"       : endpoint,
+        "method"         : method,
+        "api_key_hash"   : key_hash,
+        "response_code"  : status,
+        "response_time_ms": duration,
+    }])
+    write_header = not os.path.exists(log_path)
+    row.to_csv(log_path, mode="a", header=write_header, index=False)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +305,7 @@ def dashboard():
 @app.get("/schedule/active", tags=["schedule"])
 def schedule_active(
     city: str = "Riyadh",
-    _key: str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Return the currently active traffic schedule for a city.
@@ -256,7 +323,7 @@ def schedule_active(
 # ---------------------------------------------------------------------------
 
 @app.get("/data/source", tags=["data"])
-def get_data_source(_key: str = Depends(require_api_key)):
+def get_data_source(auth: Dict = Depends(require_api_key)):
     """Return the currently active data source."""
     return {
         "active_source": app.state.data_source,
@@ -274,7 +341,7 @@ def set_data_source(
     request: Request,
     source:  str = "mock",
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_admin),
 ):
     """Switch the active data source and fetch a sample from it."""
     if source not in VALID_SOURCES:
@@ -302,7 +369,7 @@ def set_data_source(
 # ---------------------------------------------------------------------------
 
 @app.get("/pipeline/status", tags=["pipeline"])
-def pipeline_status(_key: str = Depends(require_api_key)):
+def pipeline_status(auth: Dict = Depends(require_admin)):
     """Return current drift score and last retrain timestamp."""
     drift_score    = compute_drift_score()
     next_scheduled = "03:00 daily"
@@ -317,7 +384,7 @@ def pipeline_status(_key: str = Depends(require_api_key)):
 
 
 @app.post("/pipeline/trigger", tags=["pipeline"])
-def pipeline_trigger(_key: str = Depends(require_api_key)):
+def pipeline_trigger(auth: Dict = Depends(require_admin)):
     """Manually trigger a pipeline run. Retrains if drift threshold is exceeded."""
     print(f"[Pipeline] Manual trigger at {datetime.now()}")
     result = run_pipeline(city="Riyadh")
@@ -337,7 +404,7 @@ def pipeline_trigger(_key: str = Depends(require_api_key)):
 def predict(
     request: Request,
     payload: PredictRequest,
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Single zone prediction with SHAP explanation. 60 req/min per IP.
@@ -345,6 +412,8 @@ def predict(
     Set hajj_mode=true during Hajj season to activate mass-gathering
     traffic patterns with three phases: inbound, peak, outbound.
     """
+    _assert_city_permitted(auth, payload.city)
+
     p      = payload.model_dump()
     result = predict_single(
         city            = p["city"],
@@ -455,9 +524,11 @@ def predict(
 def predict_batch(
     request: Request,
     payload: BatchPredictRequest,
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """Batch prediction for up to 20 zones. 20 req/min per IP."""
+    _assert_city_permitted(auth, payload.city)
+
     results = []
     for item in payload.predictions:
         p = item.model_dump()
@@ -487,9 +558,10 @@ def predict_batch(
 def anomalies(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """Current anomalies across all zones. 20 req/min per IP."""
+    _assert_city_permitted(auth, city)
     df         = app.state.city_dfs.get(city, app.state.df)
     anomaly_df = detect_anomalies(df)
     flagged    = anomaly_df[anomaly_df["anomaly_flag"] == 1].to_dict(orient="records")
@@ -505,7 +577,7 @@ def anomalies(
 def interventions_active(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     All zones currently at High or Critical congestion with intervention
@@ -555,7 +627,7 @@ def interventions_active(
 def safety_hotspots(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     All zones ranked by current accident risk score, highest first.
@@ -603,7 +675,7 @@ def safety_hotspots(
 def signals_recommended(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Recommended adaptive signal timing for all zones right now,
@@ -648,7 +720,7 @@ def signals_recommended(
 def emissions_summary(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Aggregated CO2 and fuel summary from the predictions log.
@@ -725,7 +797,7 @@ def emissions_summary(
 @limiter.limit("20/minute")
 def cities_compare(
     request: Request,
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Current traffic snapshot for all configured cities.
@@ -784,9 +856,10 @@ def forecast(
     request: Request,
     city:    str = "Riyadh",
     zone:    str = "Zone_1",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """1h / 2h / 3h congestion forecast with confidence intervals."""
+    _assert_city_permitted(auth, city)
     city_df   = app.state.city_dfs.get(city, app.state.df)
     df        = city_df[city_df["zone"] == zone]
     forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
@@ -799,7 +872,7 @@ def emergency_response_time(
     request: Request,
     city:        str = "Riyadh",
     target_zone: str = "Zone_1",
-    _key:        str = Depends(require_api_key),
+    auth:        Dict = Depends(require_api_key),
 ):
     """
     Estimate emergency vehicle response time from all stations to a target zone.
@@ -852,7 +925,7 @@ def freight_windows(
     request: Request,
     city:    str = "Riyadh",
     zone:    str = "Zone_1",
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Recommend optimal delivery windows for freight vehicles in a zone.
@@ -884,7 +957,7 @@ def history_patterns(
     zone:    str = None,
     weather: str = None,
     days:    int = 30,
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Query historical congestion patterns from the predictions audit log.
@@ -971,7 +1044,7 @@ def history_trend(
     city:    str = "Riyadh",
     zone:    str = "Zone_1",
     days:    int = 7,
-    _key:    str = Depends(require_api_key),
+    auth:    Dict = Depends(require_api_key),
 ):
     """
     Daily average congestion trend for the past N days.
@@ -1046,7 +1119,7 @@ def alerts_history(
     request: Request,
     city:    str = "Riyadh",
     hours:   int = 24,
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(require_api_key),
 ):
     """
     Return all alerts triggered in the past N hours from the alerts log.
@@ -1092,7 +1165,7 @@ def alerts_history(
 def roads_service_level(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth:    Dict = Depends(require_api_key),
 ):
     """
     Return HCM Level of Service (A–F) and SDI for all zones.
@@ -1135,7 +1208,7 @@ def roads_service_level(
 def safety_pedestrian(
     request: Request,
     city:    str = "Riyadh",
-    _key:    str = Depends(require_api_key),
+    auth:    Dict = Depends(require_api_key),
 ):
     """
     Return all zones ranked by pedestrian risk score, worst first.
@@ -1174,4 +1247,102 @@ def safety_pedestrian(
     return {
         'city'   : city,
         'zones'  : results,
+    }
+
+
+
+@app.get("/analytics/usage", tags=["analytics"])
+@limiter.limit("20/minute")
+def analytics_usage(
+    request: Request,
+    days:    int = 30,
+    auth:    Dict = Depends(require_admin),
+):
+    """
+    API usage summary for the past N days from usage_log.csv.
+
+    Returns total calls, calls by endpoint, calls by day,
+    average response time, and top endpoint. 20 req/min per IP.
+    """
+    log_path = "usage_log.csv"
+
+    if not os.path.exists(log_path):
+        return {
+            "period_days"       : days,
+            "total_calls"       : 0,
+            "calls_by_endpoint" : {},
+            "calls_by_day"      : {},
+            "avg_response_time_ms": None,
+            "top_endpoint"      : None,
+        }
+
+    log_df = pd.read_csv(log_path)
+
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+        log_df = log_df[log_df["timestamp"] >= cutoff]
+
+    if log_df.empty:
+        return {
+            "period_days"         : days,
+            "total_calls"         : 0,
+            "calls_by_endpoint"   : {},
+            "calls_by_day"        : {},
+            "avg_response_time_ms": None,
+            "top_endpoint"        : None,
+        }
+
+    calls_by_endpoint = log_df["endpoint"].value_counts().to_dict()
+    top_endpoint      = max(calls_by_endpoint, key=calls_by_endpoint.get)
+
+    calls_by_day = {}
+    if "timestamp" in log_df.columns:
+        log_df["date"] = log_df["timestamp"].dt.date
+        calls_by_day   = {str(k): int(v) for k, v in log_df.groupby("date").size().items()}
+
+    avg_rt = None
+    if "response_time_ms" in log_df.columns:
+        avg_rt = round(float(log_df["response_time_ms"].mean()), 1)
+
+    return {
+        "period_days"         : days,
+        "total_calls"         : len(log_df),
+        "calls_by_endpoint"   : {k: int(v) for k, v in calls_by_endpoint.items()},
+        "calls_by_day"        : calls_by_day,
+        "avg_response_time_ms": avg_rt,
+        "top_endpoint"        : top_endpoint,
+    }
+
+
+@app.get("/analytics/quota", tags=["analytics"])
+@limiter.limit("20/minute")
+def analytics_quota(
+    request: Request,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Today's API call count versus the daily quota limit.
+
+    Warns when usage exceeds 80% of quota. 20 req/min per IP.
+    """
+    log_path = "usage_log.csv"
+    today    = datetime.now().date()
+
+    calls_today = 0
+    if os.path.exists(log_path):
+        log_df = pd.read_csv(log_path)
+        if "timestamp" in log_df.columns:
+            log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+            calls_today = int((log_df["timestamp"].dt.date == today).sum())
+
+    pct_used = round((calls_today / DAILY_QUOTA_LIMIT) * 100, 1)
+
+    return {
+        "date"             : str(today),
+        "calls_today"      : calls_today,
+        "daily_limit"      : DAILY_QUOTA_LIMIT,
+        "pct_used"         : pct_used,
+        "quota_warning"    : pct_used >= 80.0,
+        "quota_exceeded"   : calls_today >= DAILY_QUOTA_LIMIT,
     }
