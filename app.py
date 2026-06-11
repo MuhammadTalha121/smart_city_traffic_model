@@ -4,7 +4,8 @@ from datetime import date, datetime, timedelta
 from typing import Dict
 import pandas as pd
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
-
+from src.reporter import generate_weekly_report
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -177,7 +178,10 @@ async def lifespan(app: FastAPI):
 
     scheduler.add_job(_scheduled_alerts, "interval", minutes=15)
     print("[Scheduler] Alert threshold monitoring scheduled every 15 minutes")
-
+    scheduler.add_job(
+    lambda: generate_weekly_report(city='Riyadh'),
+    'cron', day_of_week='mon', hour=6, minute=0
+)
 
     scheduler.start()
     print("[Scheduler] Nightly retraining scheduled at 03:00")
@@ -1346,3 +1350,18 @@ def analytics_quota(
         "quota_warning"    : pct_used >= 80.0,
         "quota_exceeded"   : calls_today >= DAILY_QUOTA_LIMIT,
     }
+
+
+@app.post('/reports/weekly', tags=['reports'])
+def reports_weekly(
+    city: str  = 'Riyadh',
+    auth: Dict = Depends(require_admin),
+):
+    """Generate and return weekly HTML performance report. Admin only."""
+    output_path = f'weekly_report_{city.lower()}.html'
+    generate_weekly_report(city=city, output_path=output_path)
+    return FileResponse(
+        path         = output_path,
+        media_type   = 'text/html',
+        filename     = f'traffic_report_{city.lower()}_weekly.html',
+    )
