@@ -636,3 +636,34 @@ def test_sla_current_is_public(client):
     response = client.get("/sla/current")
     assert response.status_code == 200
     assert "uptime_pct" in response.json()
+
+
+def test_last_mile_endpoint_returns_zones(client):
+    response = client.get(
+        "/mobility/last-mile?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    assert len(data["zones"]) == 5
+    for z in data["zones"]:
+        assert "last_mile_index"  in z
+        assert "active_scooters"  in z
+        assert "interpretation"   in z
+
+
+
+
+def test_v2x_cooperative_route_returns_valid_path(client):
+    response = client.post(
+        "/v2x/cooperative-route",
+        json={"city": "Riyadh", "origin_zone": "Zone_1",
+              "destination_zone": "Zone_4", "penetration_rate": 0.30},
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["route"][0]  == "Zone_1"
+    assert data["route"][-1] == "Zone_4"
+    assert "improvement_pct" in data
