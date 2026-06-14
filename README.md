@@ -1,3 +1,17 @@
+## Documentation
+
+| Document | Description |
+|---|---|
+| [TECHNICAL_SPEC.md](TECHNICAL_SPEC.md) | Full endpoint reference, request/response schemas, data dictionary |
+| [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) | Step-by-step integration for city IT teams |
+| [SECURITY_POLICY.md](SECURITY_POLICY.md) | Auth, data retention, key rotation, no-PII policy |
+| [SLA_TERMS.md](SLA_TERMS.md) | Uptime commitment, response time targets, maintenance windows |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture diagram and component breakdown |
+
+
+
+
+
 # Smart City Traffic Intelligence System
 
 > A production-ready traffic congestion prediction framework for Vision 2030 smart cities.

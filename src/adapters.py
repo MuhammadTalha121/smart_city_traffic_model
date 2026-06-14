@@ -258,22 +258,80 @@ class MockIoTAdapter(BaseAdapter):
         return pd.DataFrame(rows)
 
 
+class MockMicroMobilityAdapter(BaseAdapter):
+    """
+    Simulate micro-mobility sensor readings (e-scooters and bikes) per zone.
+
+    Generates deterministic-ish counts tied to the current hour so that
+    rush-hour zones show higher micro-mobility activity.
+    noise_level: 0.0 = deterministic, 1.0 = maximum variance.
+    """
+
+    def __init__(self, noise_level: float = 0.2):
+        self.noise_level = float(noise_level)
+
+    def fetch(self, city: str = 'Riyadh') -> pd.DataFrame:
+        """Return one row per zone with simulated micro-mobility counts."""
+        from src.config import LAST_MILE_TRANSFER_ZONES
+
+        np.random.seed(int(datetime.now().timestamp()) % 10000)
+        hour  = datetime.now().hour
+        zones = ['Zone_1', 'Zone_2', 'Zone_3', 'Zone_4', 'Zone_5']
+        rows  = []
+
+        for zone in zones:
+            base_scooters = 40 if zone in LAST_MILE_TRANSFER_ZONES else 15
+            base_bikes    = 20 if zone in LAST_MILE_TRANSFER_ZONES else 8
+
+            rush_multiplier = 1.5 if hour in [7, 8, 9, 17, 18, 19] else 1.0
+
+            noise_s = np.random.normal(0, base_scooters * self.noise_level)
+            noise_b = np.random.normal(0, base_bikes    * self.noise_level)
+
+            active_scooters = int(np.clip(
+                (base_scooters + noise_s) * rush_multiplier, 0, 200
+            ))
+            active_bikes = int(np.clip(
+                (base_bikes + noise_b) * rush_multiplier, 0, 100
+            ))
+
+            avg_scooter_speed = float(np.clip(
+                np.random.normal(14.0, 2.0 * self.noise_level), 8.0, 20.0
+            ))
+
+            rows.append({
+                'city'              : city,
+                'timestamp'         : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'source'            : 'mock-micromobility',
+                'zone'              : zone,
+                'hour'              : hour,
+                'active_scooters'   : active_scooters,
+                'active_bikes'      : active_bikes,
+                'avg_scooter_speed' : round(avg_scooter_speed, 1),
+            })
+
+        return pd.DataFrame(rows)
+
+
+
+
 def get_adapter(source: str) -> BaseAdapter:
     """
     Return the correct adapter instance for the requested source.
 
     Parameters
     ----------
-    source : 'weather' | 'osm' | 'mock'
+    source : 'weather' | 'osm' | 'mock' | 'micromobility'
 
     Returns
     -------
     BaseAdapter instance ready to call .fetch(city)
     """
     adapters = {
-        'weather': WeatherAdapter,
-        'osm'    : OpenStreetMapAdapter,
-        'mock'   : MockIoTAdapter,
+        'weather'       : WeatherAdapter,
+        'osm'           : OpenStreetMapAdapter,
+        'mock'          : MockIoTAdapter,
+        'micromobility' : MockMicroMobilityAdapter,
     }
     cls = adapters.get(source)
     if cls is None:

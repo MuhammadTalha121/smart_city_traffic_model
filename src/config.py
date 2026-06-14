@@ -230,3 +230,41 @@ FREE_FLOW_SPEED_KMPH: Dict[str, int] = {
     'arterial': 70,
     'local'   : 50,
 }
+
+
+# --- Micro-mobility constants ---
+
+MICROMOBILITY_CAPACITY_SHRINKAGE: float = 0.95
+LAST_MILE_TRANSFER_ZONES: List[str]     = ['Zone_1', 'Zone_2', 'Zone_3']
+SCOOTER_VELOCITY_THRESHOLD_KMPH: float  = 20.0
+BIKE_VELOCITY_THRESHOLD_KMPH: float     = 25.0
+GREEN_INITIATIVE_CO2_THRESHOLD_KG: float = 500.0
+
+
+# --- Pavement wear constants ---
+
+PAVEMENT_WEAR_COEFFICIENT_STANDARD: float = 1.0
+PAVEMENT_WEAR_COEFFICIENT_HEAVY: float    = 3.5
+BASE_HEAT_DEGRADATION_FACTOR: float       = 1.15
+HEAT_THRESHOLD_CELSIUS: float             = 38.0
+PAVEMENT_RISK_THRESHOLDS: Dict[str, float] = {
+    'Low'     : 30.0,
+    'Moderate': 55.0,
+    'High'    : 75.0,
+}
+
+
+
+
+
+# --- V2X cooperative routing constants---
+
+ZONE_ADJACENCY: Dict[str, List[str]] = {
+    'Zone_1': ['Zone_2', 'Zone_3'],
+    'Zone_2': ['Zone_1', 'Zone_4'],
+    'Zone_3': ['Zone_1', 'Zone_5'],
+    'Zone_4': ['Zone_2', 'Zone_5'],
+    'Zone_5': ['Zone_3', 'Zone_4'],
+}
+AV_PENETRATION_SCENARIOS: List[float] = [0.10, 0.30, 0.50]
+COOPERATIVE_ROUTING_INTERVAL_S: int   = 300
