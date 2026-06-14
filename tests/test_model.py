@@ -7,6 +7,8 @@ from src.model import (
     prepare_features, train_xgboost, predict_single, congestion_level,
     detect_anomalies, forecast_congestion, explain_prediction,
     evaluate_models, log_prediction, compare_baseline_vs_enhanced,
+    compute_last_mile_index, compute_emissions, compute_pavement_wear_index,
+    compute_cooperative_route,
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING,
 )
 from src.config import HAJJ_ROUTE_ZONES
@@ -540,3 +542,53 @@ def test_prayer_window_produces_low_pedestrian_risk():
     )
     assert result['pedestrian_risk_score'] < 0.25
     assert result['risk_category'] == 'Safe'
+
+
+
+def test_last_mile_index_increases_with_scooter_count():
+    low  = compute_last_mile_index(300, 10,  5,  "Moderate", "Zone_1")
+    high = compute_last_mile_index(300, 100, 50, "Moderate", "Zone_1")
+    assert high > low
+
+
+def test_last_mile_bonus_applied_in_critical_zones():
+    without_bonus = compute_last_mile_index(300, 30, 15, "Low",      "Zone_1")
+    with_bonus    = compute_last_mile_index(300, 30, 15, "Critical", "Zone_1")
+    assert with_bonus > without_bonus
+    assert abs(with_bonus - without_bonus) >= 0.14
+
+
+
+
+def test_pavement_wear_increases_with_heat():
+    cool = compute_pavement_wear_index(200, 0.5, 30.0)
+    hot  = compute_pavement_wear_index(200, 0.5, 45.0)
+    assert hot["wear_index"] > cool["wear_index"]
+    assert hot["heat_factor_applied"] is True
+    assert cool["heat_factor_applied"] is False
+
+
+def test_heavy_vehicle_pct_accelerates_wear_index():
+    light = compute_pavement_wear_index(200, 0.5, 35.0, heavy_vehicle_pct=0.05)
+    heavy = compute_pavement_wear_index(200, 0.5, 35.0, heavy_vehicle_pct=0.40)
+    assert heavy["wear_index"] > light["wear_index"]
+
+
+
+
+def test_cooperative_route_returns_valid_path():
+    cmap   = {f"Zone_{i}": 0.3 for i in range(1, 6)}
+    result = compute_cooperative_route("Zone_1", "Zone_4", cmap, penetration_rate=0.30)
+    assert result["route"][0]  == "Zone_1"
+    assert result["route"][-1] == "Zone_4"
+    assert result["total_weight"] > 0
+
+
+def test_higher_penetration_improves_routing():
+    cmap   = {f"Zone_{i}": 0.5 for i in range(1, 6)}
+    low    = compute_cooperative_route("Zone_1", "Zone_5", cmap, penetration_rate=0.10)
+    high   = compute_cooperative_route("Zone_1", "Zone_5", cmap, penetration_rate=0.50)
+    assert high["total_weight"] <= low["total_weight"]
+
+
+
