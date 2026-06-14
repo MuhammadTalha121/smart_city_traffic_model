@@ -23,13 +23,16 @@ import asyncio
 from src.config import HAJJ_DATES, SAUDI_CITIES
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
-    train_xgboost, prepare_features, predict_single,
+    train_xgboost, prepare_features, predict_single, congestion_level,
     detect_anomalies, forecast_congestion, explain_prediction,
     log_prediction, get_intervention, compute_accident_risk,
     compute_signal_timing, compute_emissions, estimate_response_time,
     get_delivery_windows, compute_prediction_interval,
     compute_speed_degradation_index, compute_pedestrian_risk,
+    compute_last_mile_index, compute_pavement_wear_index,
+    compute_cooperative_route,
 )
+
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
@@ -51,8 +54,7 @@ limiter        = Limiter(key_func=get_remote_address)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 scheduler      = BackgroundScheduler()
 
-VALID_SOURCES = ["weather", "osm", "mock"]
-
+VALID_SOURCES = ["weather", "osm", "mock", "micromobility"]
 
 def _get_registry() -> Dict[str, Dict]:
     try:
@@ -1461,6 +1463,187 @@ def reports_weekly(
         media_type   = 'text/html',
         filename     = f'traffic_report_{city.lower()}_weekly.html',
     )
+
+
+
+
+@app.get("/mobility/last-mile", tags=["mobility"])
+def last_mile_efficiency(
+    city: str  = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return last-mile modal shift index per zone.
+
+    Fetches live micro-mobility counts from MockMicroMobilityAdapter,
+    computes last_mile_index per zone, and returns an interpretation.
+    Only zones in LAST_MILE_TRANSFER_ZONES receive the congestion bonus.
+    """
+    from src.config import LAST_MILE_TRANSFER_ZONES
+    _assert_city_permitted(auth, city)
+
+    adapter = get_adapter("micromobility")
+    mm_df   = adapter.fetch(city)
+
+    df      = app.state.city_dfs.get(city, app.state.df)
+    latest  = (
+        df.sort_values("timestamp")
+          .groupby("zone")
+          .last()
+          .reset_index()
+    )
+
+    results = []
+    for _, row in latest.iterrows():
+        zone  = str(row["zone"])
+        score = float(row.get("congestion_score", 0.0))
+        level = congestion_level(score)
+        vc    = float(row.get("vehicle_count", 1.0))
+
+        mm_row = mm_df[mm_df["zone"] == zone]
+        scooters = int(mm_row["active_scooters"].values[0]) if not mm_row.empty else 0
+        bikes    = int(mm_row["active_bikes"].values[0])    if not mm_row.empty else 0
+
+        index = compute_last_mile_index(vc, scooters, bikes, level, zone)
+
+        if   index >= 0.6: interpretation = "Good modal shift"
+        elif index >= 0.3: interpretation = "Partial modal shift"
+        else:              interpretation = "Low modal shift"
+
+        results.append({
+            "zone"            : zone,
+            "last_mile_index" : index,
+            "interpretation"  : interpretation,
+            "active_scooters" : scooters,
+            "active_bikes"    : bikes,
+            "vehicle_count"   : round(vc, 0),
+            "congestion_level": level,
+            "transfer_zone"   : zone in LAST_MILE_TRANSFER_ZONES,
+        })
+
+    results.sort(key=lambda x: -x["last_mile_index"])
+
+    return {
+        "city"   : city,
+        "zones"  : results,
+        "summary": {
+            "transfer_zones"            : LAST_MILE_TRANSFER_ZONES,
+            "avg_last_mile_index"       : round(
+                sum(r["last_mile_index"] for r in results) / max(len(results), 1), 4
+            ),
+        },
+    }
+
+
+
+
+@app.get("/infrastructure/maintenance-priority", tags=["infrastructure"])
+def maintenance_priority(
+    city: str  = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Rank all zones by predicted pavement wear index.
+
+    Fetches current temperature from WeatherAdapter, computes wear index
+    per zone using latest congestion scores, returns zones sorted
+    worst-first with maintenance priority and estimated intervention window.
+    """
+    _assert_city_permitted(auth, city)
+
+    try:
+        weather_df  = get_adapter("weather").fetch(city)
+        temperature = float(weather_df["temperature"].iloc[0])
+    except Exception:
+        temperature = 38.0
+
+    df     = app.state.city_dfs.get(city, app.state.df)
+    latest = (
+        df.sort_values("timestamp")
+          .groupby("zone")
+          .last()
+          .reset_index()
+    )
+
+    results = []
+    for _, row in latest.iterrows():
+        zone   = str(row["zone"])
+        vc     = float(row.get("vehicle_count", 100.0))
+        cs     = float(row.get("congestion_score", 0.0))
+
+        wear = compute_pavement_wear_index(
+            vehicle_count       = vc,
+            congestion_score    = cs,
+            temperature_celsius = temperature,
+        )
+        wear["zone"] = zone
+        results.append(wear)
+
+    results.sort(key=lambda x: -x["wear_index"])
+
+    return {
+        "city"              : city,
+        "temperature_celsius": round(temperature, 1),
+        "zones_ranked"      : results,
+        "data_source"       : "WeatherAdapter + live congestion",
+    }
+
+
+
+
+class CooperativeRouteRequest(BaseModel):
+    city             : str   = "Riyadh"
+    origin_zone      : str   = Field(..., json_schema_extra={"example": "Zone_1"})
+    destination_zone : str   = Field(..., json_schema_extra={"example": "Zone_4"})
+    penetration_rate : float = Field(0.30, ge=0.01, le=1.0)
+
+    
+
+@app.post("/v2x/cooperative-route", tags=["v2x"])
+def cooperative_route(
+    body: CooperativeRouteRequest,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Simulate V2X cooperative routing between two zones.
+
+    Builds a congestion_map from the latest zone scores in app.state,
+    then runs weighted Dijkstra at the requested penetration_rate and
+    compares it against selfish (near-zero cooperation) routing.
+    """
+    _assert_city_permitted(auth, body.city)
+
+    df     = app.state.city_dfs.get(body.city, app.state.df)
+    latest = (
+        df.sort_values("timestamp")
+          .groupby("zone")
+          .last()
+          .reset_index()
+    )
+
+    congestion_map = {
+        str(row["zone"]): float(row.get("congestion_score", 0.1))
+        for _, row in latest.iterrows()
+    }
+
+    if body.origin_zone not in congestion_map:
+        raise HTTPException(status_code=422, detail=f"Unknown origin_zone: {body.origin_zone}")
+    if body.destination_zone not in congestion_map:
+        raise HTTPException(status_code=422, detail=f"Unknown destination_zone: {body.destination_zone}")
+
+    result = compute_cooperative_route(
+        origin_zone      = body.origin_zone,
+        destination_zone = body.destination_zone,
+        congestion_map   = congestion_map,
+        penetration_rate = body.penetration_rate,
+    )
+
+    return {
+        "city"            : body.city,
+        "penetration_rate": body.penetration_rate,
+        **result,
+    }
+
 
 
 
