@@ -1037,3 +1037,163 @@ def compute_pedestrian_risk(
         'risk_category'        : category,
         'primary_hazard'       : primary_hazard,
     }
+
+
+
+
+def compute_last_mile_index(
+    vehicle_count:    float,
+    active_scooters:  int,
+    active_bikes:     int,
+    congestion_level: str,
+    zone:             str,
+) -> float:
+    """
+    Score last-mile modal shift efficiency for a zone.
+
+    Base score = (active_scooters + active_bikes) / max(vehicle_count, 1).
+    A bonus of +0.15 is added when the zone is a designated transfer hub
+    and congestion is High or Critical — indicating micro-mobility is
+    absorbing demand that would otherwise worsen congestion.
+
+    Returns float clipped to [0.0, 1.0]. Higher = better modal shift.
+    """
+    from src.config import LAST_MILE_TRANSFER_ZONES
+
+    base_score = (active_scooters + active_bikes) / max(vehicle_count, 1.0)
+
+    if zone in LAST_MILE_TRANSFER_ZONES and congestion_level in ('High', 'Critical'):
+        base_score += 0.15
+
+    return round(float(np.clip(base_score, 0.0, 1.0)), 4)
+
+
+
+def compute_pavement_wear_index(
+    vehicle_count:      float,
+    congestion_score:   float,
+    temperature_celsius: float,
+    heavy_vehicle_pct:  float = 0.10,
+) -> Dict:
+    """
+    Estimate pavement wear index for a zone based on traffic load and heat.
+
+    Formula
+    -------
+    base_wear    = vehicle_count * (1 + heavy_vehicle_pct * PAVEMENT_WEAR_COEFFICIENT_HEAVY)
+    heat_mult    = BASE_HEAT_DEGRADATION_FACTOR if temp > HEAT_THRESHOLD_CELSIUS else 1.0
+    wear_index   = (base_wear * congestion_score * heat_mult) / 100
+    intervention = max(1, int(100 / max(wear_index, 0.1)))
+
+    Parameters
+    ----------
+    vehicle_count        : Number of vehicles in the zone.
+    congestion_score     : Current congestion score 0–1.
+    temperature_celsius  : Current air temperature in Celsius.
+    heavy_vehicle_pct    : Fraction of heavy vehicles (default 0.10).
+
+    Returns
+    -------
+    dict with wear_index, risk_level, maintenance_priority,
+    estimated_months_to_intervention.
+    """
+    from src.config import (
+        PAVEMENT_WEAR_COEFFICIENT_HEAVY,
+        BASE_HEAT_DEGRADATION_FACTOR,
+        HEAT_THRESHOLD_CELSIUS,
+        PAVEMENT_RISK_THRESHOLDS,
+    )
+
+    base_wear     = vehicle_count * (1 + heavy_vehicle_pct * PAVEMENT_WEAR_COEFFICIENT_HEAVY)
+    heat_mult     = BASE_HEAT_DEGRADATION_FACTOR if temperature_celsius > HEAT_THRESHOLD_CELSIUS else 1.0
+    wear_index    = round((base_wear * congestion_score * heat_mult) / 100, 3)
+    months        = max(1, int(100 / max(wear_index, 0.1)))
+
+    if   wear_index < PAVEMENT_RISK_THRESHOLDS['Low']     : risk = 'Low'
+    elif wear_index < PAVEMENT_RISK_THRESHOLDS['Moderate'] : risk = 'Moderate'
+    elif wear_index < PAVEMENT_RISK_THRESHOLDS['High']     : risk = 'High'
+    else                                                   : risk = 'Critical'
+
+    priority_map = {
+        'Low'     : 'Schedule routine inspection',
+        'Moderate': 'Plan preventive maintenance within 3 months',
+        'High'    : 'Schedule resurfacing within 1 month',
+        'Critical': 'URGENT: Immediate structural assessment required',
+    }
+
+    return {
+        'wear_index'                      : wear_index,
+        'risk_level'                      : risk,
+        'maintenance_priority'            : priority_map[risk],
+        'estimated_months_to_intervention': months,
+        'heat_factor_applied'             : heat_mult > 1.0,
+        'temperature_celsius'             : round(temperature_celsius, 1),
+    }
+
+
+
+def compute_cooperative_route(
+    origin_zone:      str,
+    destination_zone: str,
+    congestion_map:   Dict[str, float],
+    penetration_rate: float = 0.30,
+) -> Dict:
+    """
+    Simulate V2X cooperative routing between two zones.
+
+    Uses weighted Dijkstra where edge_weight = congestion_score
+    of the destination zone * (1 / penetration_rate).
+    Selfish route is computed at penetration_rate=0.01 (near-zero
+    cooperation) to represent individual Waze-style routing.
+
+    Parameters
+    ----------
+    origin_zone      : Starting zone string e.g. 'Zone_1'.
+    destination_zone : Target zone string.
+    congestion_map   : {zone: congestion_score} for all zones.
+    penetration_rate : Fraction of V2X-enabled vehicles (0–1).
+
+    Returns
+    -------
+    dict with route, total_weight, selfish_route, selfish_weight,
+    improvement_pct.
+    """
+    import heapq
+    from src.config import ZONE_ADJACENCY
+
+    def _dijkstra(origin: str, destination: str, rate: float) -> tuple:
+        """Return (total_weight, path) using weighted Dijkstra."""
+        heap     = [(0.0, origin, [origin])]
+        visited  = set()
+
+        while heap:
+            cost, node, path = heapq.heappop(heap)
+            if node in visited:
+                continue
+            visited.add(node)
+            if node == destination:
+                return cost, path
+            for neighbour in ZONE_ADJACENCY.get(node, []):
+                if neighbour not in visited:
+                    edge_weight = congestion_map.get(neighbour, 0.1) / max(rate, 0.01)
+                    heapq.heappush(heap, (cost + edge_weight, neighbour, path + [neighbour]))
+
+        return float('inf'), []
+
+    coop_weight,   coop_route    = _dijkstra(origin_zone, destination_zone, penetration_rate)
+    selfish_weight, selfish_route = _dijkstra(origin_zone, destination_zone, 0.01)
+
+    if selfish_weight > 0:
+        improvement_pct = round(
+            (selfish_weight - coop_weight) / selfish_weight * 100, 2
+        )
+    else:
+        improvement_pct = 0.0
+
+    return {
+        'route'          : coop_route,
+        'total_weight'   : round(coop_weight, 4),
+        'selfish_route'  : selfish_route,
+        'selfish_weight' : round(selfish_weight, 4),
+        'improvement_pct': improvement_pct,
+    }
