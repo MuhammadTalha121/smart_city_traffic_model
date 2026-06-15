@@ -916,6 +916,17 @@
     </div>
   </div>
 
+  <!-- Toll Pricing Panel (PROMPT 036) -->
+  <div class="card" id="toll-panel">
+    <div class="card-header">
+      <span class="card-title">Active Congestion Pricing</span>
+      <span class="card-tag">SAR · LIVE</span>
+    </div>
+    <div id="toll-zones-wrap">
+      <div class="empty-state"><div class="empty-icon">🛣</div>Loading toll data…</div>
+    </div>
+  </div>
+
   <!-- Alert banner -->
   <div class="alert-banner" id="alert-banner" style="display:none">
     <span class="alert-icon">⚠️</span>
@@ -1258,8 +1269,8 @@
 /* ═══════════════════════════════════════════════════
    CONFIG
 ═══════════════════════════════════════════════════ */
-const API_BASE = '';  // same origin
-const API_KEY  = document.cookie.replace(/(?:(?:^|.*;\s*)dk\s*=\s*([^;]*).*$)|^.*$/, '$1') || '';
+const API_BASE = 'http://127.0.0.1:8000';
+const API_KEY  = '60073ea5e5bcfd40b96ab9d6ca6937a0c802834aa3a2840864e73dcc50e5ec53';
 
 /* The dashboard fetches data from the FastAPI backend.
    Synthetic data is pre-computed at startup and served as JSON. */
@@ -1314,6 +1325,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'weather')   renderWeatherTab();
     if (btn.dataset.tab === 'insights')  renderInsightsTab();
     if (btn.dataset.tab === 'forecast')  loadForecast();
+    if (btn.dataset.tab === 'predict')   loadTollPricing();
   });
 });
 
@@ -1435,6 +1447,22 @@ async function apiGet(endpoint) {
 
 async function fetchAnomalies() {
   return apiGet('/anomalies?city=Riyadh');
+}
+
+async function loadTollPricing() {
+  const wrap = document.getElementById('toll-zones-wrap');
+  try {
+    const data = await apiGet('/toll/active-pricing?city=Riyadh');
+    wrap.innerHTML = data.tolled_zones.map(z => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 0;border-bottom:1px solid var(--border)">
+        <span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${z.zone}</span>
+        <span style="color:${LEVEL_COLORS[z.congestion_level]};font-size:0.75rem;font-family:var(--font-mono)">${z.congestion_level}</span>
+        <span style="font-family:var(--font-display);font-size:1.4rem;color:var(--amber);letter-spacing:-0.02em">${z.toll_sar} <span style="font-size:0.7rem;color:var(--text-muted)">SAR</span></span>
+      </div>
+    `).join('');
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">🛣</div>API unavailable</div>`;
+  }
 }
 
 /* ═══════════════════════════════════════════════════
@@ -2067,6 +2095,7 @@ function renderForecastChart(currentScore, forecasts) {
    INIT
 ═══════════════════════════════════════════════════ */
 populateKPIs();
+loadTollPricing();
 
 // Init first visible tab's charts
 // (patterns tab loads on click, no upfront work needed)

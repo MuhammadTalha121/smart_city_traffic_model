@@ -268,3 +268,35 @@ ZONE_ADJACENCY: Dict[str, List[str]] = {
 }
 AV_PENETRATION_SCENARIOS: List[float] = [0.10, 0.30, 0.50]
 COOPERATIVE_ROUTING_INTERVAL_S: int   = 300
+
+
+
+
+
+# --- EV charging constants  ---
+
+EV_FAST_CHARGING_STATIONS: Dict[str, Dict] = {
+    'Olaya_Hub'  : {'chargers': 12, 'grid_capacity_kw': 1500},
+    'KAFD_East'  : {'chargers': 24, 'grid_capacity_kw': 3000},
+    'MBS_Road'   : {'chargers': 8,  'grid_capacity_kw': 1000},
+}
+CHARGE_RATE_KW: float           = 150.0
+PEAK_GRID_LOAD_THRESHOLD: float = 0.85
+
+
+
+
+# --- Dynamic congestion pricing constants ---
+BASE_TOLL_RATE_SAR: float         = 5.0
+MAX_DYNAMIC_TOLL_SAR: float       = 35.0
+TOLL_CONGESTION_MULTIPLIER: float = 6.0
+TOLL_EXEMPT_VEHICLES: List[str]   = ['emergency', 'public_bus']
+TOLLED_ZONES: List[str]           = ['Zone_1', 'Zone_2']
+
+
+
+# --- Transit Signal Priority constants  ---
+TSP_GREEN_EXTENSION_MAX_S: int   = 15
+TSP_DETECTION_RANGE_M: float     = 150.0
+TSP_MIN_PASSENGER_COUNT: int     = 10
+BUS_PRIORITY_WEIGHT: float       = 2.5

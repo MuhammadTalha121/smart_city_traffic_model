@@ -7,8 +7,8 @@ from src.model import (
     prepare_features, train_xgboost, predict_single, congestion_level,
     detect_anomalies, forecast_congestion, explain_prediction,
     evaluate_models, log_prediction, compare_baseline_vs_enhanced,
-    compute_last_mile_index, compute_emissions, compute_pavement_wear_index,
-    compute_cooperative_route,
+    compute_emissions, compute_last_mile_index, compute_pavement_wear_index,
+    compute_cooperative_route, predict_ev_charger_demand,
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING,
 )
 from src.config import HAJJ_ROUTE_ZONES
@@ -592,3 +592,36 @@ def test_higher_penetration_improves_routing():
 
 
 
+
+def test_overload_risk_flagged_at_threshold():
+    result = predict_ev_charger_demand(
+        station_id              = 'Olaya_Hub',
+        arrival_rate_per_hour   = 20.0,
+        current_active_chargers = 9,
+    )
+    assert 'grid_load_pct'  in result
+    assert 'overload_risk'  in result
+    assert isinstance(result['overload_risk'], bool)
+
+
+def test_redirect_goes_to_lowest_load_station():
+    result = predict_ev_charger_demand(
+        station_id              = 'Olaya_Hub',
+        arrival_rate_per_hour   = 20.0,
+        current_active_chargers = 12,
+    )
+    assert result['recommended_redirect_to'] in ('KAFD_East', 'MBS_Road')
+    assert result['recommended_redirect_to'] != 'Olaya_Hub'
+
+
+
+
+def test_toll_at_base_rate_when_low_congestion():
+    from src.model import calculate_dynamic_toll
+    toll = calculate_dynamic_toll('Zone_1', 0.0)
+    assert toll == 5.0
+
+def test_toll_caps_at_maximum_when_critical():
+    from src.model import calculate_dynamic_toll
+    toll = calculate_dynamic_toll('Zone_1', 1.0)
+    assert toll == 35.0
