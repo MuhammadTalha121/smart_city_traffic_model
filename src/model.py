@@ -1197,3 +1197,74 @@ def compute_cooperative_route(
         'selfish_weight' : round(selfish_weight, 4),
         'improvement_pct': improvement_pct,
     }
+
+    
+def predict_ev_charger_demand(
+    station_id:             str,
+    arrival_rate_per_hour:  float,
+    current_active_chargers: int,
+) -> Dict:
+    """
+    Estimate grid load and queue wait time for an EV fast-charge station.
+
+    grid_load     = (current_active_chargers * CHARGE_RATE_KW) /
+                    station['grid_capacity_kw']
+    queue_minutes = max(0, (arrival_rate_per_hour - station['chargers']) * 5)
+    overload_risk = grid_load > PEAK_GRID_LOAD_THRESHOLD
+
+    recommended_redirect_to is the station with the lowest grid_load_pct
+    among all stations excluding station_id.
+
+    Parameters
+    ----------
+    station_id              : Key from EV_FAST_CHARGING_STATIONS.
+    arrival_rate_per_hour   : Vehicles arriving per hour.
+    current_active_chargers : Number of chargers currently in use.
+
+    Returns
+    -------
+    dict with station_id, grid_load_pct, queue_minutes,
+    overload_risk, recommended_redirect_to.
+    """
+    from src.config import EV_FAST_CHARGING_STATIONS, CHARGE_RATE_KW, PEAK_GRID_LOAD_THRESHOLD
+
+    station = EV_FAST_CHARGING_STATIONS.get(station_id)
+    if station is None:
+        raise ValueError(f"Unknown station_id '{station_id}'.")
+
+    grid_load     = (current_active_chargers * CHARGE_RATE_KW) / station['grid_capacity_kw']
+    grid_load     = round(float(np.clip(grid_load, 0.0, 1.0)), 4)
+    queue_minutes = max(0, (arrival_rate_per_hour - station['chargers']) * 5)
+    overload_risk = grid_load > PEAK_GRID_LOAD_THRESHOLD
+
+    other_loads = {}
+    for sid, sdata in EV_FAST_CHARGING_STATIONS.items():
+        if sid == station_id:
+            continue
+        assumed_active  = sdata['chargers'] * 0.5
+        other_load      = (assumed_active * CHARGE_RATE_KW) / sdata['grid_capacity_kw']
+        other_loads[sid] = round(float(other_load), 4)
+
+    recommended_redirect_to = min(other_loads, key=other_loads.get) if other_loads else None
+
+    return {
+        'station_id'              : station_id,
+        'grid_load_pct'           : grid_load,
+        'queue_minutes'           : int(queue_minutes),
+        'overload_risk'           : overload_risk,
+        'recommended_redirect_to' : recommended_redirect_to,
+    }
+
+
+
+def calculate_dynamic_toll(zone: str, congestion_score: float, vehicle_type: str = 'passenger') -> float:
+    """Return dynamic toll in SAR for a zone and vehicle type."""
+    from src.config import (TOLL_EXEMPT_VEHICLES, TOLLED_ZONES,
+                            BASE_TOLL_RATE_SAR, TOLL_CONGESTION_MULTIPLIER,
+                            MAX_DYNAMIC_TOLL_SAR)
+    if vehicle_type in TOLL_EXEMPT_VEHICLES:
+        return 0.0
+    if zone not in TOLLED_ZONES:
+        return 0.0
+    toll = BASE_TOLL_RATE_SAR * (1 + congestion_score * TOLL_CONGESTION_MULTIPLIER)
+    return round(min(toll, MAX_DYNAMIC_TOLL_SAR), 2)
