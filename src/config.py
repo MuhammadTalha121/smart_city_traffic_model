@@ -300,3 +300,22 @@ TSP_GREEN_EXTENSION_MAX_S: int   = 15
 TSP_DETECTION_RANGE_M: float     = 150.0
 TSP_MIN_PASSENGER_COUNT: int     = 10
 BUS_PRIORITY_WEIGHT: float       = 2.5
+
+
+# --- Variable Speed Limit constants 
+VSL_DEFAULT_SPEED_KMPH: int          = 120
+VSL_MINIMUM_SPEED_KMPH: int          = 40
+VSL_STEP_SIZE_KMPH: int              = 10
+VISIBILITY_CLEAR_THRESHOLD_M: int    = 1000
+VISIBILITY_DANGER_THRESHOLD_M: int   = 500
+VISIBILITY_EXTREME_THRESHOLD_M: int  = 200
+VSL_HIGHWAY_ZONES: List[str]         = ['Zone_1', 'Zone_2']
+
+
+
+# ── Sensor Intrusion Detection System ──────────────────────────
+IDS_MAX_SPEED_KMPH             = 180.0
+IDS_MAX_VEHICLE_COUNT          = 500
+IDS_NEIGHBORHOOD_VARIANCE_STD  = 3.5
+IDS_ZERO_TRAFFIC_SUSPECT_HOURS = [7, 8, 9, 17, 18, 19]
+IDS_STRIKE_LIMIT               = 3

@@ -41,6 +41,24 @@ def prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, list]:
     return df[available], df['congestion_score'], available
 
 
+def generate_data(city: str = 'Riyadh') -> pd.DataFrame:
+    """
+    Full pipeline: generate raw data, apply hourly patterns, add lag features.
+
+    generate_traffic_data() alone does not produce congestion_score —
+    that column is added by apply_hourly_patterns(). This wrapper exists
+    so callers that need a model-ready DataFrame (with congestion_score
+    and lag columns), such as src/federated.py, don't have to repeat the
+    three-step pipeline.
+    """
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+
+    df = generate_traffic_data(city=city)
+    df = apply_hourly_patterns(df, city=city)
+    df = add_lag_features(df)
+    return df
+
+
 def train_xgboost(X: pd.DataFrame, y: pd.Series) -> Tuple:
     """Train XGBoost regressor with early stopping."""
     X_train, X_test, y_train, y_test = train_test_split(
@@ -1268,3 +1286,111 @@ def calculate_dynamic_toll(zone: str, congestion_score: float, vehicle_type: str
         return 0.0
     toll = BASE_TOLL_RATE_SAR * (1 + congestion_score * TOLL_CONGESTION_MULTIPLIER)
     return round(min(toll, MAX_DYNAMIC_TOLL_SAR), 2)
+
+
+def evaluate_transit_priority(bus_distance_m: float,
+                               current_green_remaining_s: float,
+                               passenger_count: int) -> dict:
+    """Return TSP green extension decision."""
+    from src.config import (TSP_DETECTION_RANGE_M, TSP_MIN_PASSENGER_COUNT,
+                            BUS_PRIORITY_WEIGHT, TSP_GREEN_EXTENSION_MAX_S)
+    if bus_distance_m > TSP_DETECTION_RANGE_M:
+        return {
+            'extension_granted_s': 0,
+            'priority_score': 0.0,
+            'phase_change_requested': False,
+            'rationale': 'Bus outside detection range',
+        }
+    if passenger_count < TSP_MIN_PASSENGER_COUNT:
+        return {
+            'extension_granted_s': 0,
+            'priority_score': 0.0,
+            'phase_change_requested': False,
+            'rationale': 'Passenger count below TSP threshold',
+        }
+    priority_score = (passenger_count * BUS_PRIORITY_WEIGHT) / max(bus_distance_m, 1)
+    extension_s    = min(int(priority_score), TSP_GREEN_EXTENSION_MAX_S)
+    return {
+        'extension_granted_s':    extension_s,
+        'priority_score':         round(priority_score, 3),
+        'phase_change_requested': bus_distance_m < 50,
+        'rationale': f'{passenger_count} passengers at {bus_distance_m:.0f}m — {extension_s}s extension granted',
+    }
+
+
+
+def compute_vsl_limit(
+    weather:        str,
+    visibility_m:   float,
+    avg_speed_kmph: float,
+) -> Dict:
+    """
+    Recommend a variable speed limit for a highway zone based on
+    current visibility and weather conditions.
+ 
+    Visibility-based reduction steps:
+    - clear weather and visibility > VISIBILITY_CLEAR_THRESHOLD_M (1000m):
+      VSL_DEFAULT_SPEED_KMPH (120)
+    - visibility < 1000m: 100
+    - visibility < 500m : 80
+    - visibility < 300m : 60
+    - visibility < 200m : VSL_MINIMUM_SPEED_KMPH (40)
+ 
+    Result is floored to the nearest VSL_STEP_SIZE_KMPH and never goes
+    below VSL_MINIMUM_SPEED_KMPH.
+ 
+    Parameters
+    ----------
+    weather        : Current weather condition string.
+    visibility_m   : Current visibility in metres.
+    avg_speed_kmph : Current average zone speed — included in the
+                     response for operator context.
+ 
+    Returns
+    -------
+    dict with recommended_speed_kmph, reduction_reason, warning_message,
+    enforcement_recommended, current_avg_speed_kmph.
+    """
+    from src.config import (
+        VSL_DEFAULT_SPEED_KMPH, VSL_MINIMUM_SPEED_KMPH, VSL_STEP_SIZE_KMPH,
+        VISIBILITY_CLEAR_THRESHOLD_M,
+    )
+ 
+    if weather == 'clear' and visibility_m > VISIBILITY_CLEAR_THRESHOLD_M:
+        recommended = VSL_DEFAULT_SPEED_KMPH
+        reason      = 'Clear visibility — default highway limit applies'
+    elif visibility_m < 200:
+        recommended = VSL_MINIMUM_SPEED_KMPH
+        reason      = f'Extreme low visibility ({visibility_m:.0f}m) — minimum safe speed'
+    elif visibility_m < 300:
+        recommended = 60
+        reason      = f'Severe visibility reduction ({visibility_m:.0f}m) — sandstorm/fog protocol'
+    elif visibility_m < 500:
+        recommended = 80
+        reason      = f'Significant visibility reduction ({visibility_m:.0f}m)'
+    elif visibility_m < VISIBILITY_CLEAR_THRESHOLD_M:
+        recommended = 100
+        reason      = f'Reduced visibility ({visibility_m:.0f}m)'
+    else:
+        recommended = VSL_DEFAULT_SPEED_KMPH
+        reason      = 'Visibility within normal range'
+ 
+    recommended = (int(recommended) // VSL_STEP_SIZE_KMPH) * VSL_STEP_SIZE_KMPH
+    recommended = max(VSL_MINIMUM_SPEED_KMPH, recommended)
+ 
+    reduction                = VSL_DEFAULT_SPEED_KMPH - recommended
+    enforcement_recommended  = reduction > 40
+ 
+    if recommended < VSL_DEFAULT_SPEED_KMPH:
+        warning_message = f'Reduce speed to {recommended} km/h — {reason.lower()}.'
+    else:
+        warning_message = 'Normal highway speed limit in effect.'
+ 
+    return {
+        'recommended_speed_kmph' : recommended,
+        'reduction_reason'       : reason,
+        'warning_message'        : warning_message,
+        'enforcement_recommended': enforcement_recommended,
+        'current_avg_speed_kmph' : round(float(avg_speed_kmph), 1),
+    }
+ 

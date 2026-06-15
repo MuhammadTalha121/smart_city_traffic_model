@@ -11,7 +11,7 @@ from src.model import (
     compute_cooperative_route, predict_ev_charger_demand,
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING,
 )
-from src.config import HAJJ_ROUTE_ZONES
+from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH
 
 
 @pytest.fixture(scope="module")
@@ -625,3 +625,142 @@ def test_toll_caps_at_maximum_when_critical():
     from src.model import calculate_dynamic_toll
     toll = calculate_dynamic_toll('Zone_1', 1.0)
     assert toll == 35.0
+
+
+def test_tsp_extension_capped_at_maximum():
+    from src.model import evaluate_transit_priority
+    result = evaluate_transit_priority(
+        bus_distance_m=1.0,        # extremely close → huge priority_score
+        current_green_remaining_s=5,
+        passenger_count=100,
+    )
+    assert result['extension_granted_s'] <= 15
+
+def test_tsp_zero_when_bus_out_of_range():
+    from src.model import evaluate_transit_priority
+    result = evaluate_transit_priority(
+        bus_distance_m=200.0,      # beyond 150m threshold
+        current_green_remaining_s=30,
+        passenger_count=40,
+    )
+    assert result['extension_granted_s'] == 0
+    assert result['phase_change_requested'] is False
+
+
+
+def test_extract_params_contains_no_training_data():
+    from src.federated import extract_shareable_params
+    from src.model import train_xgboost, prepare_features
+    from src.model import train_xgboost, prepare_features, generate_data
+    df = generate_data('Riyadh')
+    X, y, _ = prepare_features(df)
+    model, _, _ = train_xgboost(X, y)
+    result = extract_shareable_params(model)
+    # Must have these keys
+    assert 'best_params' in result
+    assert 'training_r2' in result
+    assert 'city' in result
+    # Must NOT contain raw data
+    assert 'X_train' not in result
+    assert 'y_train' not in result
+    assert 'training_rows' not in result
+
+def test_aggregation_weights_by_r2_score():
+    from src.federated import simulate_aggregation
+    city_params = [
+        {'city': 'Riyadh', 'training_r2': 0.90,
+         'best_params': {'n_estimators': 200, 'max_depth': 5,
+                         'learning_rate': 0.1, 'subsample': 0.8}},
+        {'city': 'NEOM',   'training_r2': 0.60,
+         'best_params': {'n_estimators': 100, 'max_depth': 3,
+                         'learning_rate': 0.05, 'subsample': 0.6}},
+    ]
+    result = simulate_aggregation(city_params)
+    agg = result['aggregated_params']
+    # Riyadh has 0.90 weight — n_estimators should be closer to 200 than 100
+    assert agg['n_estimators'] > 150
+    assert agg['learning_rate'] > 0.05
+
+
+
+
+#  — Variable Speed Limit tests
+# ---------------------------------------------------------------------------
+ 
+def test_vsl_minimum_at_extreme_low_visibility():
+    """Visibility below 200m must produce the minimum VSL and enforcement flag."""
+    from src.model import compute_vsl_limit
+ 
+    result = compute_vsl_limit(
+        weather        = 'sandstorm',
+        visibility_m   = 150,
+        avg_speed_kmph = 35,
+    )
+ 
+    assert result['recommended_speed_kmph']  == 40
+    assert result['enforcement_recommended'] is True
+    assert 'visibility' in result['reduction_reason'].lower()
+ 
+ 
+def test_vsl_default_in_clear_conditions():
+    """Clear weather with visibility above the clear threshold keeps the default limit."""
+    from src.model import compute_vsl_limit
+ 
+    result = compute_vsl_limit(
+        weather        = 'clear',
+        visibility_m   = 1200,
+        avg_speed_kmph = 95,
+    )
+ 
+    assert result['recommended_speed_kmph']  == 120
+    assert result['enforcement_recommended'] is False
+
+
+
+
+
+# ── Sensor Intrusion Detection ────────────────────────────────
+from src.ids import SensorIntrusionDetector
+
+def _ids_base_kwargs(**overrides):
+    """Sensible defaults; override per test."""
+    defaults = dict(
+        zone                 = "Zone_1",
+        hour                 = 14,          # non-rush, non-weekend
+        vehicle_count        = 120,
+        avg_speed            = 60.0,
+        zone_historical_mean = 130.0,
+        zone_historical_std  = 30.0,
+        is_weekend           = False,
+    )
+    return {**defaults, **overrides}
+
+
+def test_impossible_speed_blocked():
+    """Speed above IDS_MAX_SPEED_KMPH must return Blocked + SPEED_IMPOSSIBLE."""
+    detector = SensorIntrusionDetector()
+    result   = detector.validate_reading(
+        **_ids_base_kwargs(avg_speed=IDS_MAX_SPEED_KMPH + 1)
+    )
+    assert result["risk_level"] == "Blocked",        "Expected Blocked"
+    assert "SPEED_IMPOSSIBLE" in result["flags"],    "Expected SPEED_IMPOSSIBLE flag"
+    assert result["valid"] is False,                 "Blocked reading must not be valid"
+
+
+def test_suspicious_zero_flagged_in_rush_hour():
+    """
+    Zero vehicle count during a weekday rush hour must return
+    Suspicious + SUSPICIOUS_ZERO. Not Blocked (no IMPOSSIBLE flag),
+    but valid=False is wrong — Suspicious still lets prediction proceed.
+    """
+    detector = SensorIntrusionDetector()
+    result   = detector.validate_reading(
+        **_ids_base_kwargs(
+            vehicle_count = 0,
+            hour          = 8,          # in IDS_ZERO_TRAFFIC_SUSPECT_HOURS
+            is_weekend    = False,
+        )
+    )
+    assert result["risk_level"] == "Suspicious",     "Expected Suspicious"
+    assert "SUSPICIOUS_ZERO" in result["flags"],     "Expected SUSPICIOUS_ZERO flag"
+    assert result["valid"] is True,                  "Suspicious reading is still valid (soft flag)"
