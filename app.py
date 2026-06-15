@@ -20,7 +20,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
-from src.config import HAJJ_DATES, SAUDI_CITIES
+from src.config import HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH    # PROMPT 040IDS_ZERO_TRAFFIC_SUSPECT_HOURS,
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
     train_xgboost, prepare_features, predict_single, congestion_level,
@@ -30,8 +30,9 @@ from src.model import (
     get_delivery_windows, compute_prediction_interval,
     compute_speed_degradation_index, compute_pedestrian_risk,
     compute_last_mile_index, compute_pavement_wear_index,
-    compute_cooperative_route, predict_ev_charger_demand,
+    compute_cooperative_route, predict_ev_charger_demand, compute_vsl_limit,
 )
+from src.ids import SensorIntrusionDetector 
 
 from src.adapters import get_adapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
@@ -432,6 +433,44 @@ def predict(
         )
 
     p      = payload.model_dump()
+
+
+    # ──  IDS validation ─────────────────────────────────────────
+    _ids_detector = SensorIntrusionDetector()
+
+    _zone_df = app.state.df[app.state.df["zone"] == p["zone"]] \
+               if "zone" in app.state.df.columns else app.state.df
+
+    _zone_mean = float(_zone_df["vehicle_count"].mean()) \
+                 if not _zone_df.empty else 150.0
+    _zone_std  = float(_zone_df["vehicle_count"].std()) \
+                 if not _zone_df.empty and len(_zone_df) > 1 else 50.0
+
+    _ids_result = _ids_detector.validate_reading(
+        zone                 = p["zone"],
+        hour                 = p["hour"],
+        vehicle_count        = p["vehicle_count"],
+        avg_speed            = p["avg_speed"],
+        zone_historical_mean = _zone_mean,
+        zone_historical_std  = _zone_std,
+        is_weekend           = p["is_weekend"],
+    )
+
+    if _ids_result["risk_level"] != "Clean":
+        _log_ids_event(_ids_result, p)
+
+    if _ids_result["risk_level"] == "Blocked":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error":      "IDS_BLOCKED",
+                "message":    "Sensor reading blocked: physically impossible values detected.",
+                "ids_report": _ids_result,
+            },
+        )
+    # ── end IDS ───────────────────────────────────────────────────────────
+
+
     result = predict_single(
         city            = p["city"],
         zone            = p["zone"],
@@ -531,9 +570,15 @@ def predict(
     )
     result["pedestrian_risk"] = pedestrian_risk
     result["input_warnings"] = validation["warnings"]
+    
 
     log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
-
+    if _ids_result["risk_level"] == "Suspicious":
+        result["ids_warning"] = {
+            "flags":      _ids_result["flags"],
+            "risk_level": _ids_result["risk_level"],
+            "message":    "Sensor reading accepted with anomaly flags. Verify sensor hardware.",
+        }
     return result
 
 
@@ -1221,6 +1266,55 @@ def roads_service_level(
 
 
 
+@app.get("/vsl/active-limits", tags=["safety"])
+def vsl_active_limits(
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Recommend variable speed limits for highway zones based on
+    current visibility conditions from WeatherAdapter.
+ 
+    Falls back to clear/10000m visibility if the weather API
+    is unreachable.
+    """
+    _assert_city_permitted(auth, city)
+ 
+    try:
+        weather_df   = get_adapter("weather").fetch(city)
+        weather      = str(weather_df["weather"].iloc[0])
+        visibility_m = float(weather_df["visibility"].iloc[0])
+    except Exception:
+        weather, visibility_m = "clear", 10000.0
+ 
+    df = app.state.city_dfs.get(city, app.state.df)
+ 
+    results = []
+    for zone in VSL_HIGHWAY_ZONES:
+        zone_df   = df[df["zone"] == zone]
+        avg_speed = float(zone_df["avg_speed"].iloc[-1]) if not zone_df.empty else 65.0
+ 
+        vsl = compute_vsl_limit(
+            weather        = weather,
+            visibility_m   = visibility_m,
+            avg_speed_kmph = avg_speed,
+        )
+ 
+        results.append({
+            "zone": zone,
+            **vsl,
+        })
+ 
+    return {
+        "city"           : city,
+        "current_weather": weather,
+        "visibility_m"   : round(visibility_m, 1),
+        "zones"          : results,
+    }
+
+
+
+
 @app.get("/safety/pedestrian", tags=["safety"])
 @limiter.limit("20/minute")
 def safety_pedestrian(
@@ -1772,6 +1866,91 @@ def optimize_charge_load(
 
 
 
+
+@app.post('/signals/tsp-actuation')
+def tsp_actuation(payload: dict, api_key: str = Depends(require_api_key)):
+    """TSP green extension decision for an approaching bus."""
+    from src.model import evaluate_transit_priority
+    return evaluate_transit_priority(
+        bus_distance_m          = float(payload.get('bus_distance_m', 200)),
+        current_green_remaining_s = float(payload.get('current_green_remaining_s', 30)),
+        passenger_count         = int(payload.get('passenger_count', 0)),
+    ) | {
+        'zone': payload.get('zone', 'unknown'),
+    }
+
+
+
+@app.get('/federated/params')
+def federated_params(api_key: str = Depends(require_api_key)):
+    """Return shareable model params — no raw data."""
+    from src.federated import extract_shareable_params
+    return extract_shareable_params(app.state.model)
+
+
+@app.post('/federated/aggregate')
+def federated_aggregate(payload: dict, api_key: str = Depends(require_api_key)):
+    """Aggregate params from multiple cities — flags for next retrain."""
+    from src.federated import simulate_aggregation
+    city_params = payload.get('city_params', [])
+    if not city_params:
+        raise HTTPException(status_code=422, detail='city_params list required')
+    result = simulate_aggregation(city_params)
+    # Store result for next pipeline run
+    app.state.pending_aggregation = result
+    return {'status': 'aggregated', 'result': result}
+
+
+
+
+
+import csv as _csv
+from pathlib import Path as _Path
+from datetime import datetime as _dt
+
+IDS_LOG_PATH = "ids_log.csv"
+_IDS_FIELDS  = ["timestamp", "zone", "hour", "risk_level", "flags",
+                 "vehicle_count", "avg_speed"]
+
+
+def _log_ids_event(ids_result: dict, request) -> None:
+    """Append one IDS event row to ids_log.csv."""
+    path    = _Path(IDS_LOG_PATH)
+    is_new  = not path.exists()
+    with open(path, "a", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=_IDS_FIELDS)
+        if is_new:
+            writer.writeheader()
+        writer.writerow({
+            "timestamp":     _dt.utcnow().isoformat(),
+            "zone":          ids_result["zone"],
+            "hour":          ids_result["hour"],
+            "risk_level":    ids_result["risk_level"],
+            "flags":         "|".join(ids_result["flags"]),
+            "vehicle_count": request.vehicle_count,
+            "avg_speed":     request.avg_speed,
+        })
+
+
+@app.get("/ids/alerts", tags=["security"])
+async def ids_alerts(
+    city: str = "Riyadh",
+    api_key: str = Depends(require_api_key),
+):
+    """Return last 100 IDS events from ids_log.csv."""
+    path = _Path(IDS_LOG_PATH)
+    if not path.exists():
+        return {"city": city, "alerts": [], "total": 0}
+
+    import pandas as pd
+    df = pd.read_csv(path)
+    # Most recent first, cap at 100
+    alerts = df.tail(100).iloc[::-1].to_dict(orient="records")
+    return {
+        "city":   city,
+        "alerts": alerts,
+        "total":  len(df),
+    }
 
 
 
