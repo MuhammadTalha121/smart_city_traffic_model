@@ -30,7 +30,7 @@ from src.model import (
     get_delivery_windows, compute_prediction_interval,
     compute_speed_degradation_index, compute_pedestrian_risk,
     compute_last_mile_index, compute_pavement_wear_index,
-    compute_cooperative_route,
+    compute_cooperative_route, predict_ev_charger_demand,
 )
 
 from src.adapters import get_adapter
@@ -1597,7 +1597,7 @@ class CooperativeRouteRequest(BaseModel):
     destination_zone : str   = Field(..., json_schema_extra={"example": "Zone_4"})
     penetration_rate : float = Field(0.30, ge=0.01, le=1.0)
 
-    
+
 
 @app.post("/v2x/cooperative-route", tags=["v2x"])
 def cooperative_route(
@@ -1643,6 +1643,132 @@ def cooperative_route(
         "penetration_rate": body.penetration_rate,
         **result,
     }
+
+
+
+
+
+@app.get('/toll/active-pricing')
+def toll_active_pricing(city: str = 'Riyadh'):
+    """Public endpoint — no auth. Returns current toll for all tolled zones."""
+    from src.config import TOLLED_ZONES
+    from src.model import calculate_dynamic_toll, congestion_level
+    import datetime
+
+    df = app.state.df
+    now = datetime.datetime.utcnow().isoformat()
+    results = []
+    for zone in TOLLED_ZONES:
+        zone_df = df[df['zone'] == zone]
+        score = float(zone_df['congestion_score'].mean()) if not zone_df.empty else 0.3
+        results.append({
+            'zone'            : zone,
+            'toll_sar'        : calculate_dynamic_toll(zone, score),
+            'congestion_level': congestion_level(score),
+            'last_updated'    : now,
+        })
+    return {'city': city, 'tolled_zones': results}
+
+
+@app.post('/toll/estimate')
+def toll_estimate(payload: dict, api_key: str = Depends(require_api_key)):
+    """Authenticated. Returns estimated toll for a journey."""
+    from src.model import calculate_dynamic_toll, predict_single, congestion_level
+
+    origin      = payload.get('origin_zone', 'Zone_1')
+    destination = payload.get('destination_zone', 'Zone_2')
+    vehicle     = payload.get('vehicle_type', 'passenger')
+    hour        = int(payload.get('hour', 8))
+
+    df = app.state.df
+    def zone_score(z):
+        zdf = df[df['zone'] == z]
+        return float(zdf['congestion_score'].mean()) if not zdf.empty else 0.3
+
+    origin_score = zone_score(origin)
+    dest_score   = zone_score(destination)
+
+    origin_toll = calculate_dynamic_toll(origin, origin_score, vehicle)
+    dest_toll   = calculate_dynamic_toll(destination, dest_score, vehicle)
+    total_toll  = round(origin_toll + dest_toll, 2)
+
+    return {
+        'origin_zone'      : origin,
+        'destination_zone' : destination,
+        'vehicle_type'     : vehicle,
+        'hour'             : hour,
+        'origin_toll_sar'  : origin_toll,
+        'destination_toll_sar': dest_toll,
+        'total_toll_sar'   : total_toll,
+        'congestion_level' : congestion_level(max(origin_score, dest_score)),
+    }
+
+
+
+
+
+class ChargeLoadRequest(BaseModel):
+    station_id             : str
+    arriving_vehicles      : float = Field(..., ge=0)
+
+
+
+
+@app.get("/grid/charger-status", tags=["grid"])
+def charger_status(auth: Dict = Depends(require_api_key)):
+    """Return predicted grid load status for all EV charging stations."""
+    from src.config import EV_FAST_CHARGING_STATIONS
+
+    results = []
+    for station_id, sdata in EV_FAST_CHARGING_STATIONS.items():
+        assumed_active = int(sdata['chargers'] * 0.6)
+        status = predict_ev_charger_demand(
+            station_id             = station_id,
+            arrival_rate_per_hour  = assumed_active * 1.2,
+            current_active_chargers= assumed_active,
+        )
+        status['total_chargers'] = sdata['chargers']
+        results.append(status)
+
+    results.sort(key=lambda x: -x['grid_load_pct'])
+    return {'stations': results}
+
+
+@app.post("/grid/optimize-charge-load", tags=["grid"])
+def optimize_charge_load(
+    body: ChargeLoadRequest,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return load-shifting recommendation for an EV charging station.
+
+    Uses arriving_vehicles as arrival_rate_per_hour and assumes
+    70% of chargers are currently active.
+    """
+    from src.config import EV_FAST_CHARGING_STATIONS
+
+    if body.station_id not in EV_FAST_CHARGING_STATIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown station_id '{body.station_id}'. "
+                   f"Valid: {list(EV_FAST_CHARGING_STATIONS.keys())}",
+        )
+
+    station         = EV_FAST_CHARGING_STATIONS[body.station_id]
+    assumed_active  = int(station['chargers'] * 0.7)
+
+    result = predict_ev_charger_demand(
+        station_id             = body.station_id,
+        arrival_rate_per_hour  = body.arriving_vehicles,
+        current_active_chargers= assumed_active,
+    )
+
+    if result['overload_risk']:
+        action = f"Redirect incoming vehicles to {result['recommended_redirect_to']}"
+    else:
+        action = "No action required — grid load within threshold"
+
+    return {**result, 'recommended_action': action}
 
 
 
