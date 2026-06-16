@@ -8,7 +8,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
 import joblib
 from typing import Tuple, Dict
-from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES
+from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES, NOISE_BASE_DB, NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS
 
 
 FEATURE_COLS = [
@@ -1394,3 +1394,40 @@ def compute_vsl_limit(
         'current_avg_speed_kmph' : round(float(avg_speed_kmph), 1),
     }
  
+
+
+def estimate_noise_level(
+    vehicle_count: int,
+    avg_speed: float,
+    road_type: str,
+    hour: int,
+) -> dict:
+    """
+    PROMPT 041 — Estimates traffic noise in dB per zone.
+    Based on simplified FHWA TNM inputs: volume, speed, road class.
+    WHO daytime limit: 53 dB.
+    """
+    night_hours    = list(range(23, 24)) + list(range(0, 6))
+    night_reduction = -5.0 if hour in night_hours else 0.0
+
+    noise_db = (
+        NOISE_BASE_DB
+        + vehicle_count * NOISE_VEHICLE_COEFFICIENT
+        + avg_speed     * NOISE_SPEED_COEFFICIENT
+        + NOISE_ROAD_TYPE_PREMIUM.get(road_type, 0.0)
+        + night_reduction
+    )
+    noise_db = round(min(noise_db, 95.0), 1)
+
+    # Classify using thresholds (ascending)
+    noise_level = "Acceptable"
+    for level, threshold in sorted(NOISE_THRESHOLDS.items(),
+                                   key=lambda x: x[1]):
+        if noise_db >= threshold:
+            noise_level = level
+
+    return {
+        "noise_db"             : noise_db,
+        "noise_level"          : noise_level,
+        "who_guideline_exceeded": noise_db > 53.0,
+    }
