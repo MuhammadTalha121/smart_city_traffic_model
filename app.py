@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict
 import pandas as pd
-from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
+from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -20,7 +20,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
-from src.config import HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH    # PROMPT 040IDS_ZERO_TRAFFIC_SUSPECT_HOURS,
+from src.config import HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB, NOISE_THRESHOLDS
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
     train_xgboost, prepare_features, predict_single, congestion_level,
@@ -570,6 +570,13 @@ def predict(
     )
     result["pedestrian_risk"] = pedestrian_risk
     result["input_warnings"] = validation["warnings"]
+
+    result["noise_estimate"] = estimate_noise_level(
+        vehicle_count = p["vehicle_count"],
+        avg_speed     = p["avg_speed"],
+        road_type     = p["road_type"],
+        hour          = p["hour"],
+    )
     
 
     log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
@@ -1951,6 +1958,46 @@ async def ids_alerts(
         "alerts": alerts,
         "total":  len(df),
     }
+
+
+
+
+@app.get("/environment/noise-map", tags=["environment"])
+async def noise_map(
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    PROMPT 041 — Returns noise estimates for all zones at current hour,
+    sorted loudest to quietest.
+    """
+    _assert_city_permitted(auth, city)
+    hour    = datetime.now().hour
+    df      = app.state.city_dfs.get(city, app.state.df)
+    results = []
+
+    for zone in df["zone"].unique() if "zone" in df.columns \
+                else [p["zone"] for p in [{}]]:
+        zone_df   = df[df["zone"] == zone] if "zone" in df.columns else df
+        avg_speed = float(zone_df["avg_speed"].mean()) \
+                    if "avg_speed" in zone_df.columns else 60.0
+        vehicle_count = int(zone_df["vehicle_count"].mean()) \
+                        if "vehicle_count" in zone_df.columns else 100
+        road_type = str(zone_df["road_type"].mode()[0]) \
+                    if "road_type" in zone_df.columns else "arterial"
+
+        noise = estimate_noise_level(
+            vehicle_count = vehicle_count,
+            avg_speed     = avg_speed,
+            road_type     = road_type,
+            hour          = hour,
+        )
+        results.append({"zone": zone, **noise})
+
+    results.sort(key=lambda x: x["noise_db"], reverse=True)
+    return {"city": city, "hour": hour, "zones": results}
+
+
 
 
 
