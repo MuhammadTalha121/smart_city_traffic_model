@@ -319,3 +319,17 @@ IDS_MAX_VEHICLE_COUNT          = 500
 IDS_NEIGHBORHOOD_VARIANCE_STD  = 3.5
 IDS_ZERO_TRAFFIC_SUSPECT_HOURS = [7, 8, 9, 17, 18, 19]
 IDS_STRIKE_LIMIT               = 3
+
+
+
+#──  Noise Pollution Estimation ─────────────────────────────────
+NOISE_BASE_DB                   = 40.0
+NOISE_VEHICLE_COEFFICIENT       = 0.15
+NOISE_SPEED_COEFFICIENT         = 0.08
+NOISE_HEAVY_VEHICLE_COEFFICIENT = 0.35
+NOISE_ROAD_TYPE_PREMIUM = {
+    'highway': 5.0, 'arterial': 2.0, 'local': 0.0
+}
+NOISE_THRESHOLDS = {
+    'Acceptable': 55.0, 'Elevated': 65.0, 'Harmful': 75.0
+}
