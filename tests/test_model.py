@@ -764,3 +764,30 @@ def test_suspicious_zero_flagged_in_rush_hour():
     assert result["risk_level"] == "Suspicious",     "Expected Suspicious"
     assert "SUSPICIOUS_ZERO" in result["flags"],     "Expected SUSPICIOUS_ZERO flag"
     assert result["valid"] is True,                  "Suspicious reading is still valid (soft flag)"
+
+
+
+# ── Noise Pollution Estimation ────────────────────────────────
+from src.model import estimate_noise_level
+
+
+def test_highway_louder_than_local_road():
+    """Highway road_type premium must produce higher dB than local."""
+    highway = estimate_noise_level(
+        vehicle_count=200, avg_speed=100.0, road_type="highway", hour=14
+    )
+    local = estimate_noise_level(
+        vehicle_count=200, avg_speed=100.0, road_type="local", hour=14
+    )
+    assert highway["noise_db"] > local["noise_db"], \
+        "Highway must be louder than local road at identical volume/speed"
+
+
+def test_who_guideline_exceeded_at_high_volume():
+    """High volume arterial at peak hour must breach WHO 53 dB limit."""
+    result = estimate_noise_level(
+        vehicle_count=300, avg_speed=80.0, road_type="arterial", hour=8
+    )
+    assert result["who_guideline_exceeded"] is True, \
+        "Expected WHO guideline breach at high vehicle count"
+    assert result["noise_db"] > 53.0
