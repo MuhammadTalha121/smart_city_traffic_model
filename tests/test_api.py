@@ -667,3 +667,112 @@ def test_v2x_cooperative_route_returns_valid_path(client):
     assert data["route"][0]  == "Zone_1"
     assert data["route"][-1] == "Zone_4"
     assert "improvement_pct" in data
+
+
+
+
+
+# ====== PROMPT 043 – Green Wave API endpoint tests (corrected) ======
+
+def test_green_wave_endpoint_returns_200(client):
+    """Valid route returns green wave schedule."""
+    payload = {
+        "city": "Riyadh",
+        "route": ["Zone_1", "Zone_2"],
+        "vehicle_speed_kmph": 60.0,
+        "priority_level": "emergency"
+    }
+    response = client.post(
+        "/control/green-wave",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY}   # <-- added
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "phase_schedule" in data
+    assert len(data["phase_schedule"]) == 2
+    assert data["stops_avoided"] == 1
+    assert data["city"] == "Riyadh"
+    assert data["priority_level"] == "emergency"
+
+
+def test_green_wave_invalid_route_returns_400(client):
+    """Non‑adjacent zones must return HTTP 400 with a clear error."""
+    payload = {
+        "city": "Riyadh",
+        "route": ["Zone_1", "Zone_4"],   # not adjacent
+        "vehicle_speed_kmph": 60.0,
+        "priority_level": "emergency"
+    }
+    response = client.post(
+        "/control/green-wave",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY}   # <-- added
+    )
+    assert response.status_code == 400
+    assert "Non-adjacent" in response.text or "discontinuity" in response.text.lower()
+
+
+def test_green_wave_missing_route_returns_422(client):
+    """Missing 'route' field should trigger Pydantic validation error."""
+    payload = {
+        "city": "Riyadh",
+        "vehicle_speed_kmph": 60.0,
+        "priority_level": "emergency"
+    }
+    response = client.post(
+        "/control/green-wave",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY}   # <-- added
+    )
+    assert response.status_code == 422   # validation error
+
+
+
+# ===== – Crosswalk timing API tests =====
+
+def test_crosswalk_timing_endpoint_returns_200(client):
+    """Valid request returns crosswalk timing for all zones."""
+    response = client.get(
+        "/pedestrian/crosswalk-timing?city=Riyadh&schedule=standard",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    assert isinstance(data["zones"], dict)
+    # Check that at least one zone has the required keys
+    for zone, timing in data["zones"].items():
+        assert "walk_time_s" in timing
+        assert "mutcd_compliant" in timing
+        assert 7 <= timing["walk_time_s"] <= 35
+
+def test_crosswalk_timing_no_auth_returns_401(client):
+    """Missing API key must return 401."""
+    response = client.get("/pedestrian/crosswalk-timing?city=Riyadh")
+    assert response.status_code == 401
+
+
+
+
+# =====  – Heat Risk API tests =====
+
+def test_heat_risk_endpoint_returns_200(client):
+    """Valid city returns thermal risk for all zones."""
+    response = client.get(
+        "/infrastructure/heat-risk?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    assert "air_temp_celsius" in data
+    for zone, risk in data["zones"].items():
+        assert "surface_temp_celsius" in risk
+        assert "maintenance_alert" in risk
+        assert isinstance(risk["maintenance_alert"], bool)
+
+def test_heat_risk_no_auth_returns_401(client):
+    """Missing API key must return 401."""
+    response = client.get("/infrastructure/heat-risk?city=Riyadh")
+    assert response.status_code == 401
