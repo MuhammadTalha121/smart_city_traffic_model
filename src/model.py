@@ -1621,3 +1621,167 @@ def compute_thermal_risk(
         'risk_level': risk_level,
         'maintenance_alert': maintenance_alert,
     }
+
+
+
+
+# ===== – Extreme Heat Infrastructure Risk Assessment =====
+
+def compute_thermal_risk(
+    air_temp_celsius: float,
+    weather: str,
+    road_type: str,
+) -> Dict:
+    """
+    Estimate asphalt surface temperature and thermal risk for a zone.
+
+    Surface temperature = air_temp + offset (12°C) with adjustments:
+    - Sandstorm: -3°C (dust reduces solar absorption)
+    - Highway: +2°C (darker surface absorbs more heat)
+    - Other road types: no adjustment
+
+    Risk score is the proportion above the critical asphalt temperature (55°C),
+    capped at 1.0. Maintenance alert triggered when surface_temp > 55°C.
+
+    Parameters
+    ----------
+    air_temp_celsius : Current air temperature in Celsius.
+    weather          : Weather condition string (e.g., 'clear', 'sandstorm').
+    road_type        : One of 'highway', 'arterial', 'local'.
+
+    Returns
+    -------
+    dict with surface_temp_celsius, air_temp_celsius, risk_score,
+         risk_level, maintenance_alert.
+    """
+    from src.config import SURFACE_TEMP_OFFSET_CELSIUS, ASPHALT_CRITICAL_TEMP_CELSIUS, HEAT_RISK_THRESHOLDS
+
+    # Start with offset
+    surface_temp = air_temp_celsius + SURFACE_TEMP_OFFSET_CELSIUS
+
+    # Weather adjustment
+    if weather == 'sandstorm':
+        surface_temp -= 3.0   # dust reduces solar absorption
+
+    # Road type adjustment
+    if road_type == 'highway':
+        surface_temp += 2.0   # darker asphalt absorbs more heat
+
+    # Risk score: how far above critical temperature
+    risk_score = max(0.0, (surface_temp - ASPHALT_CRITICAL_TEMP_CELSIUS) / 10.0)
+    risk_score = min(risk_score, 1.0)
+
+    # Determine risk level
+    if surface_temp < HEAT_RISK_THRESHOLDS['Low']:
+        risk_level = 'Low'
+    elif surface_temp < HEAT_RISK_THRESHOLDS['Elevated']:
+        risk_level = 'Elevated'
+    elif surface_temp < HEAT_RISK_THRESHOLDS['High']:
+        risk_level = 'High'
+    else:
+        risk_level = 'Critical'
+
+    maintenance_alert = surface_temp > ASPHALT_CRITICAL_TEMP_CELSIUS
+
+    return {
+        'surface_temp_celsius': round(surface_temp, 1),
+        'air_temp_celsius': round(air_temp_celsius, 1),
+        'risk_score': round(risk_score, 4),
+        'risk_level': risk_level,
+        'maintenance_alert': maintenance_alert,
+    }
+
+
+
+
+# =====  – Mass Event Egress Optimizer =====
+
+def calculate_egress_plan(
+    venue_id: str,
+    total_vehicles: int,
+    current_highway_load_pct: float = 0.0,
+) -> Dict:
+    """
+    Generate staged egress schedule for a mass event venue.
+
+    The plan calculates:
+    - Available highway capacity based on current load (1 - load_pct) * capacity_per_min.
+    - The minimum minutes needed to clear all vehicles.
+    - The recommended staged release window from EGRESS_STAGED_WINDOWS_MINS.
+    - Number of batches and vehicles per batch.
+
+    Parameters
+    ----------
+    venue_id : Key from MASS_EVENT_VENUES.
+    total_vehicles : Total vehicles expected to exit.
+    current_highway_load_pct : Current highway congestion (0.0–1.0) affecting capacity.
+
+    Returns
+    -------
+    dict with venue_id, total_vehicles, recommended_window_mins,
+        vehicles_per_batch, batches, highway_load_after,
+        estimated_clearance_mins.
+    """
+    from src.config import (
+        MASS_EVENT_VENUES,
+        EGRESS_STAGED_WINDOWS_MINS,
+        EGRESS_HIGHWAY_CAPACITY_PER_MIN,
+    )
+
+    # Validate venue
+    venue = MASS_EVENT_VENUES.get(venue_id)
+    if venue is None:
+        raise ValueError(f"Unknown venue_id '{venue_id}'.")
+
+    # Available capacity = normal capacity * (1 - current load)
+    available_capacity = EGRESS_HIGHWAY_CAPACITY_PER_MIN * max(0.0, 1.0 - current_highway_load_pct)
+
+    # If no capacity, we cannot clear; emergency hold
+    if available_capacity < 1:
+        return {
+            'venue_id': venue_id,
+            'total_vehicles': total_vehicles,
+            'recommended_window_mins': None,
+            'vehicles_per_batch': None,
+            'batches': None,
+            'highway_load_after': 1.0,
+            'estimated_clearance_mins': None,
+            'status': 'HOLD - Highway at capacity, cannot release vehicles safely.',
+            'available_capacity_per_min': 0,
+        }
+
+    # Minimum minutes needed to clear all vehicles
+    minutes_needed = total_vehicles / available_capacity
+
+    # Choose the smallest window from EGRESS_STAGED_WINDOWS_MINS that >= minutes_needed,
+    # or the largest if even the largest is too small.
+    selected_window = None
+    for w in sorted(EGRESS_STAGED_WINDOWS_MINS):
+        if w >= minutes_needed:
+            selected_window = w
+            break
+    if selected_window is None:
+        selected_window = max(EGRESS_STAGED_WINDOWS_MINS)
+
+    # Assume batches every 10 minutes within the window
+    batch_interval = 10  # minutes
+    num_batches = int(selected_window // batch_interval)
+    if num_batches == 0:
+        num_batches = 1
+
+    vehicles_per_batch = total_vehicles / num_batches
+
+    # After release, the highway load increases (but we cap at 1.0)
+    load_after = min(1.0, current_highway_load_pct + (total_vehicles / (available_capacity * selected_window)))
+
+    return {
+        'venue_id': venue_id,
+        'total_vehicles': total_vehicles,
+        'recommended_window_mins': selected_window,
+        'vehicles_per_batch': int(vehicles_per_batch),
+        'batches': num_batches,
+        'highway_load_after': round(load_after, 3),
+        'estimated_clearance_mins': round(selected_window, 1),
+        'status': 'OK - Staged egress plan generated.',
+        'available_capacity_per_min': round(available_capacity, 1),
+    }
