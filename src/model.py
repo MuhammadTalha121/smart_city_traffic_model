@@ -131,6 +131,78 @@ def get_recommendation(level: str, zone: str, weather: str, city: str) -> str:
     return recommendations[level]
 
 
+
+def recommend_tidal_flow(zone: str, hour: int, vehicle_count: float,
+                          total_lanes: int = 4) -> Dict:
+    """
+    Recommend tidal flow lane reversal based on directional traffic asymmetry.
+
+    Directional split is approximated from time-of-day, since the system
+    stores total zone volume, not directional counts. Morning hours bias
+    inbound, evening hours bias outbound, all other hours assume balance.
+    The dominant direction (whichever volume is larger) is compared against
+    the secondary direction to produce a symmetric asymmetry ratio that
+    correctly triggers in both morning-inbound and evening-outbound surges.
+    """
+    from src.config import (
+        TIDAL_ASYMMETRY_THRESHOLD, TIDAL_MIN_TOTAL_LANES,
+        TIDAL_ELIGIBLE_ZONES, MORNING_INBOUND_HOURS, EVENING_OUTBOUND_HOURS
+    )
+
+    if hour in MORNING_INBOUND_HOURS:
+        inbound_ratio = 0.75
+    elif hour in EVENING_OUTBOUND_HOURS:
+        inbound_ratio = 0.25
+    else:
+        inbound_ratio = 0.50
+
+    inbound_volume  = vehicle_count * inbound_ratio
+    outbound_volume = vehicle_count * (1 - inbound_ratio)
+
+    dominant_volume  = max(inbound_volume, outbound_volume)
+    secondary_volume = max(min(inbound_volume, outbound_volume), 1.0)
+    asymmetry_ratio  = dominant_volume / secondary_volume
+    direction        = 'inbound' if inbound_volume >= outbound_volume else 'outbound'
+
+    if (asymmetry_ratio < TIDAL_ASYMMETRY_THRESHOLD
+            or zone not in TIDAL_ELIGIBLE_ZONES
+            or total_lanes < TIDAL_MIN_TOTAL_LANES):
+        if zone not in TIDAL_ELIGIBLE_ZONES:
+            reason = f'{zone} is not configured for tidal flow control.'
+        elif total_lanes < TIDAL_MIN_TOTAL_LANES:
+            reason = f'{zone} has only {total_lanes} lanes — minimum {TIDAL_MIN_TOTAL_LANES} required for reversal.'
+        else:
+            reason = f'Directional asymmetry {asymmetry_ratio:.2f}x is below the {TIDAL_ASYMMETRY_THRESHOLD}x threshold.'
+        return {
+            'recommended'    : False,
+            'zone'           : zone,
+            'hour'           : hour,
+            'asymmetry_ratio': round(asymmetry_ratio, 3),
+            'direction'      : direction,
+            'reason'         : reason,
+        }
+
+    lanes_to_reverse    = min(int(total_lanes * 0.25), 1)
+    throughput_gain_pct = round((lanes_to_reverse / total_lanes) * 100, 1)
+    rationale = (
+        f'{zone} {direction} demand is {asymmetry_ratio:.2f}x the opposing direction at hour {hour}. '
+        f'Reversing {lanes_to_reverse} lane(s) increases {direction} capacity by {throughput_gain_pct}% '
+        f'with zero construction cost.'
+    )
+
+    return {
+        'recommended'        : True,
+        'zone'                : zone,
+        'hour'                : hour,
+        'lanes_to_reverse'    : lanes_to_reverse,
+        'asymmetry_ratio'     : round(asymmetry_ratio, 3),
+        'direction'           : direction,
+        'throughput_gain_pct' : throughput_gain_pct,
+        'rationale'           : rationale,
+    }
+
+
+
 def predict_single(city: str, zone: str, hour: int, vehicle_count: float,
                    avg_speed: float, weather: str, road_type: str,
                    rush_hour: int, is_weekend: int, is_late_night: int,
