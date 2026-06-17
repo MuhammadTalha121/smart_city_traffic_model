@@ -8,7 +8,7 @@ from src.model import (
     detect_anomalies, forecast_congestion, explain_prediction,
     evaluate_models, log_prediction, compare_baseline_vs_enhanced,
     compute_emissions, compute_last_mile_index, compute_pavement_wear_index,
-    compute_cooperative_route, predict_ev_charger_demand,
+    compute_cooperative_route, predict_ev_charger_demand, recommend_tidal_flow,
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING,
 )
 from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH
@@ -791,3 +791,19 @@ def test_who_guideline_exceeded_at_high_volume():
     assert result["who_guideline_exceeded"] is True, \
         "Expected WHO guideline breach at high vehicle count"
     assert result["noise_db"] > 53.0
+
+
+
+
+def test_symmetric_traffic_no_reversal_recommended():
+    result = recommend_tidal_flow(zone="Zone_1", hour=12, vehicle_count=300, total_lanes=4)
+    assert result["recommended"] is False
+    assert "reason" in result
+
+
+def test_morning_rush_triggers_inbound_recommendation():
+    result = recommend_tidal_flow(zone="Zone_1", hour=7, vehicle_count=400, total_lanes=4)
+    assert result["recommended"] is True
+    assert result["direction"] == "inbound"
+    assert result["lanes_to_reverse"] >= 1
+    assert result["asymmetry_ratio"] >= 2.5
