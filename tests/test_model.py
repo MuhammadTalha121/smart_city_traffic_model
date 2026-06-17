@@ -14,6 +14,8 @@ from src.model import (
 from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH
 
 
+
+
 @pytest.fixture(scope="module")
 def trained_model():
     df = generate_traffic_data(city="Riyadh", n_days=30)
@@ -807,3 +809,98 @@ def test_morning_rush_triggers_inbound_recommendation():
     assert result["direction"] == "inbound"
     assert result["lanes_to_reverse"] >= 1
     assert result["asymmetry_ratio"] >= 2.5
+
+
+
+
+# ===== – Green Wave Planner unit tests ======
+from src.adapters import GreenWavePlanner
+from src.config import GREEN_WAVE_BUFFER_S, MAX_GREEN_EXTENSION_S
+
+def test_green_wave_phases_aligned_to_arrival_time():
+    """Each zone's green window must bracket its computed arrival time."""
+    planner = GreenWavePlanner()
+    route = ["Zone_1", "Zone_2", "Zone_4"]
+    result = planner.calculate_green_wave(
+        route=route,
+        vehicle_speed_kmph=80.0,
+        departure_time_s=28800.0,   # 08:00:00
+    )
+
+    assert result["route"] == route
+    assert len(result["phase_schedule"]) == len(route)
+
+    for phase in result["phase_schedule"]:
+        assert phase["green_start_s"] <= phase["arrival_s"]
+        assert phase["green_end_s"] >= phase["arrival_s"]
+        # Window width must equal buffer * 2 + extension
+        expected_width = GREEN_WAVE_BUFFER_S * 2 + MAX_GREEN_EXTENSION_S
+        actual_width = phase["green_end_s"] - phase["green_start_s"]
+        assert abs(actual_width - expected_width) < 0.5
+
+
+def test_adjacent_zones_have_sequential_timing():
+    """Each successive zone must have a strictly later arrival time."""
+    planner = GreenWavePlanner()
+    route = ["Zone_1", "Zone_2", "Zone_4", "Zone_5"]
+    result = planner.calculate_green_wave(
+        route=route,
+        vehicle_speed_kmph=60.0,
+        departure_time_s=0.0,
+    )
+
+    arrivals = [p["arrival_s"] for p in result["phase_schedule"]]
+    for i in range(1, len(arrivals)):
+        assert arrivals[i] > arrivals[i - 1], (
+            f"Zone {route[i]} arrival ({arrivals[i]:.1f}s) is not after "
+            f"Zone {route[i-1]} arrival ({arrivals[i-1]:.1f}s)"
+        )
+
+    # stops_avoided = number of inter-zone transitions
+    assert result["stops_avoided"] == len(route) - 1
+
+
+
+
+# ===== – Crosswalk timing unit tests =====
+from src.model import compute_crosswalk_timing
+from src.config import PEDESTRIAN_CLEARANCE_MIN_S, PEDESTRIAN_MAX_WALK_TIME_S
+
+def test_friday_prayer_extends_walk_time():
+    """Crowd multiplier must increase walk time for Friday prayer."""
+    standard = compute_crosswalk_timing('Zone_1', 12, 0.3, schedule='standard')
+    friday   = compute_crosswalk_timing('Zone_1', 12, 0.3, schedule='friday_prayer')
+    assert friday['walk_time_s'] > standard['walk_time_s']
+    assert friday['crowd_factor'] > 1.0
+    assert standard['crowd_factor'] == 1.0
+
+def test_mutcd_compliance_always_met():
+    """Walk time must never be below PEDESTRIAN_CLEARANCE_MIN_S."""
+    result = compute_crosswalk_timing('Zone_1', 3, 0.0, schedule='standard')
+    assert result['walk_time_s'] >= PEDESTRIAN_CLEARANCE_MIN_S
+    assert result['mutcd_compliant'] is True
+    # Also test maximum cap
+    result_high = compute_crosswalk_timing('Zone_1', 8, 1.0, schedule='event')
+    assert result_high['walk_time_s'] <= PEDESTRIAN_MAX_WALK_TIME_S
+
+
+
+# =====– Extreme Heat unit tests =====
+from src.model import compute_thermal_risk
+from src.config import SURFACE_TEMP_OFFSET_CELSIUS, ASPHALT_CRITICAL_TEMP_CELSIUS
+
+def test_surface_temp_above_air_temp():
+    """Surface temperature must be higher than air temperature by offset."""
+    air_temp = 40.0
+    result = compute_thermal_risk(air_temp, 'clear', 'arterial')
+    expected_surface = air_temp + SURFACE_TEMP_OFFSET_CELSIUS
+    assert result['surface_temp_celsius'] == expected_surface
+    assert result['air_temp_celsius'] == air_temp
+
+def test_maintenance_alert_at_critical_threshold():
+    """When surface_temp > critical threshold, alert must be True."""
+    air_temp = 45.0  # surface = 57°C > 55°C
+    result = compute_thermal_risk(air_temp, 'clear', 'highway')
+    # highway adds 2°C, so surface = 45+12+2 = 59°C
+    assert result['maintenance_alert'] is True
+    assert result['risk_level'] in ('High', 'Critical')
