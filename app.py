@@ -35,6 +35,7 @@ from src.model import (
     compute_last_mile_index, compute_pavement_wear_index,
     compute_cooperative_route, predict_ev_charger_demand, compute_vsl_limit,
     recommend_tidal_flow, compute_crosswalk_timing, compute_thermal_risk,
+    compute_thermal_risk, compute_thermal_risk, calculate_egress_plan,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -2201,6 +2202,108 @@ async def heat_risk(
         "weather": weather_condition,
         "zones": result,
     }
+
+
+
+@app.get("/infrastructure/heat-risk", tags=["infrastructure"])
+@limiter.limit("20/minute")
+async def heat_risk(
+    request: Request,
+    city: str = "Riyadh",
+    _key: str = Depends(require_api_key),
+):
+    """
+    Estimate asphalt surface temperature and thermal risk for all zones.
+    Uses live air temperature from WeatherAdapter and zone road_type from data.
+    """
+    # Validate city exists
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Fetch weather data
+    from src.adapters import get_adapter
+    weather_adapter = get_adapter('weather')
+    try:
+        weather_data = weather_adapter.fetch(city)
+        air_temp = weather_data.get('temperature_celsius', 35.0)  # fallback
+        weather_condition = weather_data.get('weather', 'clear')
+    except Exception as e:
+        # Fallback if weather adapter fails
+        air_temp = 35.0
+        weather_condition = 'clear'
+
+    df = app.state.city_dfs[city]
+    zones = sorted(df['zone'].unique())
+
+    result = {}
+    for zone in zones:
+        # Get the latest row for this zone to determine road_type
+        zone_rows = df[df['zone'] == zone].sort_values('timestamp')
+        if len(zone_rows) == 0:
+            continue
+        latest = zone_rows.iloc[-1]
+        road_type = latest.get('road_type', 'arterial')
+
+        risk = compute_thermal_risk(
+            air_temp_celsius=air_temp,
+            weather=weather_condition,
+            road_type=road_type,
+        )
+        result[zone] = risk
+
+    return {
+        "city": city,
+        "air_temp_celsius": air_temp,
+        "weather": weather_condition,
+        "zones": result,
+    }
+
+
+
+
+
+
+@app.get("/events/egress-plan", tags=["events"])
+@limiter.limit("20/minute")
+async def egress_plan(
+    request: Request,
+    venue_id: str,
+    total_vehicles: int,
+    current_highway_load_pct: float = 0.0,
+    _key: str = Depends(require_api_key),
+):
+    """
+    Generate a staged egress plan for a mass event venue.
+    """
+    try:
+        plan = calculate_egress_plan(venue_id, total_vehicles, current_highway_load_pct)
+        return plan
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/events/active-surge", tags=["events"])
+@limiter.limit("20/minute")
+async def active_surge(
+    request: Request,
+    payload: dict,   # Body: {venue_id, total_vehicles, current_highway_load_pct}
+    _key: str = Depends(require_api_key),
+):
+    """
+    Immediate egress recommendation for a surge event.
+    """
+    venue_id = payload.get('venue_id')
+    total_vehicles = payload.get('total_vehicles')
+    current_highway_load_pct = payload.get('current_highway_load_pct', 0.0)
+
+    if not venue_id or not total_vehicles:
+        raise HTTPException(status_code=400, detail="Missing venue_id or total_vehicles")
+
+    try:
+        plan = calculate_egress_plan(venue_id, total_vehicles, current_highway_load_pct)
+        return plan
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 
