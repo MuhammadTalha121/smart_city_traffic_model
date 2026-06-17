@@ -333,3 +333,14 @@ NOISE_ROAD_TYPE_PREMIUM = {
 NOISE_THRESHOLDS = {
     'Acceptable': 55.0, 'Elevated': 65.0, 'Harmful': 75.0
 }
+
+
+# ---------------------------------------------------------------------------
+# Tidal flow constants — 
+# ---------------------------------------------------------------------------
+
+TIDAL_ASYMMETRY_THRESHOLD: float = 2.5
+TIDAL_MIN_TOTAL_LANES: int       = 4
+TIDAL_ELIGIBLE_ZONES: List[str]  = ['Zone_1', 'Zone_2']
+MORNING_INBOUND_HOURS: List[int]  = [6, 7, 8, 9]
+EVENING_OUTBOUND_HOURS: List[int] = [16, 17, 18, 19]
