@@ -776,3 +776,74 @@ def test_heat_risk_no_auth_returns_401(client):
     """Missing API key must return 401."""
     response = client.get("/infrastructure/heat-risk?city=Riyadh")
     assert response.status_code == 401
+
+
+
+
+
+# ===== – Heat Risk API tests =====
+
+def test_heat_risk_endpoint_returns_200(client):
+    """Valid city returns thermal risk for all zones."""
+    response = client.get(
+        "/infrastructure/heat-risk?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    assert "air_temp_celsius" in data
+    for zone, risk in data["zones"].items():
+        assert "surface_temp_celsius" in risk
+        assert "maintenance_alert" in risk
+        assert isinstance(risk["maintenance_alert"], bool)
+
+def test_heat_risk_no_auth_returns_401(client):
+    """Missing API key must return 401."""
+    response = client.get("/infrastructure/heat-risk?city=Riyadh")
+    assert response.status_code == 401
+
+
+
+
+# =====  – Mass Event Egress API tests =====
+
+def test_egress_plan_endpoint_returns_200(client):
+    """GET /events/egress-plan returns a valid egress plan."""
+    response = client.get(
+        "/events/egress-plan?venue_id=Boulevard_World&total_vehicles=5000",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data['venue_id'] == 'Boulevard_World'
+    assert data['total_vehicles'] == 5000
+    assert 'recommended_window_mins' in data
+    assert data['status'] == 'OK - Staged egress plan generated.'
+
+def test_active_surge_endpoint_returns_200(client):
+    """POST /events/active-surge returns an egress plan."""
+    payload = {
+        "venue_id": "King_Fahd_Stadium",
+        "total_vehicles": 8000,
+        "current_highway_load_pct": 0.3,
+    }
+    response = client.post(
+        "/events/active-surge",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data['venue_id'] == 'King_Fahd_Stadium'
+    assert data['total_vehicles'] == 8000
+    assert data['recommended_window_mins'] is not None
+
+def test_egress_plan_invalid_venue_returns_400(client):
+    """Invalid venue_id should return 400."""
+    response = client.get(
+        "/events/egress-plan?venue_id=InvalidVenue&total_vehicles=100",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 400
+    assert "Unknown venue_id" in response.text
