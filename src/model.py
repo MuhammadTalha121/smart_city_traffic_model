@@ -1503,3 +1503,121 @@ def estimate_noise_level(
         "noise_level"          : noise_level,
         "who_guideline_exceeded": noise_db > 53.0,
     }
+
+
+
+# ===== – Pedestrian crosswalk timing =====
+
+def compute_crosswalk_timing(
+    zone: str,
+    hour: int,
+    congestion_score: float,
+    schedule: str = 'standard',
+) -> Dict:
+    """
+    Recommend dynamic pedestrian crosswalk walk time based on schedule context.
+
+    Parameters
+    ----------
+    zone              : Zone identifier (used for context only, not in formula).
+    hour              : Hour of day (0–23).
+    congestion_score  : Current congestion score (0–1) for the zone.
+    schedule          : 'standard' | 'friday_prayer' | 'hajj' | 'event'
+
+    Returns
+    -------
+    dict with walk_time_s, crowd_factor, schedule_used, mutcd_compliant.
+    """
+    from src.config import (
+        PEDESTRIAN_BASE_WALK_TIME_S,
+        PEDESTRIAN_MAX_WALK_TIME_S,
+        PEDESTRIAN_CLEARANCE_MIN_S,
+        PEDESTRIAN_CROWD_MULTIPLIER,
+    )
+
+    # Determine crowd factor
+    crowd_factor = PEDESTRIAN_CROWD_MULTIPLIER if schedule in ('friday_prayer', 'hajj', 'event') else 1.0
+
+    base_time = PEDESTRIAN_BASE_WALK_TIME_S * crowd_factor
+    congestion_adjustment = congestion_score * 10
+    walk_time = base_time + congestion_adjustment
+
+    # Clamp to allowed range
+    walk_time = max(walk_time, PEDESTRIAN_CLEARANCE_MIN_S)
+    walk_time = min(walk_time, PEDESTRIAN_MAX_WALK_TIME_S)
+
+    return {
+        'walk_time_s': round(walk_time, 1),
+        'crowd_factor': round(crowd_factor, 2),
+        'schedule_used': schedule,
+        'mutcd_compliant': walk_time >= PEDESTRIAN_CLEARANCE_MIN_S,
+    }
+
+
+
+
+# ===== – Extreme Heat Infrastructure Risk Assessment =====
+
+def compute_thermal_risk(
+    air_temp_celsius: float,
+    weather: str,
+    road_type: str,
+) -> Dict:
+    """
+    Estimate asphalt surface temperature and thermal risk for a zone.
+
+    Surface temperature = air_temp + offset (12°C) with adjustments:
+    - Sandstorm: -3°C (dust reduces solar absorption)
+    - Highway: +2°C (darker surface absorbs more heat)
+    - Other road types: no adjustment
+
+    Risk score is the proportion above the critical asphalt temperature (55°C),
+    capped at 1.0. Maintenance alert triggered when surface_temp > 55°C.
+
+    Parameters
+    ----------
+    air_temp_celsius : Current air temperature in Celsius.
+    weather          : Weather condition string (e.g., 'clear', 'sandstorm').
+    road_type        : One of 'highway', 'arterial', 'local'.
+
+    Returns
+    -------
+    dict with surface_temp_celsius, air_temp_celsius, risk_score,
+         risk_level, maintenance_alert.
+    """
+    from src.config import SURFACE_TEMP_OFFSET_CELSIUS, ASPHALT_CRITICAL_TEMP_CELSIUS, HEAT_RISK_THRESHOLDS
+
+    # Start with offset
+    surface_temp = air_temp_celsius + SURFACE_TEMP_OFFSET_CELSIUS
+
+    # Weather adjustment
+    if weather == 'sandstorm':
+        surface_temp -= 3.0   # dust reduces solar absorption
+
+    # Road type adjustment
+    if road_type == 'highway':
+        surface_temp += 2.0   # darker asphalt absorbs more heat
+
+    # Risk score: how far above critical temperature
+    risk_score = max(0.0, (surface_temp - ASPHALT_CRITICAL_TEMP_CELSIUS) / 10.0)
+    risk_score = min(risk_score, 1.0)
+
+    # Determine risk level
+    if surface_temp < HEAT_RISK_THRESHOLDS['Low']:
+        risk_level = 'Low'
+    elif surface_temp < HEAT_RISK_THRESHOLDS['Elevated']:
+        risk_level = 'Elevated'
+    elif surface_temp < HEAT_RISK_THRESHOLDS['High']:
+        risk_level = 'High'
+    else:
+        risk_level = 'Critical'
+
+    maintenance_alert = surface_temp > ASPHALT_CRITICAL_TEMP_CELSIUS
+
+    return {
+        'surface_temp_celsius': round(surface_temp, 1),
+        'air_temp_celsius': round(air_temp_celsius, 1),
+        'risk_score': round(risk_score, 4),
+        'risk_level': risk_level,
+        'maintenance_alert': maintenance_alert,
+    }
