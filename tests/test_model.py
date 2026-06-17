@@ -904,3 +904,87 @@ def test_maintenance_alert_at_critical_threshold():
     # highway adds 2°C, so surface = 45+12+2 = 59°C
     assert result['maintenance_alert'] is True
     assert result['risk_level'] in ('High', 'Critical')
+
+
+
+
+
+# ===== – Extreme Heat unit tests =====
+from src.model import compute_thermal_risk
+from src.config import SURFACE_TEMP_OFFSET_CELSIUS, ASPHALT_CRITICAL_TEMP_CELSIUS
+
+def test_surface_temp_above_air_temp():
+    """Surface temperature must be higher than air temperature by offset."""
+    air_temp = 40.0
+    result = compute_thermal_risk(air_temp, 'clear', 'arterial')
+    expected_surface = air_temp + SURFACE_TEMP_OFFSET_CELSIUS
+    assert result['surface_temp_celsius'] == expected_surface
+    assert result['air_temp_celsius'] == air_temp
+
+def test_maintenance_alert_at_critical_threshold():
+    """When surface_temp > critical threshold, alert must be True."""
+    air_temp = 45.0  # surface = 57°C > 55°C
+    result = compute_thermal_risk(air_temp, 'clear', 'highway')
+    # highway adds 2°C, so surface = 45+12+2 = 59°C
+    assert result['maintenance_alert'] is True
+    assert result['risk_level'] in ('High', 'Critical')
+
+
+
+
+
+
+# =====  – Mass Event Egress unit tests =====
+from src.model import calculate_egress_plan
+from src.config import EGRESS_STAGED_WINDOWS_MINS, EGRESS_HIGHWAY_CAPACITY_PER_MIN
+
+def test_large_crowd_triggers_longer_egress_window():
+    """More vehicles should require a longer staging window."""
+    # Small crowd (10 vehicles) should use the smallest window
+    small = calculate_egress_plan('Boulevard_World', 10, 0.0)
+    # Large crowd (7000 vehicles) should use a larger window
+    large = calculate_egress_plan('Boulevard_World', 7000, 0.0)
+
+    # Both should have recommended window in the list
+    assert small['recommended_window_mins'] in EGRESS_STAGED_WINDOWS_MINS
+    assert large['recommended_window_mins'] in EGRESS_STAGED_WINDOWS_MINS
+    # Large crowd should require at least as large a window
+    assert large['recommended_window_mins'] >= small['recommended_window_mins']
+
+def test_highway_at_capacity_returns_hold_message():
+    """When highway is already at capacity, a hold message should be returned."""
+    # current_highway_load_pct = 1.0 means no capacity left
+    result = calculate_egress_plan('Boulevard_World', 1000, 1.0)
+    assert result['status'].startswith('HOLD')
+    assert result['recommended_window_mins'] is None
+    assert result['estimated_clearance_mins'] is None
+
+
+
+
+
+
+# ===== PROMPT 046 – Mass Event Egress unit tests =====
+from src.model import calculate_egress_plan
+from src.config import EGRESS_STAGED_WINDOWS_MINS, EGRESS_HIGHWAY_CAPACITY_PER_MIN
+
+def test_large_crowd_triggers_longer_egress_window():
+    """More vehicles should require a longer staging window."""
+    # Small crowd (10 vehicles) should use the smallest window
+    small = calculate_egress_plan('Boulevard_World', 10, 0.0)
+    # Large crowd (7000 vehicles) should use a larger window
+    large = calculate_egress_plan('Boulevard_World', 7000, 0.0)
+
+    # Both should have recommended window in the list
+    assert small['recommended_window_mins'] in EGRESS_STAGED_WINDOWS_MINS
+    assert large['recommended_window_mins'] in EGRESS_STAGED_WINDOWS_MINS
+    # Large crowd should require at least as large a window
+    assert large['recommended_window_mins'] >= small['recommended_window_mins']
+
+def test_highway_at_capacity_returns_hold_message():
+    """When highway is already at capacity, a hold message should be returned."""
+    # current_highway_load_pct = 1.0 means no capacity left
+    result = calculate_egress_plan('Boulevard_World', 1000, 1.0)
+    assert result['status'].startswith('HOLD')
+    assert result['recommended_window_mins'] is None
+    assert result['estimated_clearance_mins'] is None
