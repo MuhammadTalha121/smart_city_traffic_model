@@ -312,6 +312,63 @@ class MockMicroMobilityAdapter(BaseAdapter):
 
         return pd.DataFrame(rows)
 
+class GreenWavePlanner:
+    """
+    Calculates synchronized green-light phase schedules for priority vehicle corridors.
+
+    Ensures an emergency vehicle or priority convoy travels a multi-zone
+    route without stopping by computing per-zone green windows aligned
+    to estimated arrival times.
+    """
+
+    def calculate_green_wave(
+        self,
+        route: list,
+        vehicle_speed_kmph: float,
+        departure_time_s: float,
+    ) -> dict:
+        """
+        Generate a per-zone green phase schedule for a priority route.
+
+        Parameters
+        ----------
+        route              : Ordered list of zone names from origin to destination.
+        vehicle_speed_kmph : Travel speed of the priority vehicle in km/h.
+        departure_time_s   : Departure time as seconds-since-midnight.
+
+        Returns
+        -------
+        dict with route, phase_schedule, total_travel_s, stops_avoided.
+        """
+        from src.config import (
+            ZONE_DISTANCE_M, GREEN_WAVE_BUFFER_S, MAX_GREEN_EXTENSION_S
+        )
+
+        travel_time_per_zone_s = (ZONE_DISTANCE_M / 1000) / vehicle_speed_kmph * 3600
+        phase_schedule = []
+
+        for i, zone in enumerate(route):
+            arrival_s   = departure_time_s + (i * travel_time_per_zone_s)
+            green_start = arrival_s - GREEN_WAVE_BUFFER_S
+            green_end   = arrival_s + GREEN_WAVE_BUFFER_S + MAX_GREEN_EXTENSION_S
+
+            phase_schedule.append({
+                "zone"         : zone,
+                "arrival_s"    : round(arrival_s, 1),
+                "green_start_s": round(max(green_start, 0), 1),
+                "green_end_s"  : round(green_end, 1),
+            })
+
+        total_travel_s = (len(route) - 1) * travel_time_per_zone_s if len(route) > 1 else 0
+
+        return {
+            "route"         : route,
+            "phase_schedule": phase_schedule,
+            "total_travel_s": round(total_travel_s, 1),
+            "stops_avoided" : max(0, len(route) - 1),
+        }
+
+
 
 
 
