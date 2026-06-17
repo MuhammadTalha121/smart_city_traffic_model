@@ -344,3 +344,50 @@ TIDAL_MIN_TOTAL_LANES: int       = 4
 TIDAL_ELIGIBLE_ZONES: List[str]  = ['Zone_1', 'Zone_2']
 MORNING_INBOUND_HOURS: List[int]  = [6, 7, 8, 9]
 EVENING_OUTBOUND_HOURS: List[int] = [16, 17, 18, 19]
+
+
+
+# ---------------------------------------------------------------------------
+# Tidal flow constants —
+# ---------------------------------------------------------------------------
+
+TIDAL_ASYMMETRY_THRESHOLD: float = 2.5
+TIDAL_MIN_TOTAL_LANES: int       = 4
+TIDAL_ELIGIBLE_ZONES: List[str]  = ['Zone_1', 'Zone_2']
+MORNING_INBOUND_HOURS: List[int]  = [6, 7, 8, 9]
+EVENING_OUTBOUND_HOURS: List[int] = [16, 17, 18, 19]
+
+# == – Green Wave Corridor Planner =====
+EMERGENCY_SPEED_KMPH = {
+    'Low': 80,
+    'Moderate': 60,
+    'High': 40,
+    'Critical': 25,
+}
+
+# New constant for green wave
+PRIORITY_VEHICLE_SPEED_KMPH = 80.0   
+GREEN_WAVE_BUFFER_S = 30
+ZONE_DISTANCE_M = 500
+MAX_GREEN_EXTENSION_S = 45
+
+
+
+
+# ===== – Pedestrian Safety Index Extension =====
+PEDESTRIAN_BASE_WALK_TIME_S   = 12
+PEDESTRIAN_MAX_WALK_TIME_S    = 35
+PEDESTRIAN_CLEARANCE_MIN_S    = 7
+PEDESTRIAN_CROWD_MULTIPLIER   = 1.5
+
+
+
+# ===== – Extreme Heat Infrastructure Risk Assessment =====
+SURFACE_TEMP_OFFSET_CELSIUS    = 12.0
+ASPHALT_CRITICAL_TEMP_CELSIUS  = 55.0
+HEAT_RISK_THRESHOLDS = {
+    'Low': 45.0,
+    'Elevated': 50.0,
+    'High': 55.0,
+    'Critical': 60.0
+}
