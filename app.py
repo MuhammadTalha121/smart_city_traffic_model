@@ -31,6 +31,7 @@ from src.model import (
     compute_speed_degradation_index, compute_pedestrian_risk,
     compute_last_mile_index, compute_pavement_wear_index,
     compute_cooperative_route, predict_ev_charger_demand, compute_vsl_limit,
+    recommend_tidal_flow,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -783,6 +784,45 @@ def signals_recommended(
         "total_zones": len(results),
         "signals"    : results,
     }
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Tidal flow control endpoints — authenticated
+# ---------------------------------------------------------------------------
+
+@app.get("/control/tidal-reversals", tags=["control"])
+def tidal_reversals(
+    city: str = "Riyadh",
+    _key: str = Depends(require_api_key),
+):
+    """Tidal flow lane reversal recommendations for eligible zones at current demand."""
+    df              = app.state.df[app.state.df["city"] == city]
+    recommendations = []
+
+    for zone in TIDAL_ELIGIBLE_ZONES:
+        zone_df = df[df["zone"] == zone].sort_values("timestamp")
+        if zone_df.empty:
+            continue
+        latest = zone_df.iloc[-1]
+        result = recommend_tidal_flow(
+            zone          = zone,
+            hour          = int(latest["hour"]),
+            vehicle_count = float(latest["vehicle_count"]),
+        )
+        if result["recommended"]:
+            recommendations.append(result)
+
+    return {
+        "city"                  : city,
+        "total_recommendations" : len(recommendations),
+        "recommendations"       : recommendations,
+    }
+
+
+
 
 
 @app.get("/emissions/summary", tags=["emissions"])
