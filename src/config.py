@@ -391,3 +391,27 @@ HEAT_RISK_THRESHOLDS = {
     'High': 55.0,
     'Critical': 60.0
 }
+
+
+
+# =====– Extreme Heat Infrastructure Risk Assessment =====
+SURFACE_TEMP_OFFSET_CELSIUS    = 12.0
+ASPHALT_CRITICAL_TEMP_CELSIUS  = 55.0
+HEAT_RISK_THRESHOLDS = {
+    'Low': 45.0,
+    'Elevated': 50.0,
+    'High': 55.0,
+    'Critical': 60.0
+}
+
+
+
+
+# ===== – Mass Event Egress Optimizer =====
+MASS_EVENT_VENUES = {
+    'Boulevard_World':   {'capacity_vehicles': 7000, 'congestion_factor': 1.9},
+    'Boulevard_Riyadh':  {'capacity_vehicles': 5000, 'congestion_factor': 1.7},
+    'King_Fahd_Stadium': {'capacity_vehicles': 10000, 'congestion_factor': 2.1},
+}
+EGRESS_STAGED_WINDOWS_MINS = [10, 15, 20, 30, 40, 60]
+EGRESS_HIGHWAY_CAPACITY_PER_MIN = 150   # vehicles per minute at normal load
