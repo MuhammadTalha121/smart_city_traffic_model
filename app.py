@@ -16,11 +16,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import FastAPI, Request, HTTPException, Depends, Query
 
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
-from src.config import HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB, NOISE_THRESHOLDS
+from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB,
+                         NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH)
+
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
     train_xgboost, prepare_features, predict_single, congestion_level,
@@ -31,11 +34,11 @@ from src.model import (
     compute_speed_degradation_index, compute_pedestrian_risk,
     compute_last_mile_index, compute_pavement_wear_index,
     compute_cooperative_route, predict_ev_charger_demand, compute_vsl_limit,
-    recommend_tidal_flow,
+    recommend_tidal_flow, compute_crosswalk_timing, compute_thermal_risk,
 )
 from src.ids import SensorIntrusionDetector 
 
-from src.adapters import get_adapter
+from src.adapters import get_adapter, GreenWavePlanner
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
 
@@ -2036,6 +2039,168 @@ async def noise_map(
 
     results.sort(key=lambda x: x["noise_db"], reverse=True)
     return {"city": city, "hour": hour, "zones": results}
+
+
+
+
+class GreenWaveRequest(BaseModel):
+    city:               str         = Field("Riyadh")
+    route:              list[str]   = Field(..., min_length=2)
+    vehicle_speed_kmph: float       = Field(PRIORITY_VEHICLE_SPEED_KMPH, gt=0)
+    priority_level:     str         = Field("emergency")   # 'emergency' | 'vip'
+
+
+@app.post("/control/green-wave", tags=["control"])
+def green_wave(
+    payload: GreenWaveRequest,
+    _key:    str = Depends(require_api_key),
+):
+    """
+    Calculate a synchronized green-wave phase schedule for a priority vehicle corridor.
+    Returns per-zone green windows so the vehicle travels without stopping.
+    """
+    # Validate that every consecutive zone pair is adjacent
+    for i in range(len(payload.route) - 1):
+        src, dst = payload.route[i], payload.route[i + 1]
+        if dst not in ZONE_ADJACENCY.get(src, []):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Non-adjacent zones in route: {src} → {dst}. "
+                       f"Adjacent to {src}: {ZONE_ADJACENCY.get(src, [])}",
+            )
+
+    from datetime import datetime as _dt
+    now = _dt.now()
+    departure_s = now.hour * 3600 + now.minute * 60 + now.second
+
+    planner = GreenWavePlanner()
+    result  = planner.calculate_green_wave(
+        route              = payload.route,
+        vehicle_speed_kmph = payload.vehicle_speed_kmph,
+        departure_time_s   = float(departure_s),
+    )
+
+    result["city"]           = payload.city
+    result["priority_level"] = payload.priority_level
+    result["generated_at"]   = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    return result
+
+
+
+class CrosswalkTimingParams(BaseModel):
+    city: str = "Riyadh"
+    schedule: str = "standard"
+
+
+
+
+@app.get("/pedestrian/crosswalk-timing", tags=["pedestrian"])
+@limiter.limit("20/minute")
+async def crosswalk_timing(
+    request: Request,                    
+    city: str = "Riyadh",
+    schedule: str = "standard",
+    _key: str = Depends(require_api_key),
+):
+    """
+    Return crosswalk walk‑time recommendations for all zones in the city.
+    Schedule can be 'standard', 'friday_prayer', 'hajj', or 'event'.
+    """
+    # Validate city exists
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    df = app.state.city_dfs[city]
+
+    zones = sorted(df['zone'].unique())
+    result = {}
+
+    for zone in zones:
+        zone_rows = df[df['zone'] == zone].sort_values('timestamp')
+        if len(zone_rows) == 0:
+            continue
+        latest = zone_rows.iloc[-1]
+        score = latest['congestion_score']
+
+        timing = compute_crosswalk_timing(
+            zone=zone,
+            hour=int(latest['hour']),
+            congestion_score=float(score),
+            schedule=schedule,
+        )
+        result[zone] = timing
+
+    return {
+        "city": city,
+        "schedule": schedule,
+        "zones": result,
+    }
+
+
+
+@app.get("/infrastructure/heat-risk", tags=["infrastructure"])
+@limiter.limit("20/minute")
+async def heat_risk(
+    request: Request,
+    city: str = "Riyadh",
+    _key: str = Depends(require_api_key),
+):
+    """
+    Estimate asphalt surface temperature and thermal risk for all zones.
+    Uses live air temperature from WeatherAdapter and zone road_type from data.
+    """
+    # Validate city exists
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Fetch weather data
+    from src.adapters import get_adapter
+    weather_adapter = get_adapter('weather')
+    try:
+        weather_data = weather_adapter.fetch(city)
+        # Ensure we extract scalar values (handle both dict and Series)
+        if hasattr(weather_data, 'iloc'):
+            # It's a pandas Series/DataFrame – take the first row
+            air_temp = float(weather_data.get('temperature_celsius', 35.0))
+            weather_condition = str(weather_data.get('weather', 'clear'))
+        else:
+            # It's a dict
+            air_temp = float(weather_data.get('temperature_celsius', 35.0))
+            weather_condition = str(weather_data.get('weather', 'clear'))
+    except Exception as e:
+        # Fallback if weather adapter fails
+        air_temp = 35.0
+        weather_condition = 'clear'
+
+    df = app.state.city_dfs[city]
+    zones = sorted(df['zone'].unique())
+
+    result = {}
+    for zone in zones:
+        # Get the latest row for this zone to determine road_type
+        zone_rows = df[df['zone'] == zone].sort_values('timestamp')
+        if len(zone_rows) == 0:
+            continue
+        latest = zone_rows.iloc[-1]
+        # Ensure road_type is a string scalar
+        road_type = latest.get('road_type', 'arterial')
+        if hasattr(road_type, 'iloc'):  # if it's a Series, take first value
+            road_type = road_type.iloc[0]
+
+        risk = compute_thermal_risk(
+            air_temp_celsius=air_temp,
+            weather=weather_condition,
+            road_type=road_type,
+        )
+        result[zone] = risk
+
+    return {
+        "city": city,
+        "air_temp_celsius": air_temp,
+        "weather": weather_condition,
+        "zones": result,
+    }
 
 
 
