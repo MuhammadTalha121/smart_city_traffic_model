@@ -847,3 +847,42 @@ def test_egress_plan_invalid_venue_returns_400(client):
     )
     assert response.status_code == 400
     assert "Unknown venue_id" in response.text
+
+
+
+
+# =====  – VMS API tests =====
+
+def test_vms_active_boards_endpoint_returns_200(client):
+    """GET /vms/active-boards returns VMS content for all zones."""
+    response = client.get(
+        "/vms/active-boards?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "boards" in data
+    assert "total_boards" in data
+    assert "all_zones_low" in data
+    for board in data["boards"]:
+        assert "zone" in board
+        assert "vms" in board
+        assert "lines" in board["vms"]
+        assert "compliant" in board["vms"]
+
+def test_vms_active_boards_no_auth_returns_401(client):
+    """Missing API key must return 401."""
+    response = client.get("/vms/active-boards?city=Riyadh")
+    assert response.status_code == 401
+
+def test_vms_only_shows_non_low_messages(client):
+    """When at least one zone is not Low, Low zones are filtered out."""
+    response = client.get(
+        "/vms/active-boards?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    if not data["all_zones_low"]:
+        for board in data["boards"]:
+            assert board["congestion_level"] != "Low"
