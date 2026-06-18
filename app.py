@@ -36,6 +36,7 @@ from src.model import (
     compute_cooperative_route, predict_ev_charger_demand, compute_vsl_limit,
     recommend_tidal_flow, compute_crosswalk_timing, compute_thermal_risk,
     compute_thermal_risk, compute_thermal_risk, calculate_egress_plan,
+    generate_vms_message,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -2304,6 +2305,75 @@ async def active_surge(
         return plan
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
+
+
+@app.get("/vms/active-boards", tags=["vms"])
+@limiter.limit("20/minute")
+async def vms_active_boards(
+    request: Request,
+    city: str = "Riyadh",
+    _key: str = Depends(require_api_key),
+):
+    """
+    Return VMS content for all zones.
+    Only shows non-Low messages unless all zones are Low.
+    """
+    # Validate city exists
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    df = app.state.city_dfs[city]
+    zones = sorted(df['zone'].unique())
+
+    results = []
+    all_low = True
+
+    for zone in zones:
+        zone_rows = df[df['zone'] == zone].sort_values('timestamp')
+        if len(zone_rows) == 0:
+            continue
+
+        latest = zone_rows.iloc[-1]
+        score = float(latest.get('congestion_score', 0.0))
+        level = congestion_level(score)
+        weather = str(latest.get('weather', 'clear'))
+
+        # Estimate delay based on congestion level
+        delay_map = {'Low': 0, 'Moderate': 5, 'High': 15, 'Critical': 30}
+        delay = delay_map.get(level, 0)
+
+        msg = generate_vms_message(zone, level, weather, delay)
+
+        # Track if all zones are Low
+        if level != 'Low':
+            all_low = False
+
+        results.append({
+            "zone": zone,
+            "congestion_level": level,
+            "weather": weather,
+            "vms": msg,
+        })
+
+    # If all zones are Low, show all messages (including Low)
+    # Otherwise, filter out Low messages
+    if not all_low:
+        results = [r for r in results if r["congestion_level"] != "Low"]
+
+    # Sort by congestion level priority: Critical > High > Moderate > Low
+    priority = {'Critical': 0, 'High': 1, 'Moderate': 2, 'Low': 3}
+    results.sort(key=lambda x: priority.get(x["congestion_level"], 4))
+
+    return {
+        "city": city,
+        "total_boards": len(results),
+        "all_zones_low": all_low,
+        "boards": results,
+    }
+
 
 
 
