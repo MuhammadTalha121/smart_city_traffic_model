@@ -988,3 +988,31 @@ def test_highway_at_capacity_returns_hold_message():
     assert result['status'].startswith('HOLD')
     assert result['recommended_window_mins'] is None
     assert result['estimated_clearance_mins'] is None
+
+
+
+
+# ===== – VMS unit tests =====
+from src.model import generate_vms_message
+from src.config import VMS_LINE_MAX_CHARS, VMS_METRO_STATIONS
+
+def test_vms_lines_within_character_limit():
+    """All VMS lines must be <= VMS_LINE_MAX_CHARS (24)."""
+    for level in ['Low', 'Moderate', 'High', 'Critical']:
+        msg = generate_vms_message('Zone_1', level, 'clear', 10)
+        assert msg['compliant'] is True
+        for line in msg['lines']:
+            if line:  # skip empty lines
+                assert len(line) <= VMS_LINE_MAX_CHARS, f"Line '{line}' exceeds {VMS_LINE_MAX_CHARS} chars"
+
+def test_sandstorm_overrides_congestion_message():
+    """Sandstorm weather must override congestion-based messages."""
+    # Critical congestion + sandstorm → sandstorm message, not critical message
+    sandstorm = generate_vms_message('Zone_1', 'Critical', 'sandstorm')
+    assert 'SANDSTORM' in sandstorm['lines'][0]
+    assert 'CRITICAL' not in sandstorm['lines'][0]
+    assert all(len(line) <= VMS_LINE_MAX_CHARS for line in sandstorm['lines'] if line)
+
+    # Clear weather + Critical → critical message
+    critical = generate_vms_message('Zone_1', 'Critical', 'clear')
+    assert 'CRITICAL' in critical['lines'][0]
