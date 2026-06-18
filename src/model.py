@@ -1785,3 +1785,92 @@ def calculate_egress_plan(
         'status': 'OK - Staged egress plan generated.',
         'available_capacity_per_min': round(available_capacity, 1),
     }
+
+
+
+
+# =====– Variable Message Sign Content Generator =====
+
+def generate_vms_message(
+    zone: str,
+    congestion_level: str,
+    weather: str,
+    delay_minutes: int = 0,
+) -> Dict:
+    """
+    Generate character-constrained VMS message for highway overhead signs.
+
+    Templates by congestion level, with sandstorm override.
+    Each line is validated to <= VMS_LINE_MAX_CHARS (24 chars).
+
+    Parameters
+    ----------
+    zone : Zone identifier (e.g., 'Zone_1').
+    congestion_level : 'Low', 'Moderate', 'High', or 'Critical'.
+    weather : Weather condition string (e.g., 'clear', 'sandstorm').
+    delay_minutes : Estimated delay in minutes (used for High level).
+
+    Returns
+    -------
+    dict with lines, char_counts, compliant, generated_at.
+    """
+    from src.config import VMS_LINE_MAX_CHARS, VMS_MAX_LINES, VMS_METRO_STATIONS
+    from datetime import datetime
+
+    # Sandstorm override (takes precedence over congestion)
+    if weather == 'sandstorm':
+        lines = [
+            "SANDSTORM",
+            "REDUCE SPEED 60",
+            "HEADLIGHTS ON",
+        ]
+    else:
+        # Congestion-based templates
+        if congestion_level == 'Low':
+            lines = ["ZONE CLEAR", "NORMAL SPEED", ""]
+        elif congestion_level == 'Moderate':
+            lines = ["ZONE: MODERATE", "EXPECT SLOW", "USE ALT ROUTE"]
+        elif congestion_level == 'High':
+            metro = VMS_METRO_STATIONS.get(zone, "METRO")
+            lines = [
+                "ZONE: HEAVY",
+                f"{delay_minutes}MIN DELAY",
+                f"USE {metro}",
+            ]
+        elif congestion_level == 'Critical':
+            metro = VMS_METRO_STATIONS.get(zone, "METRO")
+            lines = [
+                "ZONE: CRITICAL",
+                "AVOID AREA",
+                f"USE {metro}",
+            ]
+        else:
+            lines = ["CHECK TRAFFIC", "DRIVE SAFE", ""]
+
+    # Trim empty lines from the end
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    # Ensure we don't exceed max lines
+    lines = lines[:VMS_MAX_LINES]
+
+    # Pad to exactly VMS_MAX_LINES if needed (for consistent board layout)
+    while len(lines) < VMS_MAX_LINES:
+        lines.append("")
+
+    # Validate each line length
+    char_counts = [len(line) for line in lines]
+    compliant = all(c <= VMS_LINE_MAX_CHARS for c in char_counts)
+
+    # Truncate any line that exceeds the limit
+    if not compliant:
+        lines = [line[:VMS_LINE_MAX_CHARS] for line in lines]
+        char_counts = [len(line) for line in lines]
+        compliant = True  # after truncation, they are compliant
+
+    return {
+        "lines": lines,
+        "char_counts": char_counts,
+        "compliant": compliant,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
