@@ -415,3 +415,14 @@ MASS_EVENT_VENUES = {
 }
 EGRESS_STAGED_WINDOWS_MINS = [10, 15, 20, 30, 40, 60]
 EGRESS_HIGHWAY_CAPACITY_PER_MIN = 150   # vehicles per minute at normal load
+
+
+# =====– Variable Message Sign Content Generator =====
+VMS_LINE_MAX_CHARS   = 24
+VMS_MAX_LINES        = 3
+VMS_UPDATE_INTERVAL_S = 300
+VMS_METRO_STATIONS = {
+    'Zone_1': 'KAFD METRO',
+    'Zone_2': 'KING FAHD STN',
+    'Zone_3': 'OLAYA STN',
+}
