@@ -2,11 +2,19 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("API_KEY", "test-key-for-pytest-only")
 
-from app import app
+
+
+if not os.environ.get("API_KEY"):
+    os.environ["API_KEY"] = "test-key-for-pytest-only"
+
+TEST_KEY = os.environ.get("TEST_API_KEY", "test-key-for-pytest-only")
 
 TEST_KEY = os.environ["API_KEY"]
+
+from app import app
+from src.config import CONGESTION_THRESHOLDS
+
 
 VALID_PAYLOAD = {
     "city"           : "Riyadh",
@@ -672,7 +680,7 @@ def test_v2x_cooperative_route_returns_valid_path(client):
 
 
 
-# ====== PROMPT 043 – Green Wave API endpoint tests (corrected) ======
+# ======  – Green Wave API endpoint tests (corrected) ======
 
 def test_green_wave_endpoint_returns_200(client):
     """Valid route returns green wave schedule."""
@@ -886,3 +894,42 @@ def test_vms_only_shows_non_low_messages(client):
     if not data["all_zones_low"]:
         for board in data["boards"]:
             assert board["congestion_level"] != "Low"
+
+
+
+
+
+
+# ===== – RBAC tests =====
+from src.auth import create_key, validate_key
+
+def test_read_only_key_blocked_from_pipeline_trigger(client):
+    """READ_ONLY key should get 403 on /pipeline/trigger."""
+    # Create a READ_ONLY key
+    ro_key = create_key('READ_ONLY', 'all')
+    response = client.post(
+        "/pipeline/trigger",
+        headers={"X-API-Key": ro_key},
+    )
+    assert response.status_code == 403
+    assert "not allowed" in response.text
+
+def test_admin_key_accesses_all_endpoints(client):
+    """ADMIN key should access /pipeline/trigger."""
+    admin_key = create_key('ADMIN', 'all')
+    response = client.post(
+        "/pipeline/trigger",
+        headers={"X-API-Key": admin_key},
+    )
+    assert response.status_code == 200
+
+
+
+def test_expired_key_returns_401(client):
+    """Non-existent or invalid key returns 401."""
+    response = client.get(
+        "/anomalies?city=Riyadh",
+        headers={"X-API-Key": "invalid_key"},
+    )
+    assert response.status_code == 401
+
