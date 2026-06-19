@@ -44,6 +44,9 @@ from src.adapters import get_adapter, GreenWavePlanner
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
 
+from src.auth import validate_key, create_key, deactivate_key, rotate_key, init_auth_db
+
+
 
 load_dotenv()
 
@@ -69,30 +72,83 @@ def _get_registry() -> Dict[str, Dict]:
     except AttributeError:
         return {}
 
+
+        
+
 def require_api_key(key: str = Depends(api_key_header)) -> Dict:
-    """Validate X-API-Key. Returns {key, city, role}."""
-    registry = _get_registry()
-    if not registry:
-        raise HTTPException(status_code=500, detail='Server has no API keys configured.')
-    if not key or key not in registry:
-        raise HTTPException(status_code=401, detail='Invalid or missing API key.')
-    entry = registry[key]
-    return {'key': key, 'city': entry['city'], 'role': entry['role']}
+    """
+    Validate X-API-Key. Returns {key, role, city_scope}.
+    Checks: auth.db, then API_KEY env, then legacy API_KEYS env.
+    """
+    if not key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+    
+    # 1. Try auth.db (new keys)
+    auth_info = validate_key(key)
+    if auth_info:
+        return {
+            'key': key,
+            'role': auth_info['role'],          # already uppercase (ADMIN, OPERATOR, READ_ONLY)
+            'city_scope': auth_info['city_scope']
+        }
+    
+    # 2. Fallback to single API_KEY from .env
+    if key == API_KEY:
+        return {
+            'key': key,
+            'role': 'ADMIN',                    # ← uppercase
+            'city_scope': '*'
+        }
+    
+    # 3. Legacy multi-tenant support (API_KEYS env var)
+    api_keys_env = os.getenv("API_KEYS", "")
+    if api_keys_env:
+        for entry in api_keys_env.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            parts = entry.split(":")
+            if len(parts) >= 3:
+                k, city, role = parts[0], parts[1], parts[2]
+                if key == k:
+                    return {
+                        'key': key,
+                        'role': role.upper(),   # ← uppercase
+                        'city_scope': city
+                    }
+    
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+
+def role_required(allowed_roles: List[str]):
+    def _check(auth: Dict = Depends(require_api_key)):
+        # Compare uppercase
+        if auth['role'].upper() not in [r.upper() for r in allowed_roles]:
+            raise HTTPException(status_code=403, detail=f"Role '{auth['role']}' not allowed. Required: {allowed_roles}")
+        return auth
+    return _check
+
+
+
+
 
 def require_admin(auth: Dict = Depends(require_api_key)) -> Dict:
     """Extend require_api_key with admin role enforcement."""
-    if auth['role'] != 'admin':
+    if auth['role'].upper() != 'ADMIN':
         raise HTTPException(status_code=403, detail='This endpoint requires admin role.')
     return auth
 
 def _assert_city_permitted(auth: Dict, requested_city: str) -> None:
     """Raise 403 if key city scope does not cover requested_city."""
-    if auth['city'] == '*':
+    # Legacy keys may have 'city', new keys have 'city_scope'
+    city_scope = auth.get('city') or auth.get('city_scope', '*')
+    if city_scope == '*':
         return
-    if auth['city'].lower() != requested_city.lower():
+    if city_scope.lower() != requested_city.lower():
         raise HTTPException(
             status_code=403,
-            detail=f"API key is scoped to '{auth['city']}' — cannot access '{requested_city}'.",
+            detail=f"API key is scoped to '{city_scope}' — cannot access '{requested_city}'.",
         )
 
 
@@ -159,6 +215,7 @@ def _get_active_schedule(city: str) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Train model on Riyadh, generate data for all cities, start scheduler."""
+    init_auth_db()
     app.state.key_registry = build_key_registry()
     city_dfs = {}
     for city in ["Riyadh", "NEOM", "Dubai", "Karachi"]:
@@ -400,7 +457,7 @@ def pipeline_status(auth: Dict = Depends(require_admin)):
 
 
 @app.post("/pipeline/trigger", tags=["pipeline"])
-def pipeline_trigger(auth: Dict = Depends(require_admin)):
+def pipeline_trigger(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN']))):
     """Manually trigger a pipeline run. Retrains if drift threshold is exceeded."""
     print(f"[Pipeline] Manual trigger at {datetime.now()}")
     result = run_pipeline(city="Riyadh")
@@ -801,7 +858,7 @@ def signals_recommended(
 @app.get("/control/tidal-reversals", tags=["control"])
 def tidal_reversals(
     city: str = "Riyadh",
-    _key: str = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """Tidal flow lane reversal recommendations for eligible zones at current demand."""
     df              = app.state.df[app.state.df["city"] == city]
@@ -2055,7 +2112,7 @@ class GreenWaveRequest(BaseModel):
 @app.post("/control/green-wave", tags=["control"])
 def green_wave(
     payload: GreenWaveRequest,
-    _key:    str = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Calculate a synchronized green-wave phase schedule for a priority vehicle corridor.
@@ -2271,7 +2328,7 @@ async def egress_plan(
     venue_id: str,
     total_vehicles: int,
     current_highway_load_pct: float = 0.0,
-    _key: str = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Generate a staged egress plan for a mass event venue.
@@ -2288,7 +2345,7 @@ async def egress_plan(
 async def active_surge(
     request: Request,
     payload: dict,   # Body: {venue_id, total_vehicles, current_highway_load_pct}
-    _key: str = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Immediate egress recommendation for a surge event.
@@ -2373,6 +2430,46 @@ async def vms_active_boards(
         "all_zones_low": all_low,
         "boards": results,
     }
+
+
+
+@app.post("/auth/keys", tags=["auth"])
+def create_api_key(
+    role: str = "READ_ONLY",
+    city_scope: str = "all",
+    auth: Dict = Depends(role_required(['ADMIN'])),
+):
+    """Create a new API key with specified role and city scope. Admin only."""
+    if role not in ['READ_ONLY', 'OPERATOR', 'ADMIN']:
+        raise HTTPException(status_code=422, detail=f"Invalid role: {role}")
+    plain_key = create_key(role, city_scope)
+    return {"api_key": plain_key, "role": role, "city_scope": city_scope}
+
+@app.delete("/auth/keys", tags=["auth"])
+def delete_api_key(
+    key: str,
+    auth: Dict = Depends(role_required(['ADMIN'])),
+):
+    """Deactivate an existing API key. Admin only."""
+    if deactivate_key(key):
+        return {"status": "deactivated"}
+    else:
+        raise HTTPException(status_code=404, detail="Key not found or already inactive")
+
+@app.post("/auth/rotate", tags=["auth"])
+def rotate_api_key(
+    key: str,
+    auth: Dict = Depends(role_required(['ADMIN'])),
+):
+    """Rotate an existing key (generate new one, deactivate old). Admin only."""
+    new_key = rotate_key(key)
+    if new_key:
+        return {"new_api_key": new_key}
+    else:
+        raise HTTPException(status_code=404, detail="Key not found or invalid")
+
+
+
 
 
 
