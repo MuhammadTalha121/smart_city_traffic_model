@@ -426,3 +426,15 @@ VMS_METRO_STATIONS = {
     'Zone_2': 'KING FAHD STN',
     'Zone_3': 'OLAYA STN',
 }
+
+
+
+
+# =====– Role-Based Access Control =====
+USER_ROLES = {
+    'READ_ONLY': ['predict', 'anomalies', 'forecast',
+                  'health', 'emissions', 'noise', 'vms'],
+    'OPERATOR' : ['*'],   # all endpoints
+    'ADMIN'    : ['*'],   # all endpoints + key management
+}
+API_KEY_TTL_HOURS = 72
