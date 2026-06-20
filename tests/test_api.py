@@ -1102,3 +1102,146 @@ def test_hpo_history_endpoint_returns_list(client):
     assert "hpo_runs" in data
     assert "total" in data
     assert isinstance(data["hpo_runs"], list)
+
+
+
+
+
+# ===== Pareto routing API tests =====
+
+def test_pareto_recommendations_returns_routes(client):
+    """POST /routing/pareto-recommendations returns top routes with scores."""
+    payload = {
+        "city": "Riyadh",
+        "origin_zone": "Zone_1",
+        "destination_zone": "Zone_4",
+        "time_weight": 0.5,
+        "emission_weight": 0.3,
+        "cost_weight": 0.2,
+    }
+    response = client.post(
+        "/routing/pareto-recommendations",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "routes" in data
+    assert isinstance(data["routes"], list)
+    assert len(data["routes"]) >= 1
+    assert "recommended_for" in data
+    assert "fastest" in data["recommended_for"]
+    assert "cleanest" in data["recommended_for"]
+    assert "cheapest" in data["recommended_for"]
+    for r in data["routes"]:
+        assert "route" in r
+        assert "utility" in r
+        assert isinstance(r["route"], list)
+
+
+
+
+
+
+# ===== Air quality API tests =====
+
+def test_air_quality_endpoint_returns_zones(client):
+    """GET /environment/air-quality returns AQI estimates for all zones."""
+    response = client.get(
+        "/environment/air-quality?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    assert "wind_speed_kmh" in data
+    assert "weather" in data
+    assert isinstance(data["zones"], list)
+    for z in data["zones"]:
+        assert "zone" in z
+        assert "pm25_concentration" in z
+        assert "aqi_category" in z
+        assert "who_guideline_exceeded" in z
+        assert z["aqi_category"] in ('Good', 'Moderate', 'Unhealthy', 'Hazardous')
+
+
+    
+
+
+# =====  Freight geofencing API tests =====
+
+def test_freight_validate_compliant_returns_200(client):
+    """POST /freight/validate returns compliant status for valid entry."""
+    payload = {
+        "zone": "Zone_1",
+        "hour": 22,
+        "vehicle_weight_tonnes": 4.0,
+        "is_weekend": 0,
+        "vehicle_id_hash": "abc12345"
+    }
+    response = client.post(
+        "/freight/validate",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "Compliant"
+
+
+
+
+
+# ===== Evacuation Routing =====
+
+def test_evacuation_requires_operator_role(client):
+    """READ_ONLY key should get 403 on /emergency/evacuate."""
+    from src.auth import create_key
+    ro_key = create_key('READ_ONLY', 'all')
+    payload = {
+        "city": "Riyadh",
+        "hazard_zones": ["Zone_1", "Zone_3"],
+        "total_vehicles": 4000
+    }
+    response = client.post(
+        "/emergency/evacuate",
+        json=payload,
+        headers={"X-API-Key": ro_key},
+    )
+    assert response.status_code == 403
+    assert "not allowed" in response.text
+
+
+def test_evacuation_returns_valid_plan(client):
+    """Valid request should return a complete evacuation plan."""
+    payload = {
+        "city": "Riyadh",
+        "hazard_zones": ["Zone_1", "Zone_3"],
+        "total_vehicles": 4000
+    }
+    response = client.post(
+        "/emergency/evacuate",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY},  # ADMIN key
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "hazard_zones" in data
+    assert "total_vehicles" in data
+    assert "evacuation_plan" in data
+    assert "recommended_departure_order" in data
+    assert "city" in data
+    assert data["city"] == "Riyadh"
+    assert len(data["evacuation_plan"]) == 2  # two safe points
+    for plan in data["evacuation_plan"]:
+        assert "safe_point" in plan
+        assert "route" in plan
+        assert "allocated_vehicles" in plan
+        assert "estimated_clearance_mins" in plan
+        assert "corridor_overloaded" in plan
+        assert isinstance(plan["route"], list)
+        assert plan["route"][0] in ["Zone_1", "Zone_3"]
+        assert plan["route"][-1] in ["Zone_4", "Zone_5"]
+    # Allocations should sum to 4000
+    total_alloc = sum(p["allocated_vehicles"] for p in data["evacuation_plan"])
+    assert total_alloc == 4000
