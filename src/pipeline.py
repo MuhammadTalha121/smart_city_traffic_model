@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from sklearn.metrics import mean_absolute_error
+from src.model import prepare_features, train_xgboost, optimize_hyperparameters
 
 
 LOG_PATH      = "predictions_log.csv"
@@ -58,20 +59,16 @@ def should_retrain(drift_score: float, threshold: float = DRIFT_THRESHOLD) -> bo
     return drift_score >= threshold
 
 
-def retrain_model(city: str = "Riyadh") -> dict:
+def retrain_model(city: str = "Riyadh", run_hpo: bool = False) -> dict:
     """
     Regenerate data, retrain XGBoost, and save the new model to disk.
-
-    Returns
-    -------
-    dict with keys: retrained, new_r2, old_r2, timestamp, model_path
+    If run_hpo is True, run Optuna to find best hyperparameters before training.
     """
     from sklearn.metrics import r2_score
-    from src.data  import generate_traffic_data, apply_hourly_patterns, add_lag_features
-    from src.model import prepare_features, train_xgboost
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features, train_xgboost, optimize_hyperparameters
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     old_r2 = _load_saved_r2()
 
     df = generate_traffic_data(city=city)
@@ -79,12 +76,42 @@ def retrain_model(city: str = "Riyadh") -> dict:
     df = add_lag_features(df)
 
     X, y, _ = prepare_features(df)
-    model, X_test, y_test = train_xgboost(X, y)
 
-    y_pred  = model.predict(X_test)
-    new_r2  = round(float(r2_score(y_test, y_pred)), 4)
+    # If HPO requested, run it
+    hpo_result = None
+    if run_hpo:
+        hpo_result = optimize_hyperparameters(X, y)
+        best_params = hpo_result['best_params']
+        print(f"[HPO] Best params: {best_params}, CV MAE: {hpo_result['best_cv_mae']}")
+    else:
+        best_params = {
+            'n_estimators': 200,
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+        }
 
-    joblib.dump({"model": model, "r2": new_r2, "timestamp": timestamp}, MODEL_PATH)
+    # Train with the chosen hyperparameters
+    model = xgb.XGBRegressor(
+        n_estimators=best_params['n_estimators'],
+        max_depth=best_params['max_depth'],
+        learning_rate=best_params['learning_rate'],
+        subsample=best_params['subsample'],
+        random_state=42,
+        eval_metric='rmse',
+        early_stopping_rounds=20,
+        verbosity=0,
+    )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+    y_pred = model.predict(X_test)
+    new_r2 = round(float(r2_score(y_test, y_pred)), 4)
+
+    # Save model with metadata
+    joblib.dump({"model": model, "r2": new_r2, "timestamp": timestamp, "hpo_used": run_hpo}, MODEL_PATH)
     print(f"[Pipeline] Model saved to {MODEL_PATH} — R²: {new_r2}")
 
     return {
@@ -93,27 +120,29 @@ def retrain_model(city: str = "Riyadh") -> dict:
         "old_r2"     : old_r2,
         "timestamp"  : timestamp,
         "model_path" : MODEL_PATH,
+        "hpo_used"   : run_hpo,
+        "hpo_result" : hpo_result,
     }
 
 
 def run_pipeline(city: str = "Riyadh") -> dict:
-    """
-    Full pipeline: check drift → retrain if needed → log outcome.
-
-    Always logs to pipeline_log.csv regardless of whether retrain ran.
-    """
-    timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ...
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     drift_score = compute_drift_score()
     retrained   = False
     new_r2      = None
     old_r2      = None
+    hpo_used    = False
 
     if should_retrain(drift_score):
         print(f"[Pipeline] Drift score {drift_score} >= {DRIFT_THRESHOLD}. Retraining...")
-        result  = retrain_model(city=city)
+        # Run HPO if drift is significantly high (> 1.5)
+        run_hpo = drift_score >= 1.5
+        result  = retrain_model(city=city, run_hpo=run_hpo)
         retrained = result["retrained"]
         new_r2    = result["new_r2"]
         old_r2    = result["old_r2"]
+        hpo_used  = result.get("hpo_used", False)
     else:
         print(f"[Pipeline] Drift score {drift_score} — model stable. No retrain needed.")
 
@@ -124,8 +153,8 @@ def run_pipeline(city: str = "Riyadh") -> dict:
         "retrained"  : retrained,
         "new_r2"     : new_r2,
         "old_r2"     : old_r2,
+        "hpo_used"   : hpo_used,
     }
-
     _log_pipeline_run(outcome)
     return outcome
 

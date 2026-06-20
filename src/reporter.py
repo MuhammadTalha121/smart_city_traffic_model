@@ -31,14 +31,32 @@ def _load_predictions(city: str, days: int) -> pd.DataFrame:
     return df
 
 
-def _load_pipeline_log(days: int) -> pd.DataFrame:
-    """Load pipeline_log.csv for past N days."""
-    if not os.path.exists('pipeline_log.csv'):
+def _load_pipeline_log(days: int = 30) -> pd.DataFrame:
+    """Load pipeline log, handling possible schema changes gracefully."""
+    log_path = "pipeline_log.csv"
+    if not os.path.exists(log_path):
         return pd.DataFrame()
-    df     = pd.read_csv('pipeline_log.csv', parse_dates=['timestamp'])
-    cutoff = datetime.now() - timedelta(days=days)
-    return df[df['timestamp'] >= cutoff]
 
+    try:
+        df = pd.read_csv(log_path, parse_dates=['timestamp'])
+    except pd.errors.ParserError:
+        # Fallback: skip malformed lines (e.g., when header changed)
+        df = pd.read_csv(log_path, parse_dates=['timestamp'],
+                         on_bad_lines='skip', engine='python')
+    except Exception:
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+
+    # If 'hpo_used' missing, add with default False
+    if 'hpo_used' not in df.columns:
+        df['hpo_used'] = False
+
+    # Filter by date range
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+    df = df[df['timestamp'] >= cutoff]
+    return df
 
 def _load_usage_log(days: int) -> pd.DataFrame:
     """Load usage_log.csv for past N days."""
