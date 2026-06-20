@@ -1,4 +1,6 @@
 import os
+import csv
+from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict
@@ -21,8 +23,14 @@ from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
+from src.queue_worker import TelemetryQueue
+
+
+
 from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB,
-                         NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH)
+                         NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH, TELEMETRY_QUEUE_MAX_SIZE,
+    TELEMETRY_BATCH_SIZE,
+    TELEMETRY_FLUSH_INTERVAL_S,)
 
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
@@ -39,6 +47,10 @@ from src.model import (
     generate_vms_message,
 )
 from src.ids import SensorIntrusionDetector 
+
+
+from src.ledger import ViolationLedger
+from src.config import VIOLATION_LEDGER_PATH
 
 from src.adapters import get_adapter, GreenWavePlanner
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
@@ -254,6 +266,13 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
     print("[Scheduler] Nightly retraining scheduled at 03:00")
+
+    telemetry_queue = TelemetryQueue()
+    # Define a state getter that returns the needed attributes
+    def _get_state():
+        return app.state
+    telemetry_queue.start_worker(_get_state)
+    app.state.telemetry_queue = telemetry_queue
 
     yield
 
@@ -2473,6 +2492,126 @@ def rotate_api_key(
 
 
 
+# ===== Tamper-Evident Violation Audit Ledger =====
+
+@app.get("/citations/verify-ledger", tags=["citations"])
+async def verify_ledger(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN']))):
+    """
+    Verify the integrity of the violation ledger.
+    Requires OPERATOR or ADMIN role.
+    """
+    ledger = ViolationLedger()
+    report = ledger.verify_chain()
+    return report
+
+
+@app.get("/citations/violations", tags=["citations"])
+async def get_violations(
+    zone: Optional[str] = None,
+    limit: int = 100,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return recent violation records, optionally filtered by zone.
+    Returns at most `limit` records (default 100), ordered by block number descending.
+    """
+    ledger = ViolationLedger()
+    if not os.path.exists(ledger.path) or os.path.getsize(ledger.path) == 0:
+        return {"violations": []}
+
+    with open(ledger.path, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    # Filter by zone if provided
+    if zone:
+        rows = [r for r in rows if r['zone'] == zone]
+
+    # Sort descending by block_number (most recent first)
+    rows.sort(key=lambda r: int(r['block_number']), reverse=True)
+
+    # Limit
+    rows = rows[:limit]
+
+    return {"violations": rows}
+
+
+
+
+
+class TelemetryReading(BaseModel):
+    city: str = Field("Riyadh", description="City name")
+    zone: str = Field("Zone_1", description="Zone identifier")
+    hour: int = Field(..., ge=0, le=23, description="Hour of day")
+    vehicle_count: float = Field(..., gt=0, description="Number of vehicles")
+    avg_speed: float = Field(..., gt=0, description="Average speed (km/h)")
+    weather: str = Field("clear", description="Weather condition")
+    road_type: str = Field("arterial", description="Road type")
+    rush_hour: int = Field(0, ge=0, le=1, description="Is rush hour?")
+    is_weekend: int = Field(0, ge=0, le=1, description="Is weekend?")
+    is_late_night: int = Field(0, ge=0, le=1, description="Is late night?")
+    event: int = Field(0, ge=0, le=1, description="Event flag")
+    hour_multiplier: float = Field(1.0, gt=0, description="Hourly traffic multiplier")
+
+class TelemetryIngestRequest(BaseModel):
+    readings: List[TelemetryReading] = Field(..., max_length=1000, description="List of sensor readings")
+
+@app.post("/telemetry/ingest", tags=["telemetry"])
+@limiter.limit("60/minute")
+async def telemetry_ingest(
+    request: Request,
+    payload: TelemetryIngestRequest,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Ingest a batch of sensor readings asynchronously.
+    Each reading is enqueued for background processing.
+    Returns counts of enqueued and dropped readings, and current queue depth.
+    """
+    telemetry_queue = getattr(app.state, 'telemetry_queue', None)
+    if telemetry_queue is None:
+        raise HTTPException(status_code=503, detail="Telemetry queue not initialized")
+
+    enqueued = 0
+    dropped = 0
+    for reading in payload.readings:
+        # Convert to dict
+        rd = reading.dict()
+        if telemetry_queue.enqueue(rd):
+            enqueued += 1
+        else:
+            dropped += 1
+
+    return {
+        "enqueued": enqueued,
+        "dropped": dropped,
+        "queue_depth": telemetry_queue.queue_depth(),
+        "status": "ok"
+    }
+
+@app.get("/telemetry/status", tags=["telemetry"])
+async def telemetry_status(
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return the current status of the telemetry queue and worker.
+    """
+    telemetry_queue = getattr(app.state, 'telemetry_queue', None)
+    if telemetry_queue is None:
+        raise HTTPException(status_code=503, detail="Telemetry queue not initialized")
+
+    return {
+        "queue_depth": telemetry_queue.queue_depth(),
+        "worker_active": telemetry_queue.is_worker_active(),
+        "processed_today": telemetry_queue.processed_today(),
+        "queue_max_size": TELEMETRY_QUEUE_MAX_SIZE,
+        "batch_size": TELEMETRY_BATCH_SIZE,
+        "flush_interval_s": TELEMETRY_FLUSH_INTERVAL_S,
+    }
+
+
+
+
 
 
 
@@ -2612,3 +2751,52 @@ def _build_city_snapshot(city: str) -> dict:
             "error": str(e),
             "zones": [],
         }
+    
+
+
+
+# ===== Telemetry Queue API tests =====
+
+def test_telemetry_ingest_enqueues_readings(client):
+    """POST /telemetry/ingest should enqueue readings and return counts."""
+    readings = [
+        {
+            "city": "Riyadh",
+            "zone": "Zone_1",
+            "hour": 10,
+            "vehicle_count": 150,
+            "avg_speed": 45,
+            "weather": "clear",
+            "road_type": "arterial",
+            "rush_hour": 1,
+            "is_weekend": 0,
+            "is_late_night": 0,
+            "event": 0,
+            "hour_multiplier": 1.2
+        }
+    ] * 3
+    response = client.post(
+        "/telemetry/ingest",
+        json={"readings": readings},
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 3
+    assert data["dropped"] == 0
+    assert "queue_depth" in data
+
+def test_telemetry_status_returns_queue_info(client):
+    """GET /telemetry/status should return queue status."""
+    response = client.get(
+        "/telemetry/status",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "queue_depth" in data
+    assert "worker_active" in data
+    assert "processed_today" in data
+    assert "queue_max_size" in data
+    assert "batch_size" in data
+    assert "flush_interval_s" in data
