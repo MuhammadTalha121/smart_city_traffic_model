@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict
 import pandas as pd
-from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level
+from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -30,7 +30,7 @@ from src.queue_worker import TelemetryQueue
 from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB,
                          NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH, TELEMETRY_QUEUE_MAX_SIZE,
     TELEMETRY_BATCH_SIZE,
-    TELEMETRY_FLUSH_INTERVAL_S,)
+    TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS,)
 
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
@@ -2609,6 +2609,129 @@ async def telemetry_status(
         "flush_interval_s": TELEMETRY_FLUSH_INTERVAL_S,
     }
 
+
+
+
+# ===== Parking Occupancy Prediction =====
+
+@app.get("/parking/occupancy-forecast", tags=["parking"])
+@limiter.limit("20/minute")
+async def parking_occupancy_forecast(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return 3‑hour parking occupancy forecast for all garages in the city.
+
+    Uses the latest congestion score for each garage's zone.
+    """
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Get the latest row per zone
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+
+    results = []
+    for garage_id, info in PARKING_HUBS.items():
+        zone = info['zone']
+        zone_row = latest[latest['zone'] == zone]
+        if zone_row.empty:
+            # fallback: use city-wide average
+            congestion = float(df['congestion_score'].mean())
+            hour = datetime.now().hour
+        else:
+            congestion = float(zone_row.iloc[0]['congestion_score'])
+            hour = int(zone_row.iloc[0]['hour'])
+
+        # Simulate current fill rate based on congestion (0.3–0.9)
+        # We'll set current_fill_rate = 0.3 + congestion * 0.6
+        current_fill = 0.3 + congestion * 0.6
+        current_fill = min(current_fill, 0.95)
+
+        forecast = predict_parking_occupancy(
+            garage_id=garage_id,
+            current_fill_rate=current_fill,
+            congestion_score=congestion,
+            hour=hour,
+        )
+        forecast['zone'] = zone
+        forecast['capacity'] = info['capacity']
+        results.append(forecast)
+
+    # Sort by current fill rate descending (most full first)
+    results.sort(key=lambda x: x['current_fill_rate'], reverse=True)
+
+    return {
+        "city": city,
+        "timestamp": datetime.now().isoformat(),
+        "garages": results,
+    }
+
+
+@app.get("/parking/routing-recommendation", tags=["parking"])
+@limiter.limit("20/minute")
+async def parking_routing_recommendation(
+    request: Request,
+    zone: str,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return the garage with the most available capacity near the requested zone.
+
+    Considers garages whose 'zone' matches the requested zone first.
+    If no garage exists in that zone, returns the garage with lowest occupancy.
+    """
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Get latest row per zone
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+
+    # Build list of garages with current fill rate
+    garage_data = []
+    for garage_id, info in PARKING_HUBS.items():
+        g_zone = info['zone']
+        zone_row = latest[latest['zone'] == g_zone]
+        if zone_row.empty:
+            congestion = float(df['congestion_score'].mean())
+        else:
+            congestion = float(zone_row.iloc[0]['congestion_score'])
+        current_fill = 0.3 + congestion * 0.6
+        current_fill = min(current_fill, 0.95)
+        garage_data.append({
+            'garage_id': garage_id,
+            'zone': g_zone,
+            'current_fill': current_fill,
+            'capacity': info['capacity'],
+            'available': 1.0 - current_fill,
+        })
+
+    # First, filter by zone if any garage matches
+    zone_garages = [g for g in garage_data if g['zone'] == zone]
+    if zone_garages:
+        # Pick the one with most available capacity
+        best = max(zone_garages, key=lambda x: x['available'])
+    else:
+        # No garage in that zone; pick the overall least full
+        best = min(garage_data, key=lambda x: x['current_fill'])
+
+    return {
+        "city": city,
+        "requested_zone": zone,
+        "recommended_garage": best['garage_id'],
+        "garage_zone": best['zone'],
+        "current_fill_rate": round(best['current_fill'], 3),
+        "available_capacity": round(best['available'] * best['capacity']),
+        "capacity": best['capacity'],
+    }
 
 
 
