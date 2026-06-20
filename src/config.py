@@ -463,3 +463,28 @@ PARKING_HUBS = {
 }
 PARKING_OCCUPANCY_WARNING = 0.85
 PARKING_OCCUPANCY_CRITICAL = 0.95
+
+
+
+# ==========
+HEARTBEAT_TIMEOUT_S   = 10
+OFFLINE_CYCLE_LENGTH_S = 90
+DEFAULT_OFFLINE_PHASES = {
+    'main_green_s'  : 40,
+    'cross_green_s' : 30,
+    'pedestrian_s'  : 12,
+}
+
+
+
+# ==========
+HPO_N_TRIALS      = 20
+HPO_CV_FOLDS      = 3
+HPO_TIMEOUT_S     = 300  # 5 minutes max
+HPO_DB_PATH       = 'optuna_studies.db'
+HPO_SEARCH_SPACE  = {
+    'n_estimators' : (100, 400),
+    'max_depth'    : (3, 8),
+    'learning_rate': (0.01, 0.3),
+    'subsample'    : (0.6, 1.0),
+}
