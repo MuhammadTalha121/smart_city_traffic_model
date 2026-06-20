@@ -438,3 +438,17 @@ USER_ROLES = {
     'ADMIN'    : ['*'],   # all endpoints + key management
 }
 API_KEY_TTL_HOURS = 72
+
+
+
+# =========
+VIOLATION_LEDGER_PATH = 'violation_ledger.csv'
+LEDGER_GENESIS_HASH = 'MUNICIPAL_VIOLATIONS_GENESIS'
+HASH_ALGORITHM = 'sha256'
+
+
+
+# ==========
+TELEMETRY_QUEUE_MAX_SIZE   = 10000
+TELEMETRY_BATCH_SIZE       = 50
+TELEMETRY_FLUSH_INTERVAL_S = 5
