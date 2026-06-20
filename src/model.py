@@ -5,10 +5,14 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from collections import deque
 import xgboost as xgb
 import joblib
-from typing import Tuple, Dict
-from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES, NOISE_BASE_DB, NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS
+from typing import Tuple, Dict, List, Optional
+from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES, NOISE_BASE_DB, 
+                        NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, 
+                        NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS,
+                        EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY)
 from datetime import datetime
 
 
@@ -2064,3 +2068,528 @@ def test_hpo_params_within_search_space():
     assert HPO_SEARCH_SPACE["max_depth"][0] <= params["max_depth"] <= HPO_SEARCH_SPACE["max_depth"][1]
     assert HPO_SEARCH_SPACE["learning_rate"][0] <= params["learning_rate"] <= HPO_SEARCH_SPACE["learning_rate"][1]
     assert HPO_SEARCH_SPACE["subsample"][0] <= params["subsample"] <= HPO_SEARCH_SPACE["subsample"][1]
+
+
+
+
+
+# ==========
+
+def calculate_pareto_routes(
+    origin_zone: str,
+    destination_zone: str,
+    congestion_map: Dict[str, float],
+    weights: Optional[Dict[str, float]] = None,
+) -> Dict:
+    """
+    Generate Pareto-optimal route recommendations balancing time, emissions, and cost.
+
+    Parameters:
+        origin_zone: Starting zone (e.g., 'Zone_1')
+        destination_zone: Target zone
+        congestion_map: {zone: congestion_score} for all zones
+        weights: optional dict with time_weight, emission_weight, cost_weight
+                 (defaults to PARETO_DEFAULT_WEIGHTS)
+
+    Returns:
+        dict with:
+            routes: list of top 3 routes with scores
+            recommended_for: 'fastest', 'cleanest', 'cheapest'
+    """
+    import heapq
+    from src.config import ZONE_ADJACENCY, PARETO_DEFAULT_WEIGHTS
+    from src.model import compute_emissions, calculate_dynamic_toll, congestion_level
+
+    if weights is None:
+        weights = PARETO_DEFAULT_WEIGHTS
+
+    w_time = weights.get('time_weight', 0.4)
+    w_emission = weights.get('emission_weight', 0.3)
+    w_cost = weights.get('cost_weight', 0.3)
+
+    # Enumerate all simple paths (max 5 hops to avoid explosion)
+    def find_paths(current, target, path, max_hops=5):
+        if current == target:
+            return [path]
+        if len(path) >= max_hops:
+            return []
+        paths = []
+        for neighbor in ZONE_ADJACENCY.get(current, []):
+            if neighbor not in path:
+                for p in find_paths(neighbor, target, path + [neighbor], max_hops):
+                    paths.append(p)
+        return paths
+
+    all_paths = find_paths(origin_zone, destination_zone, [origin_zone])
+
+    if not all_paths:
+        return {
+            'routes': [],
+            'recommended_for': None,
+            'message': 'No route found between zones.'
+        }
+
+    # Score each path
+    scored = []
+    for path in all_paths:
+        time_score = 0.0
+        emission_score = 0.0
+        cost_score = 0.0
+
+        for zone in path:
+            c = congestion_map.get(zone, 0.1)
+            time_score += c  # higher congestion = higher time cost
+            # Estimate emissions for 1 hour at current congestion
+            level = congestion_level(c)
+            em = compute_emissions(level, vehicle_count=100, duration_hours=1.0)
+            emission_score += em['co2_kg']
+            # Toll cost
+            cost_score += calculate_dynamic_toll(zone, c)
+
+        scored.append({
+            'route': path,
+            'time_score': round(time_score, 4),
+            'emission_score': round(emission_score, 4),
+            'cost_score': round(cost_score, 2),
+        })
+
+    # Normalize scores (0–1) across all paths
+    if len(scored) > 1:
+        time_vals = [s['time_score'] for s in scored]
+        emit_vals = [s['emission_score'] for s in scored]
+        cost_vals = [s['cost_score'] for s in scored]
+
+        min_t, max_t = min(time_vals), max(time_vals)
+        min_e, max_e = min(emit_vals), max(emit_vals)
+        min_c, max_c = min(cost_vals), max(cost_vals)
+
+        for s in scored:
+            s['time_score_norm'] = (s['time_score'] - min_t) / (max_t - min_t + 1e-9)
+            s['emission_score_norm'] = (s['emission_score'] - min_e) / (max_e - min_e + 1e-9)
+            s['cost_score_norm'] = (s['cost_score'] - min_c) / (max_c - min_c + 1e-9)
+    else:
+        for s in scored:
+            s['time_score_norm'] = 0.0
+            s['emission_score_norm'] = 0.0
+            s['cost_score_norm'] = 0.0
+
+    # Compute utility
+    for s in scored:
+        s['utility'] = (
+            s['time_score_norm'] * w_time +
+            s['emission_score_norm'] * w_emission +
+            s['cost_score_norm'] * w_cost
+        )
+
+    # Sort by utility descending
+    scored.sort(key=lambda x: x['utility'], reverse=True)
+
+    # Top 3 routes
+    top_routes = scored[:3]
+
+    # Determine recommended_for based on best of each criterion
+    fastest = min(scored, key=lambda x: x['time_score'])
+    cleanest = min(scored, key=lambda x: x['emission_score'])
+    cheapest = min(scored, key=lambda x: x['cost_score'])
+
+    recommendations = {
+        'fastest': fastest,
+        'cleanest': cleanest,
+        'cheapest': cheapest,
+    }
+
+    return {
+        'origin_zone': origin_zone,
+        'destination_zone': destination_zone,
+        'routes': top_routes,
+        'recommended_for': {
+            'fastest': {'route': fastest['route'], 'time_score': fastest['time_score']},
+            'cleanest': {'route': cleanest['route'], 'emission_score': cleanest['emission_score']},
+            'cheapest': {'route': cheapest['route'], 'cost_score': cheapest['cost_score']},
+        },
+        'total_paths_found': len(all_paths),
+    }
+
+
+
+
+
+
+
+# ==========
+
+def estimate_air_quality(
+    vehicle_count: float,
+    avg_speed: float,
+    wind_speed_kmh: float,
+    weather: str,
+) -> Dict:
+    """
+    Estimate PM2.5 and NOx concentrations per zone based on traffic and wind.
+
+    Formula:
+        pm25_g = vehicle_count * PM25_FACTOR_G_PER_VEHICLE_KM * ZONE_ROAD_LENGTH_KM
+        nox_g  = vehicle_count * NOX_FACTOR_G_PER_VEHICLE_KM * ZONE_ROAD_LENGTH_KM
+        dispersion = WIND_DISPERSION_FACTOR * (wind_speed_kmh / 10)
+        Sandstorm adds PM2.5 naturally: pm25_g *= 3.0
+        pm25_concentration = pm25_g / max(dispersion, 0.1)
+        aqi_category = classify using AQI_THRESHOLDS on pm25_g
+
+    Returns:
+        dict with pm25_g, nox_g, pm25_concentration, aqi_category,
+        who_guideline_exceeded, dominant_source.
+    """
+    from src.config import (
+        PM25_FACTOR_G_PER_VEHICLE_KM,
+        NOX_FACTOR_G_PER_VEHICLE_KM,
+        ZONE_ROAD_LENGTH_KM,
+        WIND_DISPERSION_FACTOR,
+        AQI_THRESHOLDS,
+    )
+
+    # Base emissions in grams
+    pm25_g = vehicle_count * PM25_FACTOR_G_PER_VEHICLE_KM * ZONE_ROAD_LENGTH_KM
+    nox_g = vehicle_count * NOX_FACTOR_G_PER_VEHICLE_KM * ZONE_ROAD_LENGTH_KM
+
+    # Sandstorm contribution
+    if weather == 'sandstorm':
+        pm25_g *= 3.0
+
+    # Dispersion factor
+    dispersion = WIND_DISPERSION_FACTOR * (wind_speed_kmh / 10)
+    dispersion = max(dispersion, 0.1)
+
+    pm25_concentration = pm25_g / dispersion
+
+    # Determine AQI category
+    aqi_category = 'Good'
+    for level, threshold in sorted(AQI_THRESHOLDS.items(), key=lambda x: x[1]):
+        if pm25_g >= threshold:
+            aqi_category = level
+
+    who_guideline_exceeded = pm25_concentration > 5.0  # WHO PM2.5 annual mean guideline
+
+    # Dominant source
+    if weather == 'sandstorm':
+        dominant_source = 'sandstorm_dust'
+    elif pm25_g > nox_g:
+        dominant_source = 'pm25'
+    else:
+        dominant_source = 'nox'
+
+    return {
+        'pm25_g': round(pm25_g, 4),
+        'nox_g': round(nox_g, 4),
+        'pm25_concentration': round(pm25_concentration, 4),
+        'aqi_category': aqi_category,
+        'who_guideline_exceeded': who_guideline_exceeded,
+        'dominant_source': dominant_source,
+    }
+
+
+
+
+
+# ==========
+
+def validate_freight_entry(
+    zone: str,
+    hour: int,
+    vehicle_weight_tonnes: float,
+    is_weekend: int,
+    vehicle_id_hash: str,
+) -> Dict:
+    """
+    Check if a heavy freight vehicle entry is compliant with zone restrictions.
+
+    If violation occurs, appends to ViolationLedger and returns citation details.
+
+    Returns:
+        dict with status, zone, hour, vehicle_weight_tonnes,
+        penalty_sar (if violation), block_hash (if violation)
+    """
+    from src.config import (
+        GEOFENCED_RESTRICTED_ZONES,
+        VIOLATION_PENALTY_SAR,
+        FRIDAY_PRAYER_HOURS,
+    )
+    from src.ledger import ViolationLedger
+
+    # Check if zone is geofenced
+    restrictions = GEOFENCED_RESTRICTED_ZONES.get(zone)
+    if restrictions is None:
+        return {
+            'status': 'Compliant',
+            'zone': zone,
+            'hour': hour,
+            'vehicle_weight_tonnes': vehicle_weight_tonnes,
+            'reason': 'Zone not restricted',
+        }
+
+    max_weight = restrictions['max_weight_tonnes']
+    restricted_hours = restrictions['restricted_hours']
+
+    # Additional prayer‑time restriction: reduce limit to 2.0 tonnes
+    if is_weekend and hour in FRIDAY_PRAYER_HOURS:
+        max_weight = min(max_weight, 2.0)
+
+    # Check if weight exceeds limit and hour is restricted
+    if vehicle_weight_tonnes > max_weight and hour in restricted_hours:
+        # Create citation
+        ledger = ViolationLedger()
+        timestamp = datetime.now().isoformat()
+        record = ledger.append_violation(
+            vehicle_id_hash=vehicle_id_hash,
+            violation_type='RESTRICTED_ZONE_HEAVY_VEHICLE',
+            zone=zone,
+            timestamp=timestamp,
+            penalty_sar=VIOLATION_PENALTY_SAR,
+        )
+        return {
+            'status': 'Violation',
+            'zone': zone,
+            'hour': hour,
+            'vehicle_weight_tonnes': vehicle_weight_tonnes,
+            'penalty_sar': VIOLATION_PENALTY_SAR,
+            'violation_type': 'RESTRICTED_ZONE_HEAVY_VEHICLE',
+            'block_hash': record['block_hash'],
+            'timestamp': timestamp,
+        }
+
+    return {
+        'status': 'Compliant',
+        'zone': zone,
+        'hour': hour,
+        'vehicle_weight_tonnes': vehicle_weight_tonnes,
+        'reason': 'Vehicle weight within limit or outside restricted hours',
+    }
+
+
+
+
+
+def calculate_evacuation_routes(
+    hazard_zones: List[str],
+    total_vehicles: int,
+    congestion_map: Dict[str, float],
+) -> Dict:
+    """
+    Generate capacity‑aware evacuation routes for multiple hazard zones.
+
+    Allocates vehicles to safe points proportionally to their capacity,
+    finds shortest paths (by zone count) from each hazard zone to each safe point,
+    checks corridor loads against ZONE_ROAD_CAPACITY_VPH, and redistributes
+    if overloaded.
+
+    Parameters
+    ----------
+    hazard_zones : list of zone IDs that are being evacuated.
+    total_vehicles : total number of vehicles fleeing the hazard zones.
+    congestion_map : dict {zone: congestion_score} (used only for tie‑breaking;
+                       currently not used in routing, reserved for future extensions).
+
+    Returns
+    -------
+    dict with keys:
+        hazard_zones, total_vehicles,
+        evacuation_plan: list of dicts (safe_point, route, allocated_vehicles,
+                                        estimated_clearance_mins, corridor_overloaded),
+        recommended_departure_order: list of safe_point names ordered by clearance time.
+    """
+    if not hazard_zones:
+        raise ValueError("hazard_zones must not be empty")
+    if total_vehicles <= 0:
+        raise ValueError("total_vehicles must be positive")
+
+    # 1. Build safe point list
+    safe_points = list(EVACUATION_SAFE_POINTS.items())  # [(name, {'zone':..., 'capacity':...})]
+
+    # 2. BFS to find shortest path (by number of zones) from each hazard to each safe zone
+    def bfs_path(start: str, target: str) -> List[str]:
+        """Return list of zones from start to target (inclusive), or empty if unreachable."""
+        if start == target:
+            return [start]
+        visited = {start}
+        q = deque([(start, [start])])
+        while q:
+            node, path = q.popleft()
+            for neighbor in ZONE_ADJACENCY.get(node, []):
+                if neighbor == target:
+                    return path + [neighbor]
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    q.append((neighbor, path + [neighbor]))
+        return []  # unreachable
+
+    # Pre‑compute paths from each hazard to each safe zone
+    safe_zones = {name: info['zone'] for name, info in EVACUATION_SAFE_POINTS.items()}
+    paths = {}  # (hazard, safe_name) -> list of zones
+    for hazard in hazard_zones:
+        for safe_name, safe_zone in safe_zones.items():
+            path = bfs_path(hazard, safe_zone)
+            if path:
+                paths[(hazard, safe_name)] = path
+
+    # If any hazard has no path to any safe, raise
+    for hazard in hazard_zones:
+        if not any((hazard, sn) in paths for sn, _ in safe_points):
+            raise ValueError(f"No path from hazard zone {hazard} to any safe point.")
+
+    # 3. Allocate vehicles proportionally to safe point capacity
+    total_capacity = sum(info['capacity'] for _, info in safe_points)
+    # target allocation per safe point
+    targets = {}
+    for name, info in safe_points:
+        targets[name] = int(total_vehicles * info['capacity'] / total_capacity)
+    # Ensure sum matches total_vehicles (rounding adjustment)
+    diff = total_vehicles - sum(targets.values())
+    if diff != 0:
+        # Add/remove from the first safe point
+        first_name = safe_points[0][0]
+        targets[first_name] += diff
+
+    # 4. Distribute each safe point's target evenly among hazard zones
+    # We'll create a list of allocations per (hazard, safe_name)
+    allocations = {}  # (hazard, safe_name) -> int
+    for hazard in hazard_zones:
+        for safe_name, target in targets.items():
+            # each hazard gets an equal share of the target
+            share = target // len(hazard_zones)
+            allocations[(hazard, safe_name)] = share
+    # Distribute remainders
+    remainders = {safe_name: targets[safe_name] - sum(allocations[(h, safe_name)] for h in hazard_zones) for safe_name in targets}
+    for hazard in hazard_zones:
+        for safe_name in targets:
+            if remainders[safe_name] > 0:
+                allocations[(hazard, safe_name)] += 1
+                remainders[safe_name] -= 1
+
+    # 5. Determine route per safe point (pick the shortest path among hazard zones)
+    # We'll choose the path with the fewest intermediate zones (tie‑break by lexicographic)
+    safe_routes = {}  # safe_name -> (route, total_allocated)
+    for safe_name, _ in safe_points:
+        best_route = None
+        best_len = float('inf')
+        for hazard in hazard_zones:
+            if (hazard, safe_name) in paths:
+                route = paths[(hazard, safe_name)]
+                if len(route) < best_len:
+                    best_len = len(route)
+                    best_route = route
+        if best_route is None:
+            continue
+        # Total allocated to this safe point from all hazards
+        total_alloc = sum(allocations.get((h, safe_name), 0) for h in hazard_zones)
+        safe_routes[safe_name] = (best_route, total_alloc)
+
+    # 6. Compute corridor loads
+    corridor_load = {}  # zone -> total vehicles passing through
+    for safe_name, (route, alloc) in safe_routes.items():
+        for zone in route:
+            corridor_load[zone] = corridor_load.get(zone, 0) + alloc
+
+    # 7. Initial overload check
+    overloaded_safe = {}
+    for safe_name, (route, alloc) in safe_routes.items():
+        overloaded = any(corridor_load.get(z, 0) > ZONE_ROAD_CAPACITY_VPH for z in route)
+        overloaded_safe[safe_name] = overloaded
+
+    # 8. Redistribute if overloaded (simple iterative reduction)
+    max_iter = 10
+    for _ in range(max_iter):
+        # Find a safe point that is overloaded and has a route
+        overloaded_names = [sn for sn, ov in overloaded_safe.items() if ov]
+        if not overloaded_names:
+            break
+
+        # Pick the overloaded safe point with the largest excess
+        # Compute excess = max(0, corridor_load[zone] - capacity) for each zone in its route
+        excess_list = []
+        for sn in overloaded_names:
+            route, _ = safe_routes[sn]
+            excess = max(0, max(corridor_load.get(z, 0) - ZONE_ROAD_CAPACITY_VPH for z in route))
+            excess_list.append((sn, excess))
+        # Sort by excess descending
+        excess_list.sort(key=lambda x: -x[1])
+        if excess_list[0][1] <= 0:
+            break
+        overloaded_sn, excess = excess_list[0]
+
+        # Find a safe point with spare capacity (target - current allocation) > 0
+        spare = {}
+        for sn, (_, alloc) in safe_routes.items():
+            spare[sn] = targets[sn] - alloc
+        # Exclude overloaded one and those with no spare
+        candidates = [(sn, sp) for sn, sp in spare.items() if sn != overloaded_sn and sp > 0]
+        if not candidates:
+            break
+        candidates.sort(key=lambda x: -x[1])
+        target_sn, spare_cap = candidates[0]
+
+        # Shift excess from overloaded_sn to target_sn, but not more than spare_cap
+        shift = min(excess, spare_cap)
+        # Reduce allocation to overloaded_sn by shift (across all hazard zones proportionally)
+        # We'll reduce from the hazard that has the largest share on that safe point
+        hazard_shares = [(h, allocations.get((h, overloaded_sn), 0)) for h in hazard_zones]
+        hazard_shares.sort(key=lambda x: -x[1])
+        # Subtract from the largest share
+        for h, share in hazard_shares:
+            if share >= shift:
+                allocations[(h, overloaded_sn)] -= shift
+                break
+            else:
+                allocations[(h, overloaded_sn)] = 0
+                shift -= share
+                if shift == 0:
+                    break
+        # Add shift to target_sn, distribute among hazard zones proportionally
+        # Add to the hazard zone with smallest current allocation on that safe point
+        target_shares = [(h, allocations.get((h, target_sn), 0)) for h in hazard_zones]
+        target_shares.sort(key=lambda x: x[1])
+        for h, _ in target_shares:
+            if shift > 0:
+                allocations[(h, target_sn)] = allocations.get((h, target_sn), 0) + shift
+                shift = 0
+                break
+
+        # Recompute safe_routes totals and corridor loads
+        for safe_name, (route, _) in safe_routes.items():
+            total_alloc = sum(allocations.get((h, safe_name), 0) for h in hazard_zones)
+            safe_routes[safe_name] = (route, total_alloc)
+
+        corridor_load = {}
+        for sn, (route, alloc) in safe_routes.items():
+            for zone in route:
+                corridor_load[zone] = corridor_load.get(zone, 0) + alloc
+
+        # Recompute overloaded status
+        for sn, (route, _) in safe_routes.items():
+            overloaded_safe[sn] = any(corridor_load.get(z, 0) > ZONE_ROAD_CAPACITY_VPH for z in route)
+
+    # 9. Build evacuation_plan
+    evacuation_plan = []
+    for safe_name, (route, alloc) in safe_routes.items():
+        # Compute clearance time (minutes) = allocated / capacity * 60
+        clearance_mins = (alloc / ZONE_ROAD_CAPACITY_VPH) * 60 if ZONE_ROAD_CAPACITY_VPH > 0 else 0
+        corridor_overloaded = overloaded_safe.get(safe_name, False)
+        evacuation_plan.append({
+            'safe_point': safe_name,
+            'route': route,
+            'allocated_vehicles': alloc,
+            'estimated_clearance_mins': round(clearance_mins, 1),
+            'corridor_overloaded': corridor_overloaded,
+        })
+
+    # 10. Recommended departure order: sort safe points by clearance time descending
+    recommended_order = sorted(
+        [p['safe_point'] for p in evacuation_plan],
+        key=lambda sn: next(p['estimated_clearance_mins'] for p in evacuation_plan if p['safe_point'] == sn),
+        reverse=True
+    )
+
+    return {
+        'hazard_zones': hazard_zones,
+        'total_vehicles': total_vehicles,
+        'evacuation_plan': evacuation_plan,
+        'recommended_departure_order': recommended_order,
+    }
