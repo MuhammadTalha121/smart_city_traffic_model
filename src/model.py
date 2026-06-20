@@ -9,6 +9,7 @@ import xgboost as xgb
 import joblib
 from typing import Tuple, Dict
 from src.config import CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES, NOISE_BASE_DB, NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS
+from datetime import datetime
 
 
 FEATURE_COLS = [
@@ -1936,3 +1937,130 @@ def predict_parking_occupancy(
         'will_be_full_in_hours': will_be_full_in_hours,
         'status': status,
     }
+
+
+
+
+
+# ==========
+
+def optimize_hyperparameters(X: pd.DataFrame, y: pd.Series) -> Dict:
+    """
+    Run Optuna hyperparameter optimization for XGBoost using cross‑validation.
+
+    Uses HPO_N_TRIALS, HPO_CV_FOLDS, HPO_TIMEOUT_S, HPO_DB_PATH,
+    and HPO_SEARCH_SPACE from config.
+
+    Returns:
+        best_params: dict of best hyperparameters found.
+        best_cv_mae: float, mean CV MAE of the best trial.
+        n_trials_run: int, number of trials actually completed.
+        study_name: str.
+    """
+    import optuna
+    from sklearn.model_selection import cross_val_score
+    from sklearn.metrics import mean_absolute_error, make_scorer
+    import xgboost as xgb
+    from src.config import HPO_N_TRIALS, HPO_CV_FOLDS, HPO_TIMEOUT_S, HPO_DB_PATH, HPO_SEARCH_SPACE
+
+    # Define objective function
+    def objective(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators',
+                                              HPO_SEARCH_SPACE['n_estimators'][0],
+                                              HPO_SEARCH_SPACE['n_estimators'][1]),
+            'max_depth': trial.suggest_int('max_depth',
+                                           HPO_SEARCH_SPACE['max_depth'][0],
+                                           HPO_SEARCH_SPACE['max_depth'][1]),
+            'learning_rate': trial.suggest_float('learning_rate',
+                                                 HPO_SEARCH_SPACE['learning_rate'][0],
+                                                 HPO_SEARCH_SPACE['learning_rate'][1]),
+            'subsample': trial.suggest_float('subsample',
+                                             HPO_SEARCH_SPACE['subsample'][0],
+                                             HPO_SEARCH_SPACE['subsample'][1]),
+            'random_state': 42,
+            'verbosity': 0,
+        }
+        model = xgb.XGBRegressor(**params)
+        # Use negative MAE because Optuna minimizes
+        scorer = make_scorer(mean_absolute_error, greater_is_better=False)
+        scores = cross_val_score(model, X, y, cv=HPO_CV_FOLDS, scoring=scorer)
+        return -scores.mean()  # Optuna minimizes, so return positive MAE
+
+    # Create study with SQLite storage
+    study_name = f"hpo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    storage = f"sqlite:///{HPO_DB_PATH}"
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        direction='minimize',
+        load_if_exists=True,
+    )
+
+    # Run optimization
+    try:
+        study.optimize(objective, n_trials=HPO_N_TRIALS, timeout=HPO_TIMEOUT_S)
+    except Exception as e:
+        # If timeout or other error, we still have best params so far
+        pass
+
+    best_trial = study.best_trial
+    best_params = best_trial.params
+    best_cv_mae = best_trial.value
+
+    return {
+        'best_params': best_params,
+        'best_cv_mae': round(best_cv_mae, 4),
+        'n_trials_run': len(study.trials),
+        'study_name': study_name,
+    }
+
+
+
+
+# ===== HPO tests =====
+
+def test_optimize_hyperparameters_returns_valid_params():
+    """Optimize should return a dict with best_params, best_cv_mae, etc."""
+    from src.model import optimize_hyperparameters
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city="Riyadh", n_days=10)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+
+    result = optimize_hyperparameters(X, y)
+    assert "best_params" in result
+    assert "best_cv_mae" in result
+    assert "n_trials_run" in result
+    assert "study_name" in result
+    assert result["best_cv_mae"] >= 0
+    # Check that best_params are within search space
+    params = result["best_params"]
+    assert 100 <= params["n_estimators"] <= 400
+    assert 3 <= params["max_depth"] <= 8
+    assert 0.01 <= params["learning_rate"] <= 0.3
+    assert 0.6 <= params["subsample"] <= 1.0
+
+
+def test_hpo_params_within_search_space():
+    """Ensure the best params are within the defined bounds."""
+    from src.model import optimize_hyperparameters
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city="Riyadh", n_days=10)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+
+    result = optimize_hyperparameters(X, y)
+    params = result["best_params"]
+    # Check ranges again (redundant, but good)
+    from src.config import HPO_SEARCH_SPACE
+    assert HPO_SEARCH_SPACE["n_estimators"][0] <= params["n_estimators"] <= HPO_SEARCH_SPACE["n_estimators"][1]
+    assert HPO_SEARCH_SPACE["max_depth"][0] <= params["max_depth"] <= HPO_SEARCH_SPACE["max_depth"][1]
+    assert HPO_SEARCH_SPACE["learning_rate"][0] <= params["learning_rate"] <= HPO_SEARCH_SPACE["learning_rate"][1]
+    assert HPO_SEARCH_SPACE["subsample"][0] <= params["subsample"] <= HPO_SEARCH_SPACE["subsample"][1]
