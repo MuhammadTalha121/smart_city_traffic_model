@@ -1016,3 +1016,133 @@ def test_sandstorm_overrides_congestion_message():
     # Clear weather + Critical → critical message
     critical = generate_vms_message('Zone_1', 'Critical', 'clear')
     assert 'CRITICAL' in critical['lines'][0]
+
+
+
+
+
+
+
+# ===== Ledger unit tests =====
+import pytest
+import tempfile
+import os
+import csv
+from src.ledger import ViolationLedger
+
+
+def test_chain_valid_after_multiple_appends(tmp_path):
+    """Append multiple violations and verify chain integrity."""
+    ledger_path = tmp_path / "test_ledger.csv"
+    ledger = ViolationLedger(path=str(ledger_path))
+
+    # Append three violations
+    row1 = ledger.append_violation(
+        vehicle_id_hash="abc123",
+        violation_type="speeding",
+        zone="Zone_1",
+        timestamp="2026-06-19T10:00:00",
+        penalty_sar=150.0,
+    )
+    row2 = ledger.append_violation(
+        vehicle_id_hash="def456",
+        violation_type="red_light",
+        zone="Zone_2",
+        timestamp="2026-06-19T10:05:00",
+        penalty_sar=300.0,
+    )
+    row3 = ledger.append_violation(
+        vehicle_id_hash="ghi789",
+        violation_type="parking",
+        zone="Zone_1",
+        timestamp="2026-06-19T10:10:00",
+        penalty_sar=75.0,
+    )
+
+    # Verify chain
+    report = ledger.verify_chain()
+    assert report["valid"] is True
+    assert report["total_blocks"] == 3
+    assert report["first_invalid_block"] is None
+
+
+def test_tampered_record_fails_verification(tmp_path):
+    """Tamper with a record and ensure verification fails."""
+    ledger_path = tmp_path / "test_ledger.csv"
+    ledger = ViolationLedger(path=str(ledger_path))
+
+    # Append two violations
+    ledger.append_violation(
+        vehicle_id_hash="abc123",
+        violation_type="speeding",
+        zone="Zone_1",
+        timestamp="2026-06-19T10:00:00",
+        penalty_sar=150.0,
+    )
+    ledger.append_violation(
+        vehicle_id_hash="def456",
+        violation_type="red_light",
+        zone="Zone_2",
+        timestamp="2026-06-19T10:05:00",
+        penalty_sar=300.0,
+    )
+
+    # Tamper: change the violation_type of the first record
+    with open(ledger_path, 'r', newline='', encoding='utf-8') as f:
+        rows = list(csv.DictReader(f))
+    rows[0]['violation_type'] = 'tampered'
+    with open(ledger_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    # Verification should fail at block 1 or 2
+    report = ledger.verify_chain()
+    assert report["valid"] is False
+    assert report["total_blocks"] == 2
+    assert report["first_invalid_block"] == 1
+
+
+
+
+
+
+# =====  TelemetryQueue unit tests =====
+
+from src.queue_worker import TelemetryQueue
+import time
+
+def test_queue_enqueues_and_processes_batch():
+    """Verify that enqueued readings are processed by the worker."""
+    queue = TelemetryQueue(maxsize=100, batch_size=2, flush_interval_s=1)
+    # Mock state getter
+    class MockState:
+        model = None
+        feature_cols = []
+        city_dfs = {}
+    def get_state():
+        return MockState()
+    queue.start_worker(get_state)
+
+    # Enqueue a few readings (they will be processed but may fail due to missing model)
+    # We just test that they are taken off the queue.
+    for i in range(5):
+        queue.enqueue({"city": "Riyadh", "zone": "Zone_1", "hour": 10, "vehicle_count": 100, "avg_speed": 50,
+                       "weather": "clear", "road_type": "arterial", "rush_hour": 0, "is_weekend": 0,
+                       "is_late_night": 0, "event": 0, "hour_multiplier": 1.0})
+    # Wait for processing
+    time.sleep(3)
+    # Queue should be empty or have some left (batch_size=2, flush every 1s, so after 3s should have processed at least 4)
+    assert queue.queue_depth() <= 1
+    queue.stop_worker()
+
+def test_queue_drops_when_full():
+    """When queue is full, enqueue should return False."""
+    queue = TelemetryQueue(maxsize=2, batch_size=10, flush_interval_s=10)
+    # Fill queue
+    assert queue.enqueue({"a": 1}) is True
+    assert queue.enqueue({"a": 2}) is True
+    # Third should fail
+    assert queue.enqueue({"a": 3}) is False
+    # Queue depth should be 2
+    assert queue.queue_depth() == 2
