@@ -933,3 +933,33 @@ def test_expired_key_returns_401(client):
     )
     assert response.status_code == 401
 
+
+
+
+
+# ===== Ledger API tests =====
+
+def test_verify_ledger_returns_valid(client):
+    """The /citations/verify-ledger endpoint returns a valid report for an OPERATOR/ADMIN."""
+    response = client.get("/citations/verify-ledger", headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    data = response.json()
+    # It should be valid (empty or not)
+    assert "valid" in data
+    assert "total_blocks" in data
+    assert "first_invalid_block" in data
+
+
+def test_violations_endpoint_returns_list(client):
+    """The /citations/violations endpoint returns a list of violations, optionally filtered."""
+    response = client.get("/citations/violations", headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    data = response.json()
+    assert "violations" in data
+    assert isinstance(data["violations"], list)
+
+    # Test zone filter
+    response = client.get("/citations/violations?zone=Zone_1", headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    data = response.json()
+    assert all(v["zone"] == "Zone_1" for v in data["violations"])
