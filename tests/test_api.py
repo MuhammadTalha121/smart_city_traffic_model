@@ -1,7 +1,9 @@
 import os
+from urllib import response
 import pytest
 from fastapi.testclient import TestClient
-
+import time
+from fastapi.responses import Response
 
 
 
@@ -1245,3 +1247,45 @@ def test_evacuation_returns_valid_plan(client):
     # Allocations should sum to 4000
     total_alloc = sum(p["allocated_vehicles"] for p in data["evacuation_plan"])
     assert total_alloc == 4000
+
+
+
+# =====  Prometheus Metrics Tests =====
+
+def test_metrics_endpoint_returns_200(client):
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    # Accept any version
+    assert "text/plain" in response.headers["content-type"]
+    assert "charset=utf-8" in response.headers["content-type"]
+    assert "api_requests_total" in response.text
+
+def test_request_count_increments_after_predict(client):
+    """Calling /predict must increment the request counter."""
+    # Helper to get count for /predict with status=200
+    def get_predict_200_count(text):
+        lines = [
+            line for line in text.splitlines()
+            if 'api_requests_total{endpoint="/predict",method="POST",status_code="200"' in line
+        ]
+        return float(lines[0].split()[-1]) if lines else 0.0
+
+    # Get initial count for successful /predict requests
+    initial_text = client.get("/metrics").text
+    initial_count = get_predict_200_count(initial_text)
+
+    # Make a prediction – ensure it succeeds
+    post_response = client.post(
+        "/predict",
+        json=VALID_PAYLOAD,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert post_response.status_code == 200, "POST /predict did not return 200"
+
+    # Get final count
+    final_text = client.get("/metrics").text
+    final_count = get_predict_200_count(final_text)
+
+    assert final_count == initial_count + 1.0, (
+        f"Expected {initial_count + 1.0}, got {final_count}."
+    )
