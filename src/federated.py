@@ -17,7 +17,7 @@ def extract_shareable_params(model) -> dict:
         'n_estimators_used': params.get('n_estimators', 200),
         'training_r2'      : round(r2, 4),
         'city'             : 'Riyadh',
-        'timestamp'        : datetime.datetime.utcnow().isoformat(),
+        'timestamp': datetime.datetime.now(datetime.UTC).isoformat(),
     }
 
 
@@ -55,7 +55,7 @@ def simulate_aggregation(city_params: list) -> dict:
         'aggregated_params': agg,
         'source_cities'    : [p.get('city', 'unknown') for p in city_params],
         'avg_training_r2'  : round(avg_r2, 4),
-        'timestamp'        : datetime.datetime.utcnow().isoformat(),
+        'timestamp': datetime.datetime.now(datetime.UTC).isoformat(),
     }
 
 
