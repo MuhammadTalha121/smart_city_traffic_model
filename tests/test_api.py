@@ -1343,3 +1343,8 @@ def test_drt_request_shuttle_returns_trip(client):
 
 
 
+def test_reports_latest_requires_admin_role(client):
+    from src.auth import create_key
+    ro_key = create_key('READ_ONLY', 'all')
+    response = client.get('/reports/latest', headers={'X-API-Key': ro_key})
+    assert response.status_code == 403

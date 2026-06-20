@@ -16,3 +16,4 @@ statsmodels>=0.14.0
 requests>=2.31.0
 optuna>=3.0.0
 prometheus-client>=0.17.0
+reportlab>=4.0.0
