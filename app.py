@@ -20,18 +20,19 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request, HTTPException, Depends, Query
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
-
+import time
 from src.queue_worker import TelemetryQueue
 
-
+from fastapi.responses import Response
 
 from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB,
                          NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH, TELEMETRY_QUEUE_MAX_SIZE,
-    TELEMETRY_BATCH_SIZE,
-    TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS,)
+                        TELEMETRY_BATCH_SIZE,
+                        TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS, LATENCY_SLA_THRESHOLD_MS, METRICS_ENDPOINT)
 
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
@@ -316,6 +317,35 @@ app.add_middleware(
 #     }
 # }
 
+
+
+# ===== Prometheus Metrics =====
+REQUEST_COUNT = Counter(
+    'api_requests_total',
+    'Total API requests',
+    ['endpoint', 'method', 'status_code']
+)
+
+REQUEST_LATENCY = Histogram(
+    'api_request_duration_seconds',
+    'API request latency in seconds',
+    ['endpoint'],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+)
+
+DRIFT_SCORE_GAUGE = Gauge(
+    'model_drift_score',
+    'Current model drift score'
+)
+
+QUEUE_DEPTH_GAUGE = Gauge(
+    'telemetry_queue_depth',
+    'Current telemetry queue depth'
+)
+
+
+
+
 @app.middleware("http")
 async def usage_logging_middleware(request: Request, call_next):
     """
@@ -349,6 +379,24 @@ async def usage_logging_middleware(request: Request, call_next):
     }])
     write_header = not os.path.exists(log_path)
     row.to_csv(log_path, mode="a", header=write_header, index=False)
+
+    return response
+
+
+
+
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    endpoint = request.url.path
+    method = request.method
+
+    start = time.time()
+    response = await call_next(request)
+    duration = time.time() - start
+
+    REQUEST_COUNT.labels(endpoint=endpoint, method=method, status_code=response.status_code).inc()
+    REQUEST_LATENCY.labels(endpoint=endpoint).observe(duration)
 
     return response
 
@@ -482,6 +530,7 @@ def set_data_source(
 def pipeline_status(auth: Dict = Depends(require_admin)):
     """Return current drift score and last retrain timestamp."""
     drift_score    = compute_drift_score()
+    DRIFT_SCORE_GAUGE.set(drift_score) 
     next_scheduled = "03:00 daily"
 
     return {
@@ -2235,6 +2284,9 @@ async def crosswalk_timing(
 
 
 
+
+
+
 @app.get("/infrastructure/heat-risk", tags=["infrastructure"])
 @limiter.limit("20/minute")
 async def heat_risk(
@@ -2242,47 +2294,40 @@ async def heat_risk(
     city: str = "Riyadh",
     _key: str = Depends(require_api_key),
 ):
-    """
-    Estimate asphalt surface temperature and thermal risk for all zones.
-    Uses live air temperature from WeatherAdapter and zone road_type from data.
-    """
     # Validate city exists
     if city not in app.state.city_dfs:
         raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
 
-    # Fetch weather data
+    # Fetch weather data – ensure scalars
     from src.adapters import get_adapter
     weather_adapter = get_adapter('weather')
     try:
         weather_data = weather_adapter.fetch(city)
-        # Ensure we extract scalar values (handle both dict and Series)
-        if hasattr(weather_data, 'iloc'):
-            # It's a pandas Series/DataFrame – take the first row
+        # Extract scalars robustly
+        if hasattr(weather_data, 'iloc'):  # pandas Series/DataFrame
+            air_temp = float(weather_data['temperature_celsius'].iloc[0]) if 'temperature_celsius' in weather_data else 35.0
+            weather_condition = str(weather_data['weather'].iloc[0]) if 'weather' in weather_data else 'clear'
+        else:  # dict
             air_temp = float(weather_data.get('temperature_celsius', 35.0))
             weather_condition = str(weather_data.get('weather', 'clear'))
-        else:
-            # It's a dict
-            air_temp = float(weather_data.get('temperature_celsius', 35.0))
-            weather_condition = str(weather_data.get('weather', 'clear'))
-    except Exception as e:
-        # Fallback if weather adapter fails
+    except Exception:
         air_temp = 35.0
         weather_condition = 'clear'
 
     df = app.state.city_dfs[city]
     zones = sorted(df['zone'].unique())
-
     result = {}
+
     for zone in zones:
-        # Get the latest row for this zone to determine road_type
         zone_rows = df[df['zone'] == zone].sort_values('timestamp')
         if len(zone_rows) == 0:
             continue
         latest = zone_rows.iloc[-1]
-        # Ensure road_type is a string scalar
         road_type = latest.get('road_type', 'arterial')
-        if hasattr(road_type, 'iloc'):  # if it's a Series, take first value
+        # Ensure road_type is a scalar string
+        if hasattr(road_type, 'iloc'):
             road_type = road_type.iloc[0]
+        road_type = str(road_type)
 
         risk = compute_thermal_risk(
             air_temp_celsius=air_temp,
@@ -2297,62 +2342,6 @@ async def heat_risk(
         "weather": weather_condition,
         "zones": result,
     }
-
-
-
-@app.get("/infrastructure/heat-risk", tags=["infrastructure"])
-@limiter.limit("20/minute")
-async def heat_risk(
-    request: Request,
-    city: str = "Riyadh",
-    _key: str = Depends(require_api_key),
-):
-    """
-    Estimate asphalt surface temperature and thermal risk for all zones.
-    Uses live air temperature from WeatherAdapter and zone road_type from data.
-    """
-    # Validate city exists
-    if city not in app.state.city_dfs:
-        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
-
-    # Fetch weather data
-    from src.adapters import get_adapter
-    weather_adapter = get_adapter('weather')
-    try:
-        weather_data = weather_adapter.fetch(city)
-        air_temp = weather_data.get('temperature_celsius', 35.0)  # fallback
-        weather_condition = weather_data.get('weather', 'clear')
-    except Exception as e:
-        # Fallback if weather adapter fails
-        air_temp = 35.0
-        weather_condition = 'clear'
-
-    df = app.state.city_dfs[city]
-    zones = sorted(df['zone'].unique())
-
-    result = {}
-    for zone in zones:
-        # Get the latest row for this zone to determine road_type
-        zone_rows = df[df['zone'] == zone].sort_values('timestamp')
-        if len(zone_rows) == 0:
-            continue
-        latest = zone_rows.iloc[-1]
-        road_type = latest.get('road_type', 'arterial')
-
-        risk = compute_thermal_risk(
-            air_temp_celsius=air_temp,
-            weather=weather_condition,
-            road_type=road_type,
-        )
-        result[zone] = risk
-
-    return {
-        "city": city,
-        "air_temp_celsius": air_temp,
-        "weather": weather_condition,
-        "zones": result,
-    }
-
 
 
 
@@ -2617,6 +2606,8 @@ async def telemetry_status(
     telemetry_queue = getattr(app.state, 'telemetry_queue', None)
     if telemetry_queue is None:
         raise HTTPException(status_code=503, detail="Telemetry queue not initialized")
+    
+    QUEUE_DEPTH_GAUGE.set(telemetry_queue.queue_depth())
 
     return {
         "queue_depth": telemetry_queue.queue_depth(),
@@ -3103,6 +3094,15 @@ async def emergency_evacuate(
 
     plan['city'] = payload.city
     return plan
+
+
+
+
+@app.get(METRICS_ENDPOINT, tags=["monitoring"])
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 
 
 
