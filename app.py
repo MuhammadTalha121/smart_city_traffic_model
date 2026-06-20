@@ -1758,6 +1758,24 @@ def reports_weekly(
 
 
 
+@app.get('/reports/latest', tags=['reports'])
+def reports_latest(
+    city: str = 'Riyadh',
+    auth: Dict = Depends(require_admin),
+):
+    """Generate and return the latest weekly PDF report. Admin only. Local file only."""
+    from src.reporter import generate_weekly_report_pdf
+
+    output_path = f'reports/weekly_report_{city.lower()}.pdf'
+    generate_weekly_report_pdf(city=city, output_path=output_path)
+    return FileResponse(
+        path=output_path,
+        media_type='application/pdf',
+        filename=f'traffic_report_{city.lower()}_weekly.pdf',
+    )
+
+
+
 
 @app.get("/mobility/last-mile", tags=["mobility"])
 def last_mile_efficiency(
