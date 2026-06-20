@@ -264,3 +264,128 @@ def generate_weekly_report(city: str = 'Riyadh',
 
     print(f'[Reporter] Weekly report written to {output_path}')
     return output_path
+
+
+def _safety_hotspots_from_log(pred_df: pd.DataFrame, top_n: int = 3) -> list:
+    """Top N critical-congestion rows from predictions_log, for the PDF report."""
+    if pred_df.empty or 'congestion_level' not in pred_df.columns:
+        return []
+    critical = pred_df[pred_df['congestion_level'] == 'Critical'].copy()
+    if critical.empty:
+        return []
+    critical = critical.sort_values('congestion_score', ascending=False).head(top_n)
+    return critical.to_dict(orient='records')
+
+
+def generate_weekly_report_pdf(city: str = 'Riyadh',
+                                output_path: str = 'reports/weekly_report.pdf') -> str:
+    """
+    Local, no-cloud-dependency weekly PDF report for council/executive use.
+
+    Pulls the same sources as generate_weekly_report() (predictions_log.csv,
+    pipeline_log.csv, usage_log.csv) and renders a council-ready PDF instead
+    of HTML. No SMTP, no cloud dependency — written to local disk only.
+    """
+    import os
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    )
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+    from src.config import GREEN_INITIATIVE_CO2_THRESHOLD_KG
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+    days = 7
+    pred_df = _load_predictions(city, days)
+    pipe_df = _load_pipeline_log(days)
+    use_df = _load_usage_log(days)
+
+    total_predictions = len(pred_df)
+    avg_congestion = (
+        round(float(pred_df['congestion_score'].mean()), 3)
+        if not pred_df.empty and 'congestion_score' in pred_df.columns else 0.0
+    )
+    total_co2_tonnes = (
+        round(pred_df['co2_kg'].sum() / 1000, 2)
+        if not pred_df.empty and 'co2_kg' in pred_df.columns else 0.0
+    )
+    weekly_co2_kg = total_co2_tonnes * 1000
+    green_compliant = weekly_co2_kg <= GREEN_INITIATIVE_CO2_THRESHOLD_KG * 24 * 7
+    drift_score = (
+        round(float(pipe_df['drift_score'].iloc[-1]), 3)
+        if not pipe_df.empty and 'drift_score' in pipe_df.columns else 1.0
+    )
+    anomaly_count = (
+        int((pred_df['congestion_level'] == 'Critical').sum())
+        if not pred_df.empty and 'congestion_level' in pred_df.columns else 0
+    )
+    hotspots = _safety_hotspots_from_log(pred_df, top_n=3)
+
+    summary_line = (
+        f"{city} logged {total_predictions} predictions this week with an average "
+        f"congestion score of {avg_congestion}. {anomaly_count} critical event(s) "
+        f"were recorded. Estimated CO2 output was {total_co2_tonnes} tonnes "
+        f"({'within' if green_compliant else 'EXCEEDING'} Saudi Green Initiative "
+        f"thresholds). Model drift score: {drift_score} "
+        f"({'stable' if drift_score < 1.3 else 'retrain triggered'})."
+    )
+
+    doc = SimpleDocTemplate(output_path, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph(f"Smart City Traffic Intelligence — Weekly Report", styles['Title']))
+    story.append(Paragraph(f"{city} · Past {days} days", styles['Normal']))
+    story.append(Spacer(1, 16))
+
+    story.append(Paragraph("Executive Summary", styles['Heading2']))
+    story.append(Paragraph(summary_line, styles['Normal']))
+    story.append(Spacer(1, 12))
+
+    kpi_table = Table([
+        ['Total Predictions', 'Avg Congestion', 'Critical Events', 'CO2 (tonnes)', 'Drift Score'],
+        [str(total_predictions), str(avg_congestion), str(anomaly_count),
+         str(total_co2_tonnes), str(drift_score)],
+    ])
+    kpi_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1B4F72')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    ]))
+    story.append(kpi_table)
+    story.append(Spacer(1, 16))
+
+    story.append(Paragraph("Top Safety Hotspots (Critical Congestion)", styles['Heading2']))
+    if hotspots:
+        rows = [['Timestamp', 'Zone', 'Score', 'Weather']]
+        for h in hotspots:
+            rows.append([
+                str(h.get('timestamp', '')),
+                str(h.get('zone', '')),
+                f"{h.get('congestion_score', 0):.3f}",
+                str(h.get('weather', '')),
+            ])
+        hotspot_table = Table(rows)
+        hotspot_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1B4F72')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ]))
+        story.append(hotspot_table)
+    else:
+        story.append(Paragraph("No critical events recorded this period.", styles['Normal']))
+
+    story.append(Spacer(1, 16))
+    story.append(Paragraph("Saudi Green Initiative Compliance", styles['Heading2']))
+    story.append(Paragraph(
+        f"Weekly CO2 output: {total_co2_tonnes} tonnes. Status: "
+        f"{'COMPLIANT' if green_compliant else 'EXCEEDS THRESHOLD'}.",
+        styles['Normal']
+    ))
+
+    doc.build(story)
+    print(f"[Reporter] Weekly PDF report written to {output_path}")
+    return output_path
