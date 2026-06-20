@@ -2593,3 +2593,72 @@ def calculate_evacuation_routes(
         'evacuation_plan': evacuation_plan,
         'recommended_departure_order': recommended_order,
     }
+
+
+
+
+def train_xgboost_quantile(X: pd.DataFrame, y: pd.Series,
+                            quantiles: list = [0.1, 0.5, 0.9]) -> Dict:
+    """
+    Train one XGBoost quantile model per requested quantile.
+    Additive to train_xgboost() — does not replace it or its callers.
+    Requires xgboost>=2.0 (already pinned in requirements.txt) for
+    objective='reg:quantileerror'.
+    """
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    models = {}
+    for q in quantiles:
+        model = xgb.XGBRegressor(
+            objective      = 'reg:quantileerror',
+            quantile_alpha = q,
+            n_estimators   = 200,
+            max_depth      = 5,
+            learning_rate  = 0.1,
+            subsample      = 0.8,
+            random_state   = 42,
+            verbosity      = 0,
+        )
+        model.fit(X_train, y_train)
+        key = {0.1: 'q10_model', 0.5: 'q50_model', 0.9: 'q90_model'}.get(q, f'q{int(q*100)}_model')
+        models[key] = model
+
+    return models
+
+
+def predict_with_confidence(quantile_models: Dict, X_row: pd.DataFrame) -> Dict:
+    """
+    Returns congestion_score (= q50), confidence_low, confidence_high,
+    confidence_width, confidence_level.
+
+    Independently-trained quantile models can "cross" (q90 < q50 for a
+    given row) since there's no monotonicity constraint between them.
+    When that happens, the interval is widened to include the point
+    estimate rather than reporting a contradictory bound.
+    """
+    from src.config import CONFIDENCE_WIDTH_THRESHOLDS
+
+    q10 = float(np.clip(quantile_models['q10_model'].predict(X_row)[0], 0, 1))
+    q50 = float(np.clip(quantile_models['q50_model'].predict(X_row)[0], 0, 1))
+    q90 = float(np.clip(quantile_models['q90_model'].predict(X_row)[0], 0, 1))
+
+    low  = min(q10, q50, q90)
+    high = max(q10, q50, q90)
+    width = round(high - low, 4)
+
+    if width <= CONFIDENCE_WIDTH_THRESHOLDS['High']:
+        level = 'High'
+    elif width <= CONFIDENCE_WIDTH_THRESHOLDS['Medium']:
+        level = 'Medium'
+    else:
+        level = 'Low'
+
+    return {
+        'congestion_score'  : round(q50, 4),
+        'confidence_low'    : round(low, 4),
+        'confidence_high'   : round(high, 4),
+        'confidence_width'  : width,
+        'confidence_level'  : level,
+    }

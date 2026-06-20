@@ -50,7 +50,7 @@ from src.model import (
     recommend_tidal_flow, compute_crosswalk_timing, compute_thermal_risk,
     compute_thermal_risk, compute_thermal_risk, calculate_egress_plan,
     generate_vms_message, calculate_pareto_routes, estimate_air_quality,
-    validate_freight_entry, calculate_evacuation_routes,
+    validate_freight_entry, calculate_evacuation_routes, train_xgboost_quantile, predict_with_confidence,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -245,7 +245,8 @@ async def lifespan(app: FastAPI):
     # Train on Riyadh as primary model
     X, y, feature_cols = prepare_features(city_dfs["Riyadh"])
     model, _, _        = train_xgboost(X, y)
-
+    quantile_models = train_xgboost_quantile(X, y)
+    app.state.quantile_models = quantile_models
     app.state.df           = city_dfs["Riyadh"]   # default city for existing endpoints
     app.state.city_dfs     = city_dfs
     app.state.model        = model
@@ -679,6 +680,13 @@ def predict(
     result["prediction_interval"] = prediction_interval
     result["explanation"]   = explanation["top_factors"]
     result["plain_english"] = explanation["plain_english"]
+
+    confidence = predict_with_confidence(app.state.quantile_models, X_row)
+    result["confidence"] = {
+        "confidence_low"  : confidence["confidence_low"],
+        "confidence_high" : confidence["confidence_high"],
+        "confidence_level": confidence["confidence_level"],
+    }
 
     result["intervention"] = get_intervention(
         zone               = p["zone"],

@@ -1348,3 +1348,14 @@ def test_reports_latest_requires_admin_role(client):
     ro_key = create_key('READ_ONLY', 'all')
     response = client.get('/reports/latest', headers={'X-API-Key': ro_key})
     assert response.status_code == 403
+
+
+
+
+def test_predict_endpoint_includes_confidence_object(client):
+    response = client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    data = response.json()
+    assert "confidence" in data
+    assert "confidence_level" in data["confidence"]
+    assert data["confidence"]["confidence_level"] in ("High", "Medium", "Low")

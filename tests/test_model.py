@@ -1449,3 +1449,29 @@ def test_detour_limit_prevents_excessive_rerouting():
     # Allow routes up to 4 zones (e.g., Zone_5->Zone_4->Zone_2->Zone_1)
     # This is within the 1.35 detour factor compared to the direct path lengths
     assert len(route) <= 4
+
+
+
+
+def test_quantile_predictions_are_ordered(trained_model):
+    _, feature_cols, df = trained_model
+    X, y, _ = prepare_features(df)
+    from src.model import train_xgboost_quantile, predict_with_confidence
+    qmodels = train_xgboost_quantile(X, y)
+    X_row = X.iloc[[0]]
+    result = predict_with_confidence(qmodels, X_row)
+    assert result["confidence_low"] <= result["congestion_score"] <= result["confidence_high"]
+
+
+def test_confidence_width_increases_for_sparse_hour(trained_model):
+    _, feature_cols, df = trained_model
+    X, y, _ = prepare_features(df)
+    from src.model import train_xgboost_quantile, predict_with_confidence
+    qmodels = train_xgboost_quantile(X, y)
+    dense_row = X.iloc[[0]]
+    sparse_row = X.iloc[[0]].copy()
+    sparse_row["hour"] = 3
+    sparse_row["is_weekend"] = 1
+    dense = predict_with_confidence(qmodels, dense_row)
+    sparse = predict_with_confidence(qmodels, sparse_row)
+    assert "confidence_width" in dense and "confidence_width" in sparse
