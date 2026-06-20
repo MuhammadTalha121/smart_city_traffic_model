@@ -452,3 +452,14 @@ HASH_ALGORITHM = 'sha256'
 TELEMETRY_QUEUE_MAX_SIZE   = 10000
 TELEMETRY_BATCH_SIZE       = 50
 TELEMETRY_FLUSH_INTERVAL_S = 5
+
+
+
+# =====  =====
+PARKING_HUBS = {
+    'Gar_Olaya': {'capacity': 1500, 'zone': 'Zone_1'},
+    'Gar_KAFD': {'capacity': 2500, 'zone': 'Zone_2'},
+    'Gar_Tahlia': {'capacity': 800, 'zone': 'Zone_3'},
+}
+PARKING_OCCUPANCY_WARNING = 0.85
+PARKING_OCCUPANCY_CRITICAL = 0.95
