@@ -1010,3 +1010,95 @@ def test_parking_routing_recommendation_returns_garage(client):
     from src.config import PARKING_HUBS
     # Zone_1 garages: Gar_Olaya, so we expect that one
     assert data["recommended_garage"] == "Gar_Olaya"
+
+
+
+
+
+
+
+
+# ===== Edge Simulation API tests =====
+
+def test_edge_cabinet_status_returns_list(client):
+    """GET /edge/cabinet-status returns status for all cabinets."""
+    response = client.get(
+        "/edge/cabinet-status?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "cabinets" in data
+    assert isinstance(data["cabinets"], list)
+    # Should have at least 5 zones
+    assert len(data["cabinets"]) >= 5
+    for c in data["cabinets"]:
+        assert "zone_id" in c
+        assert "online" in c
+        assert "mode" in c
+        assert "local_queue_len" in c
+
+
+def test_edge_simulation_go_offline_returns_failover_plan(client):
+    """POST /edge/simulation with go_offline returns a failover plan."""
+    response = client.post(
+        "/edge/simulation",
+        json={"action": "go_offline", "zone_id": "Zone_1"},
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "go_offline"
+    assert "result" in data
+    result = data["result"]
+    assert result["online"] is False
+    assert "failover_plan" in result
+    assert "main_green_s" in result["failover_plan"]
+
+    # Also test restore
+    response = client.post(
+        "/edge/simulation",
+        json={"action": "restore", "zone_id": "Zone_1"},
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["result"]["online"] is True
+
+
+def test_edge_p2p_coordination_adjusts_for_neighbor_queue(client):
+    """When a neighbor queue is high, p2p coordination adjusts phases."""
+    # First set a neighbor queue
+    response = client.post(
+        "/edge/simulation",
+        json={
+            "action": "status",
+            "zone_id": "Zone_1",
+            "neighbor_queues": {"Zone_2": 60}
+        },
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "p2p_coordination" in data
+    p2p = data["p2p_coordination"]
+    # The main green should be reduced (default 40, reduced to 30)
+    assert p2p["adjusted_phases"]["main_green_s"] == 30
+
+
+
+
+# =====  HPO API tests =====
+
+def test_hpo_history_endpoint_returns_list(client):
+    """GET /pipeline/hpo-history should return a list of HPO runs (admin only)."""
+    # It may be empty if no HPO run, but should return 200 and proper structure.
+    response = client.get(
+        "/pipeline/hpo-history",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "hpo_runs" in data
+    assert "total" in data
+    assert isinstance(data["hpo_runs"], list)
