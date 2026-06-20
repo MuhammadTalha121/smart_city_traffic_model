@@ -2,6 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from datetime import datetime
+
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
     prepare_features, train_xgboost, predict_single, congestion_level,
@@ -1185,3 +1186,82 @@ def test_routing_recommends_least_full_garage():
     # Expect KAFD to be better
     assert best == "Gar_KAFD"
     assert forecasts[best]["current_fill_rate"] < forecasts["Gar_Olaya"]["current_fill_rate"]
+
+
+
+
+
+# ===== Edge Simulation unit tests =====
+
+from src.edge_simulation import EdgeCabinetSimulator
+
+def test_heartbeat_loss_returns_failover_plan():
+    """When heartbeat is lost, a failover plan is returned and online becomes False."""
+    cab = EdgeCabinetSimulator("Zone_1", ["Zone_2"])
+    assert cab.online is True
+    result = cab.simulate_heartbeat_loss()
+    assert cab.online is False
+    assert result["online"] is False
+    assert "failover_plan" in result
+    assert result["failover_plan"]["main_green_s"] == 40
+
+def test_p2p_coordination_adjusts_for_neighbor_queue():
+    """When a neighbor queue > 50, main green is reduced."""
+    cab = EdgeCabinetSimulator("Zone_1", ["Zone_2"])
+    # No overload: normal phases
+    normal = cab.compute_p2p_coordination({"Zone_2": 10})
+    assert normal["adjusted_phases"]["main_green_s"] == 40
+
+    # Overload: main green reduced
+    overload = cab.compute_p2p_coordination({"Zone_2": 60})
+    assert overload["adjusted_phases"]["main_green_s"] == 30
+
+
+
+
+# ===== HPO unit tests =====
+
+def test_optimize_hyperparameters_returns_valid_params():
+    """Optimize should return a dict with best_params, best_cv_mae, etc."""
+    from src.model import optimize_hyperparameters
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city="Riyadh", n_days=10)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+
+    result = optimize_hyperparameters(X, y)
+    assert "best_params" in result
+    assert "best_cv_mae" in result
+    assert "n_trials_run" in result
+    assert "study_name" in result
+    assert result["best_cv_mae"] >= 0
+    # Check that best_params are within search space
+    params = result["best_params"]
+    assert 100 <= params["n_estimators"] <= 400
+    assert 3 <= params["max_depth"] <= 8
+    assert 0.01 <= params["learning_rate"] <= 0.3
+    assert 0.6 <= params["subsample"] <= 1.0
+
+
+def test_hpo_params_within_search_space():
+    """Ensure the best params are within the defined bounds."""
+    from src.model import optimize_hyperparameters
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city="Riyadh", n_days=10)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+
+    result = optimize_hyperparameters(X, y)
+    params = result["best_params"]
+    # Check ranges again (redundant, but good)
+    from src.config import HPO_SEARCH_SPACE
+    assert HPO_SEARCH_SPACE["n_estimators"][0] <= params["n_estimators"] <= HPO_SEARCH_SPACE["n_estimators"][1]
+    assert HPO_SEARCH_SPACE["max_depth"][0] <= params["max_depth"] <= HPO_SEARCH_SPACE["max_depth"][1]
+    assert HPO_SEARCH_SPACE["learning_rate"][0] <= params["learning_rate"] <= HPO_SEARCH_SPACE["learning_rate"][1]
+    assert HPO_SEARCH_SPACE["subsample"][0] <= params["subsample"] <= HPO_SEARCH_SPACE["subsample"][1]
