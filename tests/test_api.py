@@ -963,3 +963,50 @@ def test_violations_endpoint_returns_list(client):
     assert response.status_code == 200
     data = response.json()
     assert all(v["zone"] == "Zone_1" for v in data["violations"])
+
+
+
+
+
+# =====  Parking API tests =====
+
+def test_parking_occupancy_forecast_returns_garages(client):
+    """GET /parking/occupancy-forecast returns a list of garages with forecasts."""
+    response = client.get(
+        "/parking/occupancy-forecast?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "city" in data
+    assert "garages" in data
+    assert isinstance(data["garages"], list)
+    # Should have at least the configured garages
+    from src.config import PARKING_HUBS
+    assert len(data["garages"]) == len(PARKING_HUBS)
+    for g in data["garages"]:
+        assert "garage_id" in g
+        assert "forecast_1h" in g
+        assert "forecast_2h" in g
+        assert "forecast_3h" in g
+        assert "current_fill_rate" in g
+        assert "status" in g
+        assert 0.0 <= g["forecast_1h"] <= 1.0
+
+
+def test_parking_routing_recommendation_returns_garage(client):
+    """GET /parking/routing-recommendation returns the best garage for a zone."""
+    response = client.get(
+        "/parking/routing-recommendation?zone=Zone_1&city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "recommended_garage" in data
+    assert "garage_zone" in data
+    assert "current_fill_rate" in data
+    assert "available_capacity" in data
+    # The recommended garage should be in Zone_1 (since there are garages there)
+    from src.config import PARKING_HUBS
+    # Zone_1 garages: Gar_Olaya, so we expect that one
+    assert data["recommended_garage"] == "Gar_Olaya"
