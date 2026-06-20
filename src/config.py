@@ -488,3 +488,51 @@ HPO_SEARCH_SPACE  = {
     'learning_rate': (0.01, 0.3),
     'subsample'    : (0.6, 1.0),
 }
+
+
+
+# ==========
+PARETO_DEFAULT_WEIGHTS = {
+    'time_weight': 0.40,
+    'emission_weight': 0.30,
+    'cost_weight': 0.30,
+}
+
+
+
+# ==========
+PM25_FACTOR_G_PER_VEHICLE_KM  = 0.015
+NOX_FACTOR_G_PER_VEHICLE_KM   = 0.085
+ZONE_ROAD_LENGTH_KM           = 0.5
+WIND_DISPERSION_FACTOR        = 0.70
+AQI_THRESHOLDS = {
+    'Good'      : 12.0,
+    'Moderate'  : 35.4,
+    'Unhealthy' : 55.4,
+    'Hazardous' : 150.4,
+}
+
+
+# ===== =====
+GEOFENCED_RESTRICTED_ZONES = {
+    'Zone_1': {'max_weight_tonnes': 5.0,
+               'restricted_hours': list(range(7, 22))},
+    'Zone_3': {'max_weight_tonnes': 3.5,
+               'restricted_hours': list(range(7, 10)) +
+                                   list(range(12, 14)) +
+                                   list(range(17, 20))},
+}
+HEAVY_VEHICLE_WEIGHT_LIMIT_TONNES = 5.0
+VIOLATION_PENALTY_SAR             = 1000.0
+PRAYER_TIME_RESTRICTIONS          = FRIDAY_PRAYER_HOURS   # reuse existing constant
+
+
+
+
+
+# =====  Evacuation Routing =====
+EVACUATION_SAFE_POINTS = {
+    'Safe_North': {'zone': 'Zone_5', 'capacity': 5000},
+    'Safe_South': {'zone': 'Zone_4', 'capacity': 3000},
+}
+ZONE_ROAD_CAPACITY_VPH = 1800  # vehicles per hour per zone
