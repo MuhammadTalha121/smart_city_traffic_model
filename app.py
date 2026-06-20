@@ -3,7 +3,7 @@ import csv
 from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from typing import Dict
+from typing import Dict, List, Tuple, Optional
 import pandas as pd
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
@@ -45,7 +45,8 @@ from src.model import (
     compute_cooperative_route, predict_ev_charger_demand, compute_vsl_limit,
     recommend_tidal_flow, compute_crosswalk_timing, compute_thermal_risk,
     compute_thermal_risk, compute_thermal_risk, calculate_egress_plan,
-    generate_vms_message,
+    generate_vms_message, calculate_pareto_routes, estimate_air_quality,
+    validate_freight_entry, calculate_evacuation_routes,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -2853,6 +2854,247 @@ async def hpo_history(
         # If no study exists, return empty
         return {"hpo_runs": [], "total": 0, "error": str(e)}
 
+
+
+
+
+# ===== Pareto-Optimal Multi-Criteria Routing =====
+
+class ParetoRouteRequest(BaseModel):
+    city: str = Field("Riyadh")
+    origin_zone: str = Field(..., description="Starting zone")
+    destination_zone: str = Field(..., description="Destination zone")
+    time_weight: Optional[float] = Field(None, ge=0, le=1)
+    emission_weight: Optional[float] = Field(None, ge=0, le=1)
+    cost_weight: Optional[float] = Field(None, ge=0, le=1)
+
+@app.post("/routing/pareto-recommendations", tags=["routing"])
+@limiter.limit("20/minute")
+async def pareto_recommendations(
+    request: Request,
+    payload: ParetoRouteRequest,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return Pareto-optimal route recommendations balancing time, CO2, and toll cost.
+    """
+    _assert_city_permitted(auth, payload.city)
+
+    df = app.state.city_dfs.get(payload.city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{payload.city}' not found.")
+
+    # Build congestion map from latest zone scores
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+    congestion_map = {
+        str(row['zone']): float(row['congestion_score'])
+        for _, row in latest.iterrows()
+    }
+
+    if payload.origin_zone not in congestion_map:
+        raise HTTPException(status_code=422, detail=f"Unknown origin_zone: {payload.origin_zone}")
+    if payload.destination_zone not in congestion_map:
+        raise HTTPException(status_code=422, detail=f"Unknown destination_zone: {payload.destination_zone}")
+
+    # Prepare weights
+    weights = {}
+    if payload.time_weight is not None:
+        weights['time_weight'] = payload.time_weight
+    if payload.emission_weight is not None:
+        weights['emission_weight'] = payload.emission_weight
+    if payload.cost_weight is not None:
+        weights['cost_weight'] = payload.cost_weight
+
+    # Ensure weights sum to 1 if any provided
+    if weights:
+        total = sum(weights.values())
+        if total != 0:
+            weights = {k: v/total for k, v in weights.items()}
+
+    result = calculate_pareto_routes(
+        origin_zone=payload.origin_zone,
+        destination_zone=payload.destination_zone,
+        congestion_map=congestion_map,
+        weights=weights if weights else None,
+    )
+    result['city'] = payload.city
+    return result
+
+
+
+
+
+
+
+# ===== Air Quality Index =====
+
+@app.get("/environment/air-quality", tags=["environment"])
+@limiter.limit("20/minute")
+async def air_quality(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Estimate PM2.5 and NOx concentrations per zone.
+    Uses live wind speed from WeatherAdapter and current traffic data.
+    """
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Fetch wind speed from WeatherAdapter
+    try:
+        weather_df = get_adapter("weather").fetch(city)
+        wind_speed = float(weather_df.get('wind_speed', 10.0))
+        weather_condition = str(weather_df.get('weather', 'clear'))
+    except Exception:
+        wind_speed = 10.0
+        weather_condition = 'clear'
+
+    # Get latest row per zone
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+
+    results = []
+    for _, row in latest.iterrows():
+        vc = float(row.get('vehicle_count', 100))
+        avg_speed = float(row.get('avg_speed', 60))
+        weather = str(row.get('weather', weather_condition))
+
+        aq = estimate_air_quality(
+            vehicle_count=vc,
+            avg_speed=avg_speed,
+            wind_speed_kmh=wind_speed,
+            weather=weather,
+        )
+        aq['zone'] = str(row['zone'])
+        results.append(aq)
+
+    # Sort worst to best by PM2.5 concentration
+    results.sort(key=lambda x: x['pm25_concentration'], reverse=True)
+
+    return {
+        "city": city,
+        "wind_speed_kmh": round(wind_speed, 1),
+        "weather": weather_condition,
+        "zones": results,
+    }
+
+
+
+
+# ===== Freight Geofencing =====
+
+class FreightValidationRequest(BaseModel):
+    zone: str = Field(..., description="Zone identifier")
+    hour: int = Field(..., ge=0, le=23, description="Hour of day")
+    vehicle_weight_tonnes: float = Field(..., gt=0, description="Vehicle weight in tonnes")
+    is_weekend: int = Field(0, ge=0, le=1, description="Is weekend?")
+    vehicle_id_hash: str = Field(..., min_length=8, description="Hashed vehicle identifier")
+
+
+@app.post("/freight/validate", tags=["freight"])
+@limiter.limit("20/minute")
+async def validate_freight(
+    request: Request,
+    payload: FreightValidationRequest,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Validate if a freight vehicle entry complies with zone restrictions.
+    Returns compliance status or citation details.
+    """
+    result = validate_freight_entry(
+        zone=payload.zone,
+        hour=payload.hour,
+        vehicle_weight_tonnes=payload.vehicle_weight_tonnes,
+        is_weekend=payload.is_weekend,
+        vehicle_id_hash=payload.vehicle_id_hash,
+    )
+    return result
+
+
+@app.get("/citations/freight-infractions", tags=["citations"])
+@limiter.limit("20/minute")
+async def freight_infractions(
+    request: Request,
+    zone: Optional[str] = None,
+    limit: int = 50,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return recent freight violations from the audit ledger.
+    Filters by zone if provided, sorted newest first.
+    """
+    ledger = ViolationLedger()
+    if not os.path.exists(ledger.path) or os.path.getsize(ledger.path) == 0:
+        return {"infractions": [], "total": 0}
+
+    with open(ledger.path, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if zone:
+        rows = [r for r in rows if r['zone'] == zone]
+
+    rows.sort(key=lambda r: int(r['block_number']), reverse=True)
+    rows = rows[:limit]
+
+    return {"infractions": rows, "total": len(rows)}
+
+
+
+
+
+# =====  Evacuation Routing =====
+
+class EvacuationRequest(BaseModel):
+    city: str = Field("Riyadh")
+    hazard_zones: List[str] = Field(..., description="List of zone IDs to evacuate")
+    total_vehicles: int = Field(..., gt=0, description="Total number of vehicles fleeing")
+EvacuationRequest.model_rebuild()
+
+@app.post("/emergency/evacuate", tags=["emergency"])
+@limiter.limit("10/minute")
+async def emergency_evacuate(
+    request: Request,
+    payload: EvacuationRequest,
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    """
+    Generate capacity‑aware evacuation routes for multiple hazard zones.
+
+    Requires OPERATOR or ADMIN role.
+    Returns a plan with allocations, routes, clearance times, and corridor overload flags.
+    """
+    _assert_city_permitted(auth, payload.city)
+
+    # Build congestion map from latest data
+    df = app.state.city_dfs.get(payload.city)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{payload.city}' not found.")
+
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+    congestion_map = {str(row['zone']): float(row['congestion_score']) for _, row in latest.iterrows()}
+
+    # Validate hazard zones exist
+    for zone in payload.hazard_zones:
+        if zone not in congestion_map:
+            raise HTTPException(status_code=422, detail=f"Unknown hazard zone: {zone}")
+
+    try:
+        plan = calculate_evacuation_routes(
+            hazard_zones=payload.hazard_zones,
+            total_vehicles=payload.total_vehicles,
+            congestion_map=congestion_map,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    plan['city'] = payload.city
+    return plan
 
 
 
