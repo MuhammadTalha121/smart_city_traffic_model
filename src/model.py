@@ -1874,3 +1874,65 @@ def generate_vms_message(
         "compliant": compliant,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+
+
+# ==========
+
+def predict_parking_occupancy(
+    garage_id: str,
+    current_fill_rate: float,
+    congestion_score: float,
+    hour: int,
+) -> Dict:
+    """
+    Forecast parking garage occupancy 1, 2, and 3 hours ahead.
+
+    Formula:
+        arrival_rate = congestion_score * 50   # vehicles per hour
+        occupancy_1h = min(current_fill_rate + (arrival_rate / capacity), 1.0)
+        occupancy_2h = min(occupancy_1h + (arrival_rate / capacity) * 0.8, 1.0)
+        occupancy_3h = min(occupancy_2h + (arrival_rate / capacity) * 0.6, 1.0)
+
+    Returns:
+        dict with garage_id, current_fill_rate, forecast_1h, forecast_2h,
+        forecast_3h, will_be_full_in_hours, status
+    """
+    from src.config import PARKING_HUBS, PARKING_OCCUPANCY_WARNING, PARKING_OCCUPANCY_CRITICAL
+
+    garage = PARKING_HUBS.get(garage_id)
+    if garage is None:
+        raise ValueError(f"Unknown garage_id '{garage_id}'. Valid: {list(PARKING_HUBS.keys())}")
+
+    capacity = garage['capacity']
+    arrival_rate = congestion_score * 50  # vehicles per hour
+
+    occ_1h = min(current_fill_rate + (arrival_rate / capacity), 1.0)
+    occ_2h = min(occ_1h + (arrival_rate / capacity) * 0.8, 1.0)
+    occ_3h = min(occ_2h + (arrival_rate / capacity) * 0.6, 1.0)
+
+    # Determine status
+    if current_fill_rate >= PARKING_OCCUPANCY_CRITICAL:
+        status = 'Critical'
+    elif current_fill_rate >= PARKING_OCCUPANCY_WARNING:
+        status = 'Warning'
+    else:
+        status = 'Available'
+
+    # Time to full (linear extrapolation)
+    if arrival_rate > 0:
+        hours_to_full = (1.0 - current_fill_rate) / max(arrival_rate / capacity, 0.01)
+        will_be_full_in_hours = round(hours_to_full, 1)
+    else:
+        will_be_full_in_hours = None
+
+    return {
+        'garage_id': garage_id,
+        'current_fill_rate': round(current_fill_rate, 3),
+        'forecast_1h': round(occ_1h, 3),
+        'forecast_2h': round(occ_2h, 3),
+        'forecast_3h': round(occ_3h, 3),
+        'will_be_full_in_hours': will_be_full_in_hours,
+        'status': status,
+    }
