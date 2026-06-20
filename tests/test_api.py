@@ -1289,3 +1289,57 @@ def test_request_count_increments_after_predict(client):
     assert final_count == initial_count + 1.0, (
         f"Expected {initial_count + 1.0}, got {final_count}."
     )
+
+
+
+# ===== PROMPT 059: DRT API tests =====
+
+def test_drt_status_returns_valid_structure(client):
+    """GET /transit/drt-status returns expected fields."""
+    response = client.get(
+        "/transit/drt-status?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "city" in data
+    assert "available_shuttles" in data
+    assert "eligible_zones" in data
+    assert "queue_status" in data
+    assert "shuttle_capacity" in data
+    assert isinstance(data["queue_status"], dict)
+    for zone, status in data["queue_status"].items():
+        assert "queue_length" in status
+        assert "estimated_wait_mins" in status
+
+
+def test_drt_request_shuttle_returns_trip(client):
+    """POST /transit/request-shuttle returns a grouped trip allocation."""
+    payload = {
+        "city": "Riyadh",
+        "origin_zone": "Zone_4",
+        "destination_zone": "Zone_1",
+        "passenger_count": 2
+    }
+    response = client.post(
+        "/transit/request-shuttle",
+        json=payload,
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "trips" in data
+    assert "ungrouped_requests" in data
+    assert "utilization_pct" in data
+    assert isinstance(data["trips"], list)
+    if data["trips"]:
+        trip = data["trips"][0]
+        assert "shuttle_id" in trip
+        assert "passengers" in trip
+        assert "route" in trip
+        assert "estimated_wait_mins" in trip
+        assert "estimated_journey_mins" in trip
+
+
+
+

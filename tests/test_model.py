@@ -1410,3 +1410,42 @@ def test_overloaded_corridor_flagged_correctly():
     # At least one safe point should be overloaded
     any_overloaded = any(p['corridor_overloaded'] for p in result['evacuation_plan'])
     assert any_overloaded is True
+
+
+
+
+# ===== DRT Allocator tests =====
+
+def test_same_destination_requests_grouped():
+    """Requests with same destination should be grouped into one trip."""
+    from src.drt import DRTAllocator
+    requests = [
+        {'origin_zone': 'Zone_4', 'destination_zone': 'Zone_1', 'passengers': 2},
+        {'origin_zone': 'Zone_5', 'destination_zone': 'Zone_1', 'passengers': 3},
+        {'origin_zone': 'Zone_4', 'destination_zone': 'Zone_1', 'passengers': 4},
+    ]
+    congestion_map = {f'Zone_{i}': 0.3 for i in range(1, 6)}
+    allocator = DRTAllocator()
+    result = allocator.allocate(requests, available_shuttles=5, congestion_map=congestion_map)
+    trips = result['trips']
+    assert len(trips) == 1
+    assert trips[0]['passengers'] == 9
+    assert len(trips[0]['route']) >= 2
+
+
+def test_detour_limit_prevents_excessive_rerouting():
+    """Detour factor should be respected (route length should be within reasonable bounds)."""
+    from src.drt import DRTAllocator
+    requests = [
+        {'origin_zone': 'Zone_4', 'destination_zone': 'Zone_1', 'passengers': 2},
+        {'origin_zone': 'Zone_5', 'destination_zone': 'Zone_1', 'passengers': 2},
+    ]
+    congestion_map = {f'Zone_{i}': 0.3 for i in range(1, 6)}
+    allocator = DRTAllocator()
+    result = allocator.allocate(requests, available_shuttles=1, congestion_map=congestion_map)
+    trips = result['trips']
+    assert len(trips) == 1
+    route = trips[0]['route']
+    # Allow routes up to 4 zones (e.g., Zone_5->Zone_4->Zone_2->Zone_1)
+    # This is within the 1.35 detour factor compared to the direct path lengths
+    assert len(route) <= 4

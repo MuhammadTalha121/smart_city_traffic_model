@@ -542,3 +542,11 @@ ZONE_ROAD_CAPACITY_VPH = 1800  # vehicles per hour per zone
 # ===== Prometheus Instrumentation =====
 LATENCY_SLA_THRESHOLD_MS = 500
 METRICS_ENDPOINT         = '/metrics'
+
+
+
+# ==== Demand-Responsive Transit (DRT) =====
+DRT_SHUTTLE_CAPACITY      = 12
+DRT_MAX_WAIT_MINS         = 15
+DRT_MAX_DETOUR_FACTOR     = 1.35
+DRT_ELIGIBLE_ZONES        = ['Zone_4', 'Zone_5']

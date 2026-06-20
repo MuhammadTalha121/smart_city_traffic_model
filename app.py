@@ -32,7 +32,10 @@ from fastapi.responses import Response
 from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB,
                          NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH, TELEMETRY_QUEUE_MAX_SIZE,
                         TELEMETRY_BATCH_SIZE,
-                        TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS, LATENCY_SLA_THRESHOLD_MS, METRICS_ENDPOINT)
+                        TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS, LATENCY_SLA_THRESHOLD_MS, METRICS_ENDPOINT,
+                        DRT_ELIGIBLE_ZONES, DRT_SHUTTLE_CAPACITY, DRT_MAX_WAIT_MINS)
+
+from src.drt import DRTAllocator
 
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
@@ -3101,6 +3104,109 @@ async def emergency_evacuate(
 @app.get(METRICS_ENDPOINT, tags=["monitoring"])
 async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+
+
+# ===== Demand-Responsive Transit (DRT) =====
+
+@app.get("/transit/drt-status", tags=["transit"])
+@limiter.limit("20/minute")
+async def drt_status(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Return simulated DRT availability and queue status.
+    """
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    avg_congestion = float(df['congestion_score'].mean())
+    available = max(1, int(10 - avg_congestion * 8))
+
+    queue_status = {}
+    for zone in DRT_ELIGIBLE_ZONES:
+        zone_df = df[df['zone'] == zone]
+        if not zone_df.empty:
+            vc = float(zone_df['vehicle_count'].mean())
+            q = int(vc * 0.05 + 2)
+        else:
+            q = 0
+        queue_status[zone] = {'queue_length': q, 'estimated_wait_mins': min(5 + q, DRT_MAX_WAIT_MINS)}
+
+    return {
+        "city": city,
+        "available_shuttles": available,
+        "eligible_zones": DRT_ELIGIBLE_ZONES,
+        "queue_status": queue_status,
+        "shuttle_capacity": DRT_SHUTTLE_CAPACITY,
+    }
+
+
+class DRTRequest(BaseModel):
+    origin_zone: str = Field(..., description="Pickup zone")
+    destination_zone: str = Field(..., description="Dropoff zone")
+    passenger_count: int = Field(1, ge=1, le=DRT_SHUTTLE_CAPACITY)
+    city: str = Field("Riyadh")
+
+
+@app.post("/transit/request-shuttle", tags=["transit"])
+@limiter.limit("20/minute")
+async def request_shuttle(
+    request: Request,
+    payload: DRTRequest,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Request a DRT shuttle. The allocator groups requests with similar destinations.
+    """
+    _assert_city_permitted(auth, payload.city)
+
+    df = app.state.city_dfs.get(payload.city)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{payload.city}' not found.")
+
+    zones = set(df['zone'].unique())
+    if payload.origin_zone not in zones:
+        raise HTTPException(status_code=422, detail=f"Unknown origin_zone: {payload.origin_zone}")
+    if payload.destination_zone not in zones:
+        raise HTTPException(status_code=422, detail=f"Unknown destination_zone: {payload.destination_zone}")
+
+    if not hasattr(app.state, 'drt_pending_requests'):
+        app.state.drt_pending_requests = []
+
+    app.state.drt_pending_requests.append({
+        'origin_zone': payload.origin_zone,
+        'destination_zone': payload.destination_zone,
+        'passengers': payload.passenger_count,
+    })
+
+    avg_congestion = float(df['congestion_score'].mean())
+    available = max(1, int(10 - avg_congestion * 8))
+
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+    congestion_map = {str(row['zone']): float(row['congestion_score']) for _, row in latest.iterrows()}
+
+    allocator = DRTAllocator()
+    result = allocator.allocate(
+        requests=app.state.drt_pending_requests,
+        available_shuttles=available,
+        congestion_map=congestion_map,
+    )
+
+    app.state.drt_pending_requests = []
+
+    return {
+        "city": payload.city,
+        **result,
+    }
+
+
 
 
 
