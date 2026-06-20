@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict
 import pandas as pd
+from src.edge_simulation import EdgeCabinetSimulator
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
@@ -273,6 +274,14 @@ async def lifespan(app: FastAPI):
         return app.state
     telemetry_queue.start_worker(_get_state)
     app.state.telemetry_queue = telemetry_queue
+
+        # ===== Edge cabinet simulators =====
+    from src.edge_simulation import EdgeCabinetSimulator
+    from src.config import ZONE_ADJACENCY
+    edge_cabinets = {}
+    for zone, neighbors in ZONE_ADJACENCY.items():
+        edge_cabinets[zone] = EdgeCabinetSimulator(zone, neighbors)
+    app.state.edge_cabinets = edge_cabinets
 
     yield
 
@@ -2734,6 +2743,115 @@ async def parking_routing_recommendation(
     }
 
 
+
+
+# ===== Edge Failover Simulation =====
+
+
+
+# ===== Edge Failover Simulation =====
+
+@app.get("/edge/cabinet-status", tags=["edge"])
+async def edge_cabinet_status(
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """Return simulated status of all edge controllers in the city."""
+    cabinets = getattr(app.state, 'edge_cabinets', {})
+    statuses = []
+    for zone, cabinet in cabinets.items():
+        status = cabinet.get_status()
+        status['zone'] = zone
+        statuses.append(status)
+
+    return {
+        "city": city,
+        "total_cabinets": len(statuses),
+        "cabinets": statuses,
+    }
+
+
+class EdgeSimulationRequest(BaseModel):
+    action: str = Field(..., description="One of: go_offline, restore, status")
+    zone_id: str = Field(..., description="Zone identifier (e.g., Zone_1)")
+    neighbor_queues: Optional[Dict[str, int]] = Field(None, description="Neighbor zone -> queue length")
+
+
+@app.post("/edge/simulation", tags=["edge"])
+async def edge_simulation(
+    payload: EdgeSimulationRequest,
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    """Simulate edge controller failover actions."""
+    cabinets = getattr(app.state, 'edge_cabinets', {})
+    cabinet = cabinets.get(payload.zone_id)
+    if cabinet is None:
+        raise HTTPException(status_code=404, detail=f"Unknown zone_id: {payload.zone_id}")
+
+    response = {
+        "zone_id": payload.zone_id,
+        "action": payload.action,
+    }
+
+    if payload.action == "go_offline":
+        result = cabinet.simulate_heartbeat_loss()
+        response["result"] = result
+    elif payload.action == "restore":
+        result = cabinet.restore_heartbeat()
+        response["result"] = result
+    elif payload.action == "status":
+        response["result"] = cabinet.get_status()
+    else:
+        raise HTTPException(status_code=422, detail="Invalid action. Use: go_offline, restore, status")
+
+    if payload.neighbor_queues is not None:
+        p2p = cabinet.compute_p2p_coordination(payload.neighbor_queues)
+        response["p2p_coordination"] = p2p
+
+    return response
+
+
+
+
+@app.get("/pipeline/hpo-history", tags=["pipeline"])
+async def hpo_history(
+    limit: int = 10,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Return the last N HPO runs from the Optuna SQLite database.
+    Admin only.
+    """
+    import optuna
+    from src.config import HPO_DB_PATH
+
+    if not os.path.exists(HPO_DB_PATH):
+        return {"hpo_runs": [], "total": 0}
+
+    storage = f"sqlite:///{HPO_DB_PATH}"
+    try:
+        study = optuna.load_study(storage=storage, study_name=None)  # loads the latest study? Actually we need to list studies.
+        # We need to get all studies. Better: use optuna.study.get_all_study_summaries
+        summaries = optuna.get_all_study_summaries(storage)
+        # Sort by start time descending
+        summaries_sorted = sorted(summaries, key=lambda s: s.start_time, reverse=True)
+        # Take limit
+        summaries_sorted = summaries_sorted[:limit]
+        results = []
+        for s in summaries_sorted:
+            results.append({
+                "study_name": s.study_name,
+                "n_trials": s.n_trials,
+                "best_trial": {
+                    "value": s.best_trial.value,
+                    "params": s.best_trial.params,
+                },
+                "start_time": s.start_time.isoformat() if s.start_time else None,
+            })
+        return {"hpo_runs": results, "total": len(summaries)}
+    except Exception as e:
+        # If no study exists, return empty
+        return {"hpo_runs": [], "total": 0, "error": str(e)}
 
 
 
