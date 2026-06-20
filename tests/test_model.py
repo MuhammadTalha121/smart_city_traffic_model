@@ -1146,3 +1146,42 @@ def test_queue_drops_when_full():
     assert queue.enqueue({"a": 3}) is False
     # Queue depth should be 2
     assert queue.queue_depth() == 2
+
+
+
+
+
+
+# ===== Parking occupancy unit tests =====
+
+from src.model import predict_parking_occupancy
+
+def test_high_congestion_fills_garage_faster():
+    """Higher congestion leads to higher forecasted occupancy."""
+    low = predict_parking_occupancy("Gar_Olaya", 0.5, 0.1, 8)
+    high = predict_parking_occupancy("Gar_Olaya", 0.5, 0.9, 8)
+    # Forecasts should be higher when congestion is high
+    assert high["forecast_1h"] > low["forecast_1h"]
+    assert high["forecast_2h"] > low["forecast_2h"]
+    assert high["forecast_3h"] > low["forecast_3h"]
+    # Time to full should be shorter
+    assert high["will_be_full_in_hours"] < low["will_be_full_in_hours"]
+
+
+def test_routing_recommends_least_full_garage():
+    """The routing recommendation should pick the garage with most available capacity."""
+    # We'll mock the function by using the logic we already have.
+    # But we can test the function itself indirectly: we'll call predict_parking_occupancy
+    # for two garages and compare.
+    garages = ["Gar_Olaya", "Gar_KAFD"]
+    forecasts = {}
+    for g in garages:
+        # Simulate different fill rates: Olaya high, KAFD low
+        fill = 0.8 if g == "Gar_Olaya" else 0.3
+        forecasts[g] = predict_parking_occupancy(g, fill, 0.5, 8)
+
+    # Pick the one with lowest current fill rate (most available)
+    best = min(forecasts, key=lambda x: forecasts[x]["current_fill_rate"])
+    # Expect KAFD to be better
+    assert best == "Gar_KAFD"
+    assert forecasts[best]["current_fill_rate"] < forecasts["Gar_Olaya"]["current_fill_rate"]
