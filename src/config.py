@@ -536,3 +536,9 @@ EVACUATION_SAFE_POINTS = {
     'Safe_South': {'zone': 'Zone_4', 'capacity': 3000},
 }
 ZONE_ROAD_CAPACITY_VPH = 1800  # vehicles per hour per zone
+
+
+
+# ===== Prometheus Instrumentation =====
+LATENCY_SLA_THRESHOLD_MS = 500
+METRICS_ENDPOINT         = '/metrics'
