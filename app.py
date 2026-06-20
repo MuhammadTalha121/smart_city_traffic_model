@@ -307,6 +307,14 @@ app.add_middleware(
     allow_headers     = ["*"],
 )
 
+# Add security scheme for OpenAPI docs
+# app.security_schemes = {
+#     "apiKey": {
+#         "type": "apiKey",
+#         "in": "header",
+#         "name": "X-API-Key",
+#     }
+# }
 
 @app.middleware("http")
 async def usage_logging_middleware(request: Request, call_next):
