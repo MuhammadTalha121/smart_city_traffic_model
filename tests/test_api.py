@@ -1359,3 +1359,23 @@ def test_predict_endpoint_includes_confidence_object(client):
     assert "confidence" in data
     assert "confidence_level" in data["confidence"]
     assert data["confidence"]["confidence_level"] in ("High", "Medium", "Low")
+
+
+
+def test_predict_returns_503_on_stale_weather_feed(client):
+    """Active source 'weather' with an artificially aged fetched_at
+    must cause /predict to refuse with 503 instead of silently
+    predicting on stale external data."""
+    from datetime import datetime, timedelta
+
+    original_source     = app.state.data_source
+    original_fetched_at = getattr(app.state, "data_source_fetched_at", None)
+    try:
+        app.state.data_source = "weather"
+        app.state.data_source_fetched_at = datetime.now() - timedelta(hours=2)
+        response = client.post("/predict", json=VALID_PAYLOAD, headers={"X-API-Key": TEST_KEY})
+        assert response.status_code == 503
+        assert response.json()["detail"]["error"] == "STALE_DATA_FEED"
+    finally:
+        app.state.data_source = original_source
+        app.state.data_source_fetched_at = original_fetched_at
