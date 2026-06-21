@@ -33,7 +33,7 @@ from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPE
                          NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH, TELEMETRY_QUEUE_MAX_SIZE,
                         TELEMETRY_BATCH_SIZE,
                         TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS, LATENCY_SLA_THRESHOLD_MS, METRICS_ENDPOINT,
-                        DRT_ELIGIBLE_ZONES, DRT_SHUTTLE_CAPACITY, DRT_MAX_WAIT_MINS)
+                        DRT_ELIGIBLE_ZONES, DRT_SHUTTLE_CAPACITY, DRT_MAX_WAIT_MINS, MAX_DATA_AGE_SECONDS)
 
 from src.drt import DRTAllocator
 
@@ -58,7 +58,7 @@ from src.ids import SensorIntrusionDetector
 from src.ledger import ViolationLedger
 from src.config import VIOLATION_LEDGER_PATH
 
-from src.adapters import get_adapter, GreenWavePlanner
+from src.adapters import get_adapter, GreenWavePlanner, GreenWavePlanner, is_data_stale
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
 
@@ -252,6 +252,7 @@ async def lifespan(app: FastAPI):
     app.state.model        = model
     app.state.feature_cols = feature_cols
     app.state.data_source  = "mock"
+    app.state.data_source_fetched_at = datetime.now()
     app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
@@ -515,6 +516,13 @@ def set_data_source(
         adapter   = get_adapter(source)
         sample_df = adapter.fetch(city)
         app.state.data_source = source
+        app.state.data_source_fetched_at = (
+            sample_df['fetched_at'].iloc[0]
+            if 'fetched_at' in sample_df.columns and not sample_df.empty
+            else datetime.now()
+        )
+
+
         return {
             "active_source": source,
             "city"         : city,
@@ -548,11 +556,10 @@ def pipeline_status(auth: Dict = Depends(require_admin)):
 
 @app.post("/pipeline/trigger", tags=["pipeline"])
 def pipeline_trigger(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN']))):
-    """Manually trigger a pipeline run. Retrains if drift threshold is exceeded."""
     print(f"[Pipeline] Manual trigger at {datetime.now()}")
     result = run_pipeline(city="Riyadh")
 
-    if result["retrained"]:
+    if result["promoted"]:
         app.state.last_retrain = result["timestamp"]
 
     return result
@@ -576,6 +583,21 @@ def predict(
     traffic patterns with three phases: inbound, peak, outbound.
     """
     _assert_city_permitted(auth, payload.city)
+
+    active_source = app.state.data_source
+    fetched_at    = getattr(app.state, "data_source_fetched_at", None)
+    if is_data_stale(active_source, fetched_at):
+        age_seconds = (datetime.now() - fetched_at).total_seconds()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error"          : "STALE_DATA_FEED",
+                "message"        : f"Active data source '{active_source}' has not refreshed within its staleness threshold.",
+                "data_source"    : active_source,
+                "age_seconds"    : round(age_seconds, 1),
+                "max_age_seconds": MAX_DATA_AGE_SECONDS.get(active_source),
+            },
+        )
 
     p          = payload.model_dump()
     validation = validate_prediction_input(p)
