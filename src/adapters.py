@@ -71,6 +71,7 @@ class WeatherAdapter(BaseAdapter):
                 'precipitation': precipitation,
                 'humidity'    : humidity,
                 'visibility'  : visibility,
+                'fetched_at'  : datetime.now(),
             }])
 
         except requests.RequestException as e:
@@ -109,6 +110,7 @@ class WeatherAdapter(BaseAdapter):
             'precipitation': 0.0,
             'humidity'    : 30.0,
             'visibility'  : 10000.0,
+            'fetched_at'  : datetime.now(),
         }])
 
 
@@ -151,6 +153,7 @@ class OpenStreetMapAdapter(BaseAdapter):
             elements = response.json().get('elements', [])
 
             rows = []
+            fetched_at = datetime.now()
             for element in elements[:50]:
                 tags      = element.get('tags', {})
                 highway   = tags.get('highway', 'unknown')
@@ -159,6 +162,7 @@ class OpenStreetMapAdapter(BaseAdapter):
                 rows.append({
                     'city'     : city,
                     'source'   : 'overpass',
+                    'fetched_at': fetched_at,
                     'road_name': road_name,
                     'road_type': road_type,
                     'highway'  : highway,
@@ -202,7 +206,8 @@ class OpenStreetMapAdapter(BaseAdapter):
         }
         rows = roads.get(city, roads['Riyadh'])
         for row in rows:
-            row.update({'city': city, 'source': 'fallback', 'highway': 'primary', 'osm_id': None})
+            row.update({'city': city, 'source': 'fallback', 'highway': 'primary', 'osm_id': None,
+                        'fetched_at': datetime.now()})
         return pd.DataFrame(rows)
 
 
@@ -225,6 +230,7 @@ class MockIoTAdapter(BaseAdapter):
         np.random.seed(int(datetime.now().timestamp()) % 10000)
         profile   = CITY_PROFILES.get(city, list(CITY_PROFILES.values())[0])
         hour      = datetime.now().hour
+        fetched_at = datetime.now()
         zones     = ['Zone_1', 'Zone_2', 'Zone_3', 'Zone_4', 'Zone_5']
         rows      = []
 
@@ -242,6 +248,7 @@ class MockIoTAdapter(BaseAdapter):
             rows.append({
                 'city'         : city,
                 'timestamp'    : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'fetched_at'   : fetched_at,
                 'source'       : 'mock-iot',
                 'zone'         : zone,
                 'hour'         : hour,
@@ -369,6 +376,29 @@ class GreenWavePlanner:
         }
 
 
+
+
+
+def is_data_stale(adapter_source: str, fetched_at) -> bool:
+    """
+    Return True if fetched_at exceeds MAX_DATA_AGE_SECONDS for the given
+    source. A source absent from MAX_DATA_AGE_SECONDS, or mapped to None
+    (e.g. 'mock'), is never stale — mock/unconfigured synthetic data has
+    no real-world staleness concept since nothing external can go down.
+    """
+    from src.config import MAX_DATA_AGE_SECONDS
+
+    max_age = MAX_DATA_AGE_SECONDS.get(adapter_source)
+    if max_age is None or fetched_at is None:
+        return False
+
+    if isinstance(fetched_at, str):
+        fetched_at = pd.to_datetime(fetched_at).to_pydatetime()
+    elif isinstance(fetched_at, pd.Timestamp):
+        fetched_at = fetched_at.to_pydatetime()
+
+    age_seconds = (datetime.now() - fetched_at).total_seconds()
+    return age_seconds > max_age
 
 
 
