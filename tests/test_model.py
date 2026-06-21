@@ -1475,3 +1475,20 @@ def test_confidence_width_increases_for_sparse_hour(trained_model):
     dense = predict_with_confidence(qmodels, dense_row)
     sparse = predict_with_confidence(qmodels, sparse_row)
     assert "confidence_width" in dense and "confidence_width" in sparse
+
+
+
+# ===== Data Staleness tests =====
+from datetime import datetime, timedelta
+from src.adapters import is_data_stale
+from src.config import MAX_DATA_AGE_SECONDS
+
+
+def test_is_data_stale_returns_true_past_threshold():
+    old_time = datetime.now() - timedelta(seconds=MAX_DATA_AGE_SECONDS['weather'] + 100)
+    assert is_data_stale('weather', old_time) is True
+
+
+def test_mock_adapter_never_flagged_stale():
+    very_old = datetime.now() - timedelta(days=365)
+    assert is_data_stale('mock', very_old) is False
