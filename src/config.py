@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 CITY_PROFILES: Dict[str, Dict] = {
@@ -556,4 +556,19 @@ CONFIDENCE_WIDTH_THRESHOLDS: Dict[str, float] = {
     'High'  : 0.15,   # width <= 0.15 -> High confidence
     'Medium': 0.30,   # width <= 0.30 -> Medium confidence
     # anything wider -> Low
+}
+
+
+
+# ==== Data Feed Staleness ====
+# Maximum age, in seconds, before a data source's last fetch is treated
+# as stale. /predict refuses with HTTP 503 rather than serving a
+# prediction built on expired external data once this threshold is
+# exceeded. 'mock' is intentionally None — synthetic/deterministic mock
+# data is generated fresh on every call and has no real-world staleness
+# concept, since there is no external feed that can go down.
+MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
+    'weather': 1800,   # 30 min — Open-Meteo current conditions
+    'osm'    : 3600,   # 60 min — road network changes slowly
+    'mock'   : None,   # no staleness concept for synthetic data
 }
