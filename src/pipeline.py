@@ -6,10 +6,13 @@ import numpy as np
 from datetime import datetime
 from sklearn.metrics import mean_absolute_error
 from src.model import prepare_features, train_xgboost, optimize_hyperparameters
-
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
 
 LOG_PATH      = "predictions_log.csv"
 MODEL_PATH    = "model.joblib"
+MODEL_STAGING_PATH   = "model_staging.joblib"
+MODEL_CHANGELOG_PATH = "MODEL_CHANGELOG.md"
 PIPELINE_LOG  = "pipeline_log.csv"
 DRIFT_WINDOW  = 500   # number of recent predictions to evaluate
 DRIFT_THRESHOLD = 1.3  # retrain if recent MAE is 1.3x the baseline
@@ -111,38 +114,153 @@ def retrain_model(city: str = "Riyadh", run_hpo: bool = False) -> dict:
     new_r2 = round(float(r2_score(y_test, y_pred)), 4)
 
     # Save model with metadata
-    joblib.dump({"model": model, "r2": new_r2, "timestamp": timestamp, "hpo_used": run_hpo}, MODEL_PATH)
-    print(f"[Pipeline] Model saved to {MODEL_PATH} — R²: {new_r2}")
+    joblib.dump({"model": model, "r2": new_r2, "timestamp": timestamp, "hpo_used": run_hpo}, MODEL_STAGING_PATH)
+    print(f"[Pipeline] Model saved to Staging {MODEL_STAGING_PATH} — R²: {new_r2}")
 
     return {
         "retrained"  : True,
         "new_r2"     : new_r2,
         "old_r2"     : old_r2,
         "timestamp"  : timestamp,
-        "model_path" : MODEL_PATH,
+        "model_path" : MODEL_STAGING_PATH,
         "hpo_used"   : run_hpo,
         "hpo_result" : hpo_result,
     }
 
 
+def evaluate_staged_model(city: str = "Riyadh") -> dict:
+    """
+    Compare the staged model against the currently live model on an
+    identical freshly generated held-out window for `city`, reusing the
+    train/test split pattern from compare_baseline_vs_enhanced() so both
+    models are scored on the same data.
+
+    If no live model exists yet (first-ever training), there is nothing
+    to regress against, so promotion is recommended unconditionally.
+
+    Returns
+    -------
+    dict with staged_mae, live_mae, regression, recommendation, reason.
+    """
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+
+    if not os.path.exists(MODEL_STAGING_PATH):
+        return {
+            "staged_mae": None, "live_mae": None, "regression": False,
+            "recommendation": "reject", "reason": "No staged model found.",
+        }
+
+    staged_model = joblib.load(MODEL_STAGING_PATH)["model"]
+
+    df = generate_traffic_data(city=city)
+    df = apply_hourly_patterns(df, city=city)
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    staged_mae = round(float(mean_absolute_error(y_test, staged_model.predict(X_test))), 4)
+
+    if not os.path.exists(MODEL_PATH):
+        return {
+            "staged_mae": staged_mae, "live_mae": None, "regression": False,
+            "recommendation": "promote",
+            "reason": "No live model exists yet — first training is auto-promoted.",
+        }
+
+    live_bundle = joblib.load(MODEL_PATH)
+    # Defensive: save_model() elsewhere in the codebase dumps a raw model,
+    # not a {"model": ...} bundle. Handle both formats found in the repo.
+    live_model = live_bundle["model"] if isinstance(live_bundle, dict) else live_bundle
+    live_mae   = round(float(mean_absolute_error(y_test, live_model.predict(X_test))), 4)
+
+    regression     = staged_mae > live_mae
+    recommendation = "reject" if regression else "promote"
+
+    return {
+        "staged_mae": staged_mae, "live_mae": live_mae,
+        "regression": regression, "recommendation": recommendation,
+        "reason": (
+            f"Staged MAE {staged_mae} is worse than live MAE {live_mae}."
+            if regression else
+            f"Staged MAE {staged_mae} does not regress vs live MAE {live_mae}."
+        ),
+    }
+
+
+def promote_staged_model(city: str, drift_score: float, evaluation: dict) -> dict:
+    """
+    Copy the staged model into the live model slot and append a row to
+    MODEL_CHANGELOG.md. Caller must already hold a 'promote' recommendation
+    from evaluate_staged_model() — promotion and evaluation are kept as two
+    separate, individually auditable steps.
+    """
+    if evaluation.get("recommendation") != "promote":
+        raise ValueError("promote_staged_model called without a 'promote' recommendation.")
+
+    staged_bundle = joblib.load(MODEL_STAGING_PATH)
+    timestamp     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    joblib.dump(staged_bundle, MODEL_PATH)
+
+    _append_changelog_entry(
+        timestamp=timestamp, city=city, drift_score=drift_score,
+        staged_mae=evaluation.get("staged_mae"), live_mae=evaluation.get("live_mae"),
+        decision="promoted", decision_maker="automatic",
+    )
+
+    return {
+        "promoted": True, "timestamp": timestamp,
+        "staged_mae": evaluation.get("staged_mae"),
+        "live_mae": evaluation.get("live_mae"),
+    }
+
+
+def _append_changelog_entry(timestamp, city, drift_score, staged_mae, live_mae,
+                            decision, decision_maker) -> None:
+    """Append one human-readable row to MODEL_CHANGELOG.md (committed, not gitignored)."""
+    write_header = not os.path.exists(MODEL_CHANGELOG_PATH)
+    with open(MODEL_CHANGELOG_PATH, "a", encoding="utf-8") as f:
+        if write_header:
+            f.write("# Model Changelog\n\n")
+            f.write(
+                "Auto-appended on every retrain/promotion decision made by the "
+                "staged model promotion gate (PROMPT 065). `decision_maker` is "
+                "'automatic' unless a human operator approval step is wired in.\n\n"
+            )
+            f.write("| Timestamp | City | Drift Score | Staged MAE | Live MAE | Decision | Decision Maker |\n")
+            f.write("|---|---|---|---|---|---|---|\n")
+        f.write(f"| {timestamp} | {city} | {drift_score} | {staged_mae} | {live_mae} | {decision} | {decision_maker} |\n")
+
+
 def run_pipeline(city: str = "Riyadh") -> dict:
-    ...
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     drift_score = compute_drift_score()
     retrained   = False
+    promoted    = False
     new_r2      = None
     old_r2      = None
     hpo_used    = False
+    evaluation  = None
 
     if should_retrain(drift_score):
-        print(f"[Pipeline] Drift score {drift_score} >= {DRIFT_THRESHOLD}. Retraining...")
-        # Run HPO if drift is significantly high (> 1.5)
+        print(f"[Pipeline] Drift score {drift_score} >= {DRIFT_THRESHOLD}. Retraining into staging slot...")
         run_hpo = drift_score >= 1.5
         result  = retrain_model(city=city, run_hpo=run_hpo)
         retrained = result["retrained"]
         new_r2    = result["new_r2"]
         old_r2    = result["old_r2"]
         hpo_used  = result.get("hpo_used", False)
+
+        evaluation = evaluate_staged_model(city=city)
+        if evaluation["recommendation"] == "promote":
+            promote_staged_model(city=city, drift_score=drift_score, evaluation=evaluation)
+            promoted = True
+        else:
+            print(f"[Pipeline] Staged model rejected: {evaluation['reason']}")
+            _append_changelog_entry(
+                timestamp=timestamp, city=city, drift_score=drift_score,
+                staged_mae=evaluation.get("staged_mae"), live_mae=evaluation.get("live_mae"),
+                decision="rejected", decision_maker="automatic",
+            )
     else:
         print(f"[Pipeline] Drift score {drift_score} — model stable. No retrain needed.")
 
@@ -151,9 +269,12 @@ def run_pipeline(city: str = "Riyadh") -> dict:
         "city"       : city,
         "drift_score": drift_score,
         "retrained"  : retrained,
+        "promoted"   : promoted,
         "new_r2"     : new_r2,
         "old_r2"     : old_r2,
         "hpo_used"   : hpo_used,
+        "staged_mae" : evaluation.get("staged_mae") if evaluation else None,
+        "live_mae"   : evaluation.get("live_mae") if evaluation else None,
     }
     _log_pipeline_run(outcome)
     return outcome
