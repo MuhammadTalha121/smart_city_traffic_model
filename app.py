@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -55,7 +55,7 @@ from src.model import (
 from src.ids import SensorIntrusionDetector 
 
 
-from src.ledger import ViolationLedger
+from src.ledger import ViolationLedger, verify_ledger_chain, LedgerIntegrityError
 from src.config import VIOLATION_LEDGER_PATH
 
 from src.adapters import get_adapter, GreenWavePlanner, GreenWavePlanner, is_data_stale
@@ -303,6 +303,25 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(LedgerIntegrityError)
+async def ledger_integrity_error_handler(request: Request, exc: LedgerIntegrityError):
+    """
+    PROMPT 068 — ALERT step of the break-recovery procedure. Surfaces a
+    frozen ledger as a clear, structured HTTP 503 instead of a generic
+    500, so the failure (and the exact first_break_at_row to investigate)
+    is visible in the API response rather than swallowed by a citation
+    write that silently failed.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error"  : "LEDGER_CHAIN_BROKEN",
+            "message": str(exc),
+            "report" : exc.report,
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -2575,6 +2594,22 @@ async def verify_ledger(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN']
     ledger = ViolationLedger()
     report = ledger.verify_chain()
     return report
+
+
+@app.get("/ledger/verify", tags=["citations"])
+async def ledger_verify(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN']))):
+    """
+    PROMPT 068 — on-demand ledger chain verification at its own
+    /ledger/verify path. Functionally identical to /citations/verify-ledger
+    (kept unchanged above for backward compatibility with existing tests
+    and clients) but returns verify_ledger_chain()'s PROMPT 068 key names
+    (valid, total_rows, first_break_at_row) instead of the legacy
+    (valid, total_blocks, first_invalid_block) shape. Role requirement
+    matches /citations/verify-ledger: PROMPT 067's endpoint-sensitivity
+    audit did not introduce a separate AUDITOR role, so this stays on the
+    existing OPERATOR/ADMIN set rather than inventing one ad hoc here.
+    """
+    return verify_ledger_chain()
 
 
 @app.get("/citations/violations", tags=["citations"])
