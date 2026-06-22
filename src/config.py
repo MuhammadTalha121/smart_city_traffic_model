@@ -446,6 +446,16 @@ VIOLATION_LEDGER_PATH = 'violation_ledger.csv'
 LEDGER_GENESIS_HASH = 'MUNICIPAL_VIOLATIONS_GENESIS'
 HASH_ALGORITHM = 'sha256'
 
+# PROMPT 068 — Ledger Chain Verification and Break-Recovery Procedure.
+# When True (default, recommended), ViolationLedger.append_violation()
+# re-verifies the existing chain before every write and refuses to append
+# (raises LedgerIntegrityError) if the chain is already broken — see the
+# BREAK-RECOVERY PROCEDURE in src/ledger.py's module docstring for the
+# rationale and the documented denial-of-service tradeoff this implies.
+# Set False only for local debugging of an already-known-broken ledger;
+# never in a deployment that issues real citations.
+LEDGER_FREEZE_ON_BREAK = True
+
 
 
 # ==========
