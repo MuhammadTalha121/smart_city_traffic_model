@@ -12,7 +12,7 @@ from src.model import (
     compute_cooperative_route, predict_ev_charger_demand, recommend_tidal_flow,
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, calculate_evacuation_routes,
 )
-from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH
+from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH, ZONE_DISTANCES_KM
 
 
 
@@ -1492,3 +1492,35 @@ def test_is_data_stale_returns_true_past_threshold():
 def test_mock_adapter_never_flagged_stale():
     very_old = datetime.now() - timedelta(days=365)
     assert is_data_stale('mock', very_old) is False
+
+
+
+
+
+def test_evacuation_travel_time_increases_with_speed_reduction():
+    """Verify that providing a slower speed_map results in longer travel times."""
+    hazard_zones = ['Zone_1', 'Zone_3']
+    total_vehicles = 2000
+    congestion_map = {'Zone_1': 0.6, 'Zone_2': 0.3, 'Zone_3': 0.7, 'Zone_4': 0.2, 'Zone_5': 0.1}
+
+    fast_speed = {'Zone_1': 80, 'Zone_2': 80, 'Zone_3': 80, 'Zone_4': 80, 'Zone_5': 80}
+    slow_speed = {'Zone_1': 40, 'Zone_2': 40, 'Zone_3': 40, 'Zone_4': 40, 'Zone_5': 40}
+
+    result_fast = calculate_evacuation_routes(
+        hazard_zones=hazard_zones,
+        total_vehicles=total_vehicles,
+        congestion_map=congestion_map,
+        speed_map=fast_speed,
+    )
+    result_slow = calculate_evacuation_routes(
+        hazard_zones=hazard_zones,
+        total_vehicles=total_vehicles,
+        congestion_map=congestion_map,
+        speed_map=slow_speed,
+    )
+
+    # For each safe point, travel time in slow should be ~2x fast (since speed half)
+    for plan_f, plan_s in zip(result_fast['evacuation_plan'], result_slow['evacuation_plan']):
+        # ratio should be around 2.0, allow 20% tolerance
+        ratio = plan_s['estimated_travel_time_mins'] / plan_f['estimated_travel_time_mins']
+        assert 1.6 < ratio < 2.4, f"Travel time ratio {ratio} not proportional to speed change (expected ~2.0)"
