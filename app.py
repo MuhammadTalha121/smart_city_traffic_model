@@ -159,16 +159,15 @@ def require_admin(auth: Dict = Depends(require_api_key)) -> Dict:
 
 def _assert_city_permitted(auth: Dict, requested_city: str) -> None:
     """Raise 403 if key city scope does not cover requested_city."""
-    # Legacy keys may have 'city', new keys have 'city_scope'
     city_scope = auth.get('city') or auth.get('city_scope', '*')
-    if city_scope == '*':
+    # Treat both '*' and 'all' as wildcards
+    if city_scope in ('*', 'all'):
         return
     if city_scope.lower() != requested_city.lower():
         raise HTTPException(
             status_code=403,
             detail=f"API key is scoped to '{city_scope}' — cannot access '{requested_city}'.",
         )
-
 
 def _scheduled_pipeline():
     """Run nightly pipeline and print outcome to console."""
@@ -810,7 +809,7 @@ def predict_batch(
 def anomalies(
     request: Request,
     city:    str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """Current anomalies across all zones. 20 req/min per IP."""
     _assert_city_permitted(auth, city)
@@ -829,7 +828,7 @@ def anomalies(
 def interventions_active(
     request: Request,
     city:    str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     All zones currently at High or Critical congestion with intervention
@@ -879,7 +878,7 @@ def interventions_active(
 def safety_hotspots(
     request: Request,
     city:    str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     All zones ranked by current accident risk score, highest first.
@@ -927,7 +926,7 @@ def safety_hotspots(
 def signals_recommended(
     request: Request,
     city:    str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Recommended adaptive signal timing for all zones right now,
@@ -1163,7 +1162,7 @@ def emergency_response_time(
     request: Request,
     city:        str = "Riyadh",
     target_zone: str = "Zone_1",
-    auth:        Dict = Depends(require_api_key),
+    auth:        Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Estimate emergency vehicle response time from all stations to a target zone.
@@ -1410,7 +1409,7 @@ def alerts_history(
     request: Request,
     city:    str = "Riyadh",
     hours:   int = 24,
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Return all alerts triggered in the past N hours from the alerts log.
@@ -1497,7 +1496,7 @@ def roads_service_level(
 @app.get("/vsl/active-limits", tags=["safety"])
 def vsl_active_limits(
     city: str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Recommend variable speed limits for highway zones based on
@@ -1548,7 +1547,7 @@ def vsl_active_limits(
 def safety_pedestrian(
     request: Request,
     city:    str = "Riyadh",
-    auth:    Dict = Depends(require_api_key),
+    auth:    Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Return all zones ranked by pedestrian risk score, worst first.
@@ -1716,7 +1715,7 @@ def sla_current():
 def data_quality(
     city:  str = "Riyadh",
     hours: int = 24,
-    auth:  Dict = Depends(require_api_key),
+    auth:  Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """Summarise input quality flags from the predictions audit log."""
     _assert_city_permitted(auth, city)
@@ -2114,7 +2113,7 @@ def optimize_charge_load(
 
 
 @app.post('/signals/tsp-actuation')
-def tsp_actuation(payload: dict, api_key: str = Depends(require_api_key)):
+def tsp_actuation(payload: dict, api_key: str = Depends(role_required(['OPERATOR', 'ADMIN']))):
     """TSP green extension decision for an approaching bus."""
     from src.model import evaluate_transit_priority
     return evaluate_transit_priority(
@@ -2127,15 +2126,30 @@ def tsp_actuation(payload: dict, api_key: str = Depends(require_api_key)):
 
 
 
+import math
+
 @app.get('/federated/params')
-def federated_params(api_key: str = Depends(require_api_key)):
-    """Return shareable model params — no raw data."""
+def federated_params(api_key: str = Depends(role_required(['OPERATOR', 'ADMIN']))):
     from src.federated import extract_shareable_params
-    return extract_shareable_params(app.state.model)
+    params = extract_shareable_params(app.state.model)
+    
+    # Recursively replace NaN with None for JSON compliance
+    def clean_nans(obj):
+        if isinstance(obj, dict):
+            return {k: clean_nans(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [clean_nans(v) for v in obj]
+        elif isinstance(obj, float) and math.isnan(obj):
+            return None
+        else:
+            return obj
+    
+    params = clean_nans(params)
+    return params
 
 
 @app.post('/federated/aggregate')
-def federated_aggregate(payload: dict, api_key: str = Depends(require_api_key)):
+def federated_aggregate(payload: dict, api_key: str = Depends(role_required(['OPERATOR', 'ADMIN']))):
     """Aggregate params from multiple cities — flags for next retrain."""
     from src.federated import simulate_aggregation
     city_params = payload.get('city_params', [])
@@ -2181,7 +2195,7 @@ def _log_ids_event(ids_result: dict, request) -> None:
 @app.get("/ids/alerts", tags=["security"])
 async def ids_alerts(
     city: str = "Riyadh",
-    api_key: str = Depends(require_api_key),
+    api_key: str = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """Return last 100 IDS events from ids_log.csv."""
     path = _Path(IDS_LOG_PATH)
@@ -2449,7 +2463,7 @@ async def active_surge(
 async def vms_active_boards(
     request: Request,
     city: str = "Riyadh",
-    _key: str = Depends(require_api_key),
+    _key: str = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Return VMS content for all zones.
@@ -2567,7 +2581,7 @@ async def verify_ledger(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN']
 async def get_violations(
     zone: Optional[str] = None,
     limit: int = 100,
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Return recent violation records, optionally filtered by zone.
@@ -2805,7 +2819,7 @@ async def parking_routing_recommendation(
 @app.get("/edge/cabinet-status", tags=["edge"])
 async def edge_cabinet_status(
     city: str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """Return simulated status of all edge controllers in the city."""
     cabinets = getattr(app.state, 'edge_cabinets', {})
@@ -3050,7 +3064,7 @@ class FreightValidationRequest(BaseModel):
 async def validate_freight(
     request: Request,
     payload: FreightValidationRequest,
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Validate if a freight vehicle entry complies with zone restrictions.
@@ -3072,7 +3086,7 @@ async def freight_infractions(
     request: Request,
     zone: Optional[str] = None,
     limit: int = 50,
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Return recent freight violations from the audit ledger.
@@ -3163,7 +3177,7 @@ async def metrics():
 async def drt_status(
     request: Request,
     city: str = "Riyadh",
-    auth: Dict = Depends(require_api_key),
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
     """
     Return simulated DRT availability and queue status.
@@ -3269,19 +3283,13 @@ import asyncio
 
 @app.websocket("/ws/live/{city}")
 async def ws_live(websocket: WebSocket, city: str, api_key: str = ""):
-    """
-    Stream live congestion snapshots for all zones in a city every 30 seconds.
-
-    Authentication: pass api_key as a query parameter.
-    Closes with code 1008 (policy violation) on invalid or missing key.
-
-    Snapshot format per zone:
-        {zone, congestion_score, congestion_level, risk_score,
-         anomaly_flag, timestamp}
-    """
     # --- Auth ---
-    resolved_key = _resolve_api_key(api_key)
-    if not resolved_key:
+    auth_info = _resolve_api_key(api_key)
+    if not auth_info:
+        await websocket.close(code=1008)
+        return
+
+    if auth_info['role'].upper() not in ['OPERATOR', 'ADMIN']:
         await websocket.close(code=1008)
         return
 
@@ -3298,22 +3306,44 @@ async def ws_live(websocket: WebSocket, city: str, api_key: str = ""):
         pass
 
 
-def _resolve_api_key(key: str) -> bool:
+def _resolve_api_key(key: str) -> Optional[Dict]:
     """
-    Validate a raw key string against the configured key registry.
+    Validate a raw key string against the configured key registry,
+    the SQLite auth DB, or the master API_KEY.
 
-    Returns True if key is valid, False otherwise.
-    Supports both single API_KEY and multi-tenant API_KEYS registry.
+    Returns the auth info dict {key, role, city_scope} if valid,
+    otherwise None.
     """
     if not key:
-        return False
+        return None
 
-    # Multi-tenant registry (PROMPT 025)
+    # 1. Multi-tenant registry (from lifespan)
     if hasattr(app.state, "key_registry") and app.state.key_registry:
-        return key in app.state.key_registry
+        if key in app.state.key_registry:
+            return {
+                'key': key,
+                'role': app.state.key_registry[key].get('role', 'READ_ONLY'),
+                'city_scope': app.state.key_registry[key].get('city_scope', '*')
+            }
 
-    # Single-key fallback
-    return key == API_KEY
+    # 2. SQLite auth.db (via validate_key)
+    auth_info = validate_key(key)
+    if auth_info:
+        return {
+            'key': key,
+            'role': auth_info['role'],
+            'city_scope': auth_info['city_scope']
+        }
+
+    # 3. Single master key fallback
+    if key == API_KEY:
+        return {
+            'key': key,
+            'role': 'ADMIN',
+            'city_scope': '*'
+        }
+
+    return None
 
 
 def _build_city_snapshot(city: str) -> dict:
