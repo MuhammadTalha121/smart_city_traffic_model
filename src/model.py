@@ -12,7 +12,7 @@ from typing import Tuple, Dict, List, Optional
 from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES, NOISE_BASE_DB, 
                         NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, 
                         NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS,
-                        EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY)
+                        EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY, ZONE_DISTANCES_KM)
 from datetime import datetime
 
 
@@ -2372,28 +2372,29 @@ def calculate_evacuation_routes(
     hazard_zones: List[str],
     total_vehicles: int,
     congestion_map: Dict[str, float],
+    *,
+    speed_map: Optional[Dict[str, float]] = None,
 ) -> Dict:
     """
-    Generate capacity‑aware evacuation routes for multiple hazard zones.
-
-    Allocates vehicles to safe points proportionally to their capacity,
-    finds shortest paths (by zone count) from each hazard zone to each safe point,
-    checks corridor loads against ZONE_ROAD_CAPACITY_VPH, and redistributes
-    if overloaded.
+    Generate capacity‑aware evacuation routes for multiple hazard zones,
+    now with speed‑aware travel‑time estimation.
 
     Parameters
     ----------
-    hazard_zones : list of zone IDs that are being evacuated.
+    hazard_zones : list of zone IDs being evacuated.
     total_vehicles : total number of vehicles fleeing the hazard zones.
-    congestion_map : dict {zone: congestion_score} (used only for tie‑breaking;
-                       currently not used in routing, reserved for future extensions).
+    congestion_map : dict {zone: congestion_score} (used for tie‑breaking,
+                     and now also to derive default speeds if speed_map not given).
+    speed_map : optional dict {zone: current speed in km/h}. If not provided,
+                uses a default of 70 km/h for all zones (urban average).
 
     Returns
     -------
     dict with keys:
         hazard_zones, total_vehicles,
         evacuation_plan: list of dicts (safe_point, route, allocated_vehicles,
-                                        estimated_clearance_mins, corridor_overloaded),
+                           estimated_clearance_mins, estimated_travel_time_mins,
+                           corridor_overloaded),
         recommended_departure_order: list of safe_point names ordered by clearance time.
     """
     if not hazard_zones:
@@ -2401,10 +2402,20 @@ def calculate_evacuation_routes(
     if total_vehicles <= 0:
         raise ValueError("total_vehicles must be positive")
 
+    # ---- Speed handling ----
+    DEFAULT_SPEED_KMPH = 70.0
+    if speed_map is None:
+        speed_map = {zone: DEFAULT_SPEED_KMPH for zone in set(hazard_zones)}
+    # Ensure all zones in hazard_zones have a speed; fill missing with default
+    for z in hazard_zones:
+        if z not in speed_map:
+            speed_map[z] = DEFAULT_SPEED_KMPH
+
     # 1. Build safe point list
     safe_points = list(EVACUATION_SAFE_POINTS.items())  # [(name, {'zone':..., 'capacity':...})]
 
     # 2. BFS to find shortest path (by number of zones) from each hazard to each safe zone
+    from collections import deque
     def bfs_path(start: str, target: str) -> List[str]:
         """Return list of zones from start to target (inclusive), or empty if unreachable."""
         if start == target:
@@ -2437,27 +2448,23 @@ def calculate_evacuation_routes(
 
     # 3. Allocate vehicles proportionally to safe point capacity
     total_capacity = sum(info['capacity'] for _, info in safe_points)
-    # target allocation per safe point
     targets = {}
     for name, info in safe_points:
         targets[name] = int(total_vehicles * info['capacity'] / total_capacity)
-    # Ensure sum matches total_vehicles (rounding adjustment)
+    # Rounding adjustment
     diff = total_vehicles - sum(targets.values())
     if diff != 0:
-        # Add/remove from the first safe point
         first_name = safe_points[0][0]
         targets[first_name] += diff
 
     # 4. Distribute each safe point's target evenly among hazard zones
-    # We'll create a list of allocations per (hazard, safe_name)
     allocations = {}  # (hazard, safe_name) -> int
     for hazard in hazard_zones:
         for safe_name, target in targets.items():
-            # each hazard gets an equal share of the target
             share = target // len(hazard_zones)
             allocations[(hazard, safe_name)] = share
     # Distribute remainders
-    remainders = {safe_name: targets[safe_name] - sum(allocations[(h, safe_name)] for h in hazard_zones) for safe_name in targets}
+    remainders = {safe_name: targets[safe_name] - sum(allocations.get((h, safe_name), 0) for h in hazard_zones) for safe_name in targets}
     for hazard in hazard_zones:
         for safe_name in targets:
             if remainders[safe_name] > 0:
@@ -2465,8 +2472,7 @@ def calculate_evacuation_routes(
                 remainders[safe_name] -= 1
 
     # 5. Determine route per safe point (pick the shortest path among hazard zones)
-    # We'll choose the path with the fewest intermediate zones (tie‑break by lexicographic)
-    safe_routes = {}  # safe_name -> (route, total_allocated)
+    safe_routes = {}  # safe_name -> (route, total_allocated, total_distance_km)
     for safe_name, _ in safe_points:
         best_route = None
         best_len = float('inf')
@@ -2478,61 +2484,65 @@ def calculate_evacuation_routes(
                     best_route = route
         if best_route is None:
             continue
-        # Total allocated to this safe point from all hazards
+        # Compute total distance for this route
+        total_dist = 0.0
+        for i in range(len(best_route) - 1):
+            key = tuple(sorted([best_route[i], best_route[i+1]]))
+            dist = ZONE_DISTANCES_KM.get(key)
+            if dist is None:
+                # fallback: average of all known distances
+                if ZONE_DISTANCES_KM:
+                    dist = sum(ZONE_DISTANCES_KM.values()) / len(ZONE_DISTANCES_KM)
+                else:
+                    dist = 5.0  # reasonable default
+            total_dist += dist
+
         total_alloc = sum(allocations.get((h, safe_name), 0) for h in hazard_zones)
-        safe_routes[safe_name] = (best_route, total_alloc)
+        safe_routes[safe_name] = (best_route, total_alloc, total_dist)
 
     # 6. Compute corridor loads
     corridor_load = {}  # zone -> total vehicles passing through
-    for safe_name, (route, alloc) in safe_routes.items():
+    for safe_name, (route, alloc, _) in safe_routes.items():
         for zone in route:
             corridor_load[zone] = corridor_load.get(zone, 0) + alloc
 
     # 7. Initial overload check
     overloaded_safe = {}
-    for safe_name, (route, alloc) in safe_routes.items():
+    for safe_name, (route, alloc, _) in safe_routes.items():
         overloaded = any(corridor_load.get(z, 0) > ZONE_ROAD_CAPACITY_VPH for z in route)
         overloaded_safe[safe_name] = overloaded
 
     # 8. Redistribute if overloaded (simple iterative reduction)
     max_iter = 10
     for _ in range(max_iter):
-        # Find a safe point that is overloaded and has a route
         overloaded_names = [sn for sn, ov in overloaded_safe.items() if ov]
         if not overloaded_names:
             break
-
-        # Pick the overloaded safe point with the largest excess
-        # Compute excess = max(0, corridor_load[zone] - capacity) for each zone in its route
+        # Find the overloaded safe point with the largest excess
         excess_list = []
         for sn in overloaded_names:
-            route, _ = safe_routes[sn]
+            route, _, _ = safe_routes[sn]
             excess = max(0, max(corridor_load.get(z, 0) - ZONE_ROAD_CAPACITY_VPH for z in route))
             excess_list.append((sn, excess))
-        # Sort by excess descending
         excess_list.sort(key=lambda x: -x[1])
         if excess_list[0][1] <= 0:
             break
         overloaded_sn, excess = excess_list[0]
 
-        # Find a safe point with spare capacity (target - current allocation) > 0
+        # Find a safe point with spare capacity
         spare = {}
-        for sn, (_, alloc) in safe_routes.items():
+        for sn, (_, alloc, _) in safe_routes.items():
             spare[sn] = targets[sn] - alloc
-        # Exclude overloaded one and those with no spare
         candidates = [(sn, sp) for sn, sp in spare.items() if sn != overloaded_sn and sp > 0]
         if not candidates:
             break
         candidates.sort(key=lambda x: -x[1])
         target_sn, spare_cap = candidates[0]
 
-        # Shift excess from overloaded_sn to target_sn, but not more than spare_cap
         shift = min(excess, spare_cap)
-        # Reduce allocation to overloaded_sn by shift (across all hazard zones proportionally)
-        # We'll reduce from the hazard that has the largest share on that safe point
+        # Reduce allocation from overloaded_sn
         hazard_shares = [(h, allocations.get((h, overloaded_sn), 0)) for h in hazard_zones]
         hazard_shares.sort(key=lambda x: -x[1])
-        # Subtract from the largest share
         for h, share in hazard_shares:
             if share >= shift:
                 allocations[(h, overloaded_sn)] -= shift
@@ -2542,8 +2552,7 @@ def calculate_evacuation_routes(
                 shift -= share
                 if shift == 0:
                     break
-        # Add shift to target_sn, distribute among hazard zones proportionally
-        # Add to the hazard zone with smallest current allocation on that safe point
+        # Add to target_sn
         target_shares = [(h, allocations.get((h, target_sn), 0)) for h in hazard_zones]
         target_shares.sort(key=lambda x: x[1])
         for h, _ in target_shares:
@@ -2553,30 +2562,39 @@ def calculate_evacuation_routes(
                 break
 
         # Recompute safe_routes totals and corridor loads
-        for safe_name, (route, _) in safe_routes.items():
+        for safe_name, (route, _, dist) in safe_routes.items():
             total_alloc = sum(allocations.get((h, safe_name), 0) for h in hazard_zones)
-            safe_routes[safe_name] = (route, total_alloc)
+            safe_routes[safe_name] = (route, total_alloc, dist)
 
         corridor_load = {}
-        for sn, (route, alloc) in safe_routes.items():
+        for sn, (route, alloc, _) in safe_routes.items():
             for zone in route:
                 corridor_load[zone] = corridor_load.get(zone, 0) + alloc
 
-        # Recompute overloaded status
-        for sn, (route, _) in safe_routes.items():
+        for sn, (route, _, _) in safe_routes.items():
             overloaded_safe[sn] = any(corridor_load.get(z, 0) > ZONE_ROAD_CAPACITY_VPH for z in route)
 
-    # 9. Build evacuation_plan
+    # 9. Build evacuation_plan with both clearance and travel time
     evacuation_plan = []
-    for safe_name, (route, alloc) in safe_routes.items():
-        # Compute clearance time (minutes) = allocated / capacity * 60
+    for safe_name, (route, alloc, total_distance) in safe_routes.items():
+        # Clearance time based on capacity (queue drain)
         clearance_mins = (alloc / ZONE_ROAD_CAPACITY_VPH) * 60 if ZONE_ROAD_CAPACITY_VPH > 0 else 0
+
+        # Compute travel time using actual speeds from speed_map
+        # We'll compute average speed along the route, or use minimum speed as conservative.
+        # For simplicity, use the average of speeds in the route (excluding duplicates).
+        speeds = [speed_map.get(z, DEFAULT_SPEED_KMPH) for z in route]
+        avg_speed = sum(speeds) / len(speeds) if speeds else DEFAULT_SPEED_KMPH
+        travel_time_mins = (total_distance / (avg_speed / 60)) if avg_speed > 0 else 0
+
         corridor_overloaded = overloaded_safe.get(safe_name, False)
+
         evacuation_plan.append({
             'safe_point': safe_name,
             'route': route,
             'allocated_vehicles': alloc,
             'estimated_clearance_mins': round(clearance_mins, 1),
+            'estimated_travel_time_mins': round(travel_time_mins, 1),
             'corridor_overloaded': corridor_overloaded,
         })
 
