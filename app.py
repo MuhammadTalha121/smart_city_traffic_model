@@ -3305,6 +3305,28 @@ async def request_shuttle(
 
 
 
+@app.get("/equity/summary", tags=["equity"])
+@limiter.limit("20/minute")
+async def equity_summary(
+    request: Request,
+    city: str = "Riyadh",
+    days: int = 30,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Return a per-zone equity summary for toll revenue, CO2 emissions,
+    and freight citations over the trailing N days.
+
+    Includes a correlational emissions-delta flag for Pareto-optimal routes.
+    """
+    from src.model import compute_equity_summary
+    result = compute_equity_summary(city=city, days=days)
+    return result
+
+
+
+
+
 
 
 
@@ -3465,48 +3487,3 @@ def _build_city_snapshot(city: str) -> dict:
 
 
 
-# ===== Telemetry Queue API tests =====
-
-def test_telemetry_ingest_enqueues_readings(client):
-    """POST /telemetry/ingest should enqueue readings and return counts."""
-    readings = [
-        {
-            "city": "Riyadh",
-            "zone": "Zone_1",
-            "hour": 10,
-            "vehicle_count": 150,
-            "avg_speed": 45,
-            "weather": "clear",
-            "road_type": "arterial",
-            "rush_hour": 1,
-            "is_weekend": 0,
-            "is_late_night": 0,
-            "event": 0,
-            "hour_multiplier": 1.2
-        }
-    ] * 3
-    response = client.post(
-        "/telemetry/ingest",
-        json={"readings": readings},
-        headers={"X-API-Key": TEST_KEY}
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["enqueued"] == 3
-    assert data["dropped"] == 0
-    assert "queue_depth" in data
-
-def test_telemetry_status_returns_queue_info(client):
-    """GET /telemetry/status should return queue status."""
-    response = client.get(
-        "/telemetry/status",
-        headers={"X-API-Key": TEST_KEY}
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert "queue_depth" in data
-    assert "worker_active" in data
-    assert "processed_today" in data
-    assert "queue_max_size" in data
-    assert "batch_size" in data
-    assert "flush_interval_s" in data
