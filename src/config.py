@@ -582,3 +582,15 @@ MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
     'osm'    : 3600,   # 60 min — road network changes slowly
     'mock'   : None,   # no staleness concept for synthetic data
 }
+
+
+
+
+# Approximate centroids for Riyadh zones (longitude, latitude)
+ZONE_CENTROIDS = {
+    'Zone_1': [46.70, 24.75],
+    'Zone_2': [46.75, 24.70],
+    'Zone_3': [46.65, 24.65],
+    'Zone_4': [46.80, 24.70],
+    'Zone_5': [46.70, 24.60],
+}
