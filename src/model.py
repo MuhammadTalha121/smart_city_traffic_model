@@ -2680,3 +2680,130 @@ def predict_with_confidence(quantile_models: Dict, X_row: pd.DataFrame) -> Dict:
         'confidence_width'  : width,
         'confidence_level'  : level,
     }
+
+
+
+
+
+def compute_equity_summary(city: str, days: int = 30) -> Dict:
+    """
+    Aggregate toll revenue, CO2 emissions, and citation penalties by zone
+    over the trailing N days.
+    """
+    import os
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from src.model import calculate_dynamic_toll, calculate_pareto_routes
+
+    # ---- 1. Load predictions_log.csv ----
+    log_path = "predictions_log.csv"
+    if not os.path.exists(log_path):
+        return {"city": city, "period_days": days, "zones": [], "note": "predictions_log.csv not found."}
+
+    df_log = pd.read_csv(log_path)
+    if df_log.empty:
+        return {"city": city, "period_days": days, "zones": [], "note": "predictions_log.csv is empty."}
+
+    if "timestamp" not in df_log.columns:
+        return {"city": city, "period_days": days, "zones": [], "note": "predictions_log.csv missing 'timestamp' column."}
+
+    df_log["timestamp"] = pd.to_datetime(df_log["timestamp"], errors="coerce")
+    cutoff = datetime.now() - timedelta(days=days)
+    df_log = df_log[df_log["timestamp"] >= cutoff]
+
+    if city and "city" in df_log.columns:
+        df_log = df_log[df_log["city"] == city]
+
+    if df_log.empty:
+        return {"city": city, "period_days": days, "zones": [], "note": "No predictions in the selected period."}
+
+    # Compute toll per row
+    tolls = []
+    for _, row in df_log.iterrows():
+        zone = str(row.get("zone", "Zone_1"))
+        score = float(row.get("congestion_score", 0.0))
+        toll = calculate_dynamic_toll(zone, score, vehicle_type="passenger")
+        tolls.append(toll)
+    df_log["toll_sar"] = tolls
+
+    # ---- 2. Load violation_ledger.csv ----
+    ledger_path = "violation_ledger.csv"
+    citations_df = pd.DataFrame()
+    if os.path.exists(ledger_path):
+        try:
+            citations_df = pd.read_csv(ledger_path)
+            if "timestamp" in citations_df.columns:
+                citations_df["timestamp"] = pd.to_datetime(citations_df["timestamp"], errors="coerce")
+                citations_df = citations_df[citations_df["timestamp"] >= cutoff]
+            if city and "city" in citations_df.columns:
+                citations_df = citations_df[citations_df["city"] == city]
+        except Exception:
+            citations_df = pd.DataFrame()
+
+    # ---- 3. Group by zone ----
+    zones = df_log["zone"].unique()
+    results = []
+
+    for zone in zones:
+        zone_log = df_log[df_log["zone"] == zone]
+        total_toll = zone_log["toll_sar"].sum()
+        total_co2 = zone_log["co2_kg"].sum() if "co2_kg" in zone_log.columns else 0.0
+
+        zone_citations = citations_df[citations_df["zone"] == zone] if not citations_df.empty else pd.DataFrame()
+        citation_count = len(zone_citations)
+        total_penalty = zone_citations["penalty_sar"].sum() if "penalty_sar" in zone_citations.columns else 0.0
+
+        results.append({
+            "zone": zone,
+            "total_toll_sar": round(total_toll, 2),
+            "total_co2_kg": round(total_co2, 2),
+            "citation_count": int(citation_count),
+            "total_penalty_sar": round(total_penalty, 2),
+        })
+
+    # ---- 4. Network emissions‑delta check (correlational) ----
+    emissions_delta_flags = None
+    if len(zones) >= 2:
+        avg_congestion = df_log.groupby("zone")["congestion_score"].mean().to_dict()
+        avg_co2 = df_log.groupby("zone")["co2_kg"].mean().to_dict() if "co2_kg" in df_log.columns else {}
+
+        delta_flags = []
+        for origin in zones:
+            for dest in zones:
+                if origin == dest:
+                    continue
+                if origin not in avg_congestion or dest not in avg_congestion:
+                    continue
+                try:
+                    routes = calculate_pareto_routes(
+                        origin_zone=origin,
+                        destination_zone=dest,
+                        congestion_map=avg_congestion
+                    )
+                    cleanest_route = routes.get("recommended_for", {}).get("cleanest", {}).get("route", [])
+                    if not cleanest_route:
+                        continue
+                    dest_route = cleanest_route[-1]
+                    origin_co2 = avg_co2.get(origin, 0.0)
+                    dest_co2 = avg_co2.get(dest_route, 0.0)
+                    if origin_co2 > 0 and dest_co2 > 0:
+                        delta = (dest_co2 - origin_co2) / origin_co2
+                        if delta > 0.05:
+                            delta_flags.append({
+                                "origin_zone": origin,
+                                "destination_zone": dest_route,
+                                "emissions_increase_pct": round(delta * 100, 1),
+                                "correlational_note": "Correlational flag: this compares average zone emissions, not controlled for external factors."
+                            })
+                except Exception:
+                    continue
+        if delta_flags:
+            emissions_delta_flags = delta_flags
+
+    return {
+        "city": city,
+        "period_days": days,
+        "zones": results,
+        "emissions_delta_flags": emissions_delta_flags,
+        "note": "All metrics are aggregated at zone level; no individual data is used."
+    }
