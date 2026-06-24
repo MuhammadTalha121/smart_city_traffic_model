@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from src.model import congestion_level, compute_emissions, detect_anomalies
-from src.config import CONGESTION_THRESHOLDS
+from src.config import CONGESTION_THRESHOLDS, ZONE_CENTROIDS
 
 def to_datex_measurement(
     prediction_dict: Dict[str, Any],
@@ -165,4 +165,77 @@ def generate_datex_payload(city: str) -> Dict[str, Any]:
             "anomaly situation (from detect_anomalies)"
         ],
         "gapNote": "This is a DATEX II‑shaped export, not a full implementation. Many DATEX II fields (e.g., vehicleType, measurementSiteType, detailed geo-coordinates) are not mapped due to data limitations."
+    }
+
+
+
+
+
+def generate_geojson_payload(city: str) -> dict:
+    """
+    Generate a GeoJSON FeatureCollection for the given city.
+
+    Each zone becomes a Point feature with properties:
+      - zone, congestion_score, congestion_level,
+        vehicle_count, avg_speed, co2_kg_per_hour, timestamp.
+
+    Compatible with QGIS, ArcGIS, Leaflet, Google Maps.
+    """
+    from app import app
+    from src.config import ZONE_CENTROIDS
+    from datetime import datetime
+
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        df = app.state.df
+
+    if df is None or df.empty:
+        return {
+            "type": "FeatureCollection",
+            "features": [],
+            "note": "No data available for the requested city.",
+            "generated_at": datetime.now().isoformat(),
+            "city": city
+        }
+
+    latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
+
+    features = []
+    for _, row in latest.iterrows():
+        zone = str(row['zone'])
+        coords = ZONE_CENTROIDS.get(zone, [0.0, 0.0])
+
+        level = congestion_level(row.get('congestion_score', 0))
+        em = compute_emissions(level, row.get('vehicle_count', 0), 1.0)
+
+        # Convert timestamp to string
+        ts = row.get('timestamp', datetime.now())
+        if hasattr(ts, 'isoformat'):
+            timestamp_str = ts.isoformat()
+        else:
+            timestamp_str = str(ts)
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": coords
+            },
+            "properties": {
+                "zone": zone,
+                "congestion_score": float(row.get('congestion_score', 0)),
+                "congestion_level": level,
+                "vehicle_count": float(row.get('vehicle_count', 0)),
+                "avg_speed": float(row.get('avg_speed', 0)),
+                "co2_kg_per_hour": em['co2_kg'],
+                "timestamp": timestamp_str
+            }
+        }
+        features.append(feature)
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "generated_at": datetime.now().isoformat(),
+        "city": city
     }
