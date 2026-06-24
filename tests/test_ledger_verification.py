@@ -1,5 +1,5 @@
 """
-PROMPT 068 — Ledger Chain Verification and Break-Recovery Procedure.
+Ledger Chain Verification and Break-Recovery Procedure.
 
 Save as tests/test_ledger_verification.py. Covers the three required
 unit tests plus the two endpoint-level checks named in the prompt's
