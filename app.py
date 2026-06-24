@@ -1869,6 +1869,35 @@ def export_datex(
 
 
 
+
+from src.datex_export import generate_geojson_payload
+from fastapi import Query, HTTPException
+
+@app.get("/export/geojson", tags=["export"])
+@limiter.limit("20/minute")
+def export_geojson(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Export traffic data as a GeoJSON FeatureCollection.
+
+    Each zone is a Point feature with properties:
+      - zone, congestion_score, congestion_level,
+        vehicle_count, avg_speed, co2_kg_per_hour, timestamp.
+
+    This is directly loadable into QGIS, ArcGIS, Leaflet, Google Maps,
+    and other GIS platforms. No conversion needed.
+
+    Authentication required (X-API-Key header).
+    Rate limit: 20 requests per minute.
+    """
+    payload = generate_geojson_payload(city)
+    return JSONResponse(content=payload, media_type="application/geo+json")
+
+
+
 @app.get("/mobility/last-mile", tags=["mobility"])
 def last_mile_efficiency(
     city: str  = "Riyadh",
