@@ -1379,3 +1379,94 @@ def test_predict_returns_503_on_stale_weather_feed(client):
     finally:
         app.state.data_source = original_source
         app.state.data_source_fetched_at = original_fetched_at
+
+
+
+
+
+# ===== Telemetry Queue API tests =====
+
+def test_telemetry_ingest_enqueues_readings(client):
+    """POST /telemetry/ingest should enqueue readings and return counts."""
+    readings = [
+        {
+            "city": "Riyadh",
+            "zone": "Zone_1",
+            "hour": 10,
+            "vehicle_count": 150,
+            "avg_speed": 45,
+            "weather": "clear",
+            "road_type": "arterial",
+            "rush_hour": 1,
+            "is_weekend": 0,
+            "is_late_night": 0,
+            "event": 0,
+            "hour_multiplier": 1.2
+        }
+    ] * 3
+    response = client.post(
+        "/telemetry/ingest",
+        json={"readings": readings},
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 3
+    assert data["dropped"] == 0
+    assert "queue_depth" in data
+
+def test_telemetry_status_returns_queue_info(client):
+    """GET /telemetry/status should return queue status."""
+    response = client.get(
+        "/telemetry/status",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "queue_depth" in data
+    assert "worker_active" in data
+    assert "processed_today" in data
+    assert "queue_max_size" in data
+    assert "batch_size" in data
+    assert "flush_interval_s" in data
+
+
+def test_equity_summary_aggregates_per_zone_without_individual_data(client):
+    """Ensure /equity/summary returns zone-level aggregates and no individual data."""
+    response = client.get(
+        "/equity/summary?city=Riyadh&days=30",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    assert "period_days" in data
+    # Check that each zone has the expected fields
+    for zone_entry in data["zones"]:
+        assert "zone" in zone_entry
+        assert "total_toll_sar" in zone_entry
+        assert "total_co2_kg" in zone_entry
+        assert "citation_count" in zone_entry
+        assert "total_penalty_sar" in zone_entry
+    # Ensure no individual-identifying fields (like vehicle_id) are present
+    # The data only has zone-level aggregates; if any field like 'vehicle_id' appears, fail.
+    for zone_entry in data["zones"]:
+        assert not any(k in zone_entry for k in ("vehicle_id", "driver_id", "vehicle_id_hash"))
+
+
+def test_emissions_delta_flag_is_correlational_not_causal_in_output_text(client):
+    """Ensure the emissions-delta flag explicitly states it's correlational, not causal."""
+    response = client.get(
+        "/equity/summary?city=Riyadh&days=30",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # Check if emissions_delta_flags exists and if any flag, it includes the correlational note
+    flags = data.get("emissions_delta_flags")
+    if flags:
+        for flag in flags:
+            assert "correlational_note" in flag
+            assert "Correlational" in flag["correlational_note"]
+            # Also ensure it doesn't claim causation
+            assert not any(word in flag["correlational_note"].lower() for word in ["cause", "causal", "prove"])
