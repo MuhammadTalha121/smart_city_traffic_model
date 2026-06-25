@@ -292,7 +292,9 @@ MAX_DYNAMIC_TOLL_SAR: float       = 35.0
 TOLL_CONGESTION_MULTIPLIER: float = 6.0
 TOLL_EXEMPT_VEHICLES: List[str]   = ['emergency', 'public_bus']
 TOLLED_ZONES: List[str]           = ['Zone_1', 'Zone_2']
-
+TOLL_DAILY_CEILING_SAR: float = 120.0
+TOLL_CIRCUIT_BREAKER_THRESHOLD: float = 0.90
+TOLL_CIRCUIT_BREAKER_REDUCTION: float = 0.50
 
 
 # --- Transit Signal Priority constants  ---
