@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.model import (
@@ -1524,3 +1524,55 @@ def test_evacuation_travel_time_increases_with_speed_reduction():
         # ratio should be around 2.0, allow 20% tolerance
         ratio = plan_s['estimated_travel_time_mins'] / plan_f['estimated_travel_time_mins']
         assert 1.6 < ratio < 2.4, f"Travel time ratio {ratio} not proportional to speed change (expected ~2.0)"
+
+
+
+from src.data import is_school_holiday
+
+def test_is_school_holiday_returns_correct_bool():
+    # Inside T1 for Riyadh → not a holiday
+    assert is_school_holiday('Riyadh', date(2025, 9, 15)) is False
+    # Between T1 and T2 → holiday
+    assert is_school_holiday('Riyadh', date(2025, 11, 20)) is True
+    # Unknown city → False (conservative default)
+    assert is_school_holiday('Karachi', date(2025, 9, 15)) is False
+
+
+def test_school_holiday_reduces_morning_peak():
+    df_term    = generate_traffic_data(city='Riyadh', n_days=7)
+    df_term    = apply_hourly_patterns(df_term, city='Riyadh', school_holiday=False)
+    df_holiday = generate_traffic_data(city='Riyadh', n_days=7)
+    df_holiday = apply_hourly_patterns(df_holiday, city='Riyadh', school_holiday=True)
+
+    term_morning    = df_term[df_term['hour'] == 7]['vehicle_count'].mean()
+    holiday_morning = df_holiday[df_holiday['hour'] == 7]['vehicle_count'].mean()
+    assert holiday_morning < term_morning, (
+        f"School holiday hour-7 ({holiday_morning:.1f}) should be lower than "
+        f"term-time ({term_morning:.1f})"
+    )
+
+
+def test_school_holiday_flag_false_by_default():
+    df = generate_traffic_data(city='Riyadh', n_days=3)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    assert 'is_school_holiday' in df.columns
+    assert df['is_school_holiday'].iloc[0] == 0
+
+
+
+
+def test_evacuation_capacity_does_not_exceed_85_percent():
+    from src.model import calculate_evacuation_routes
+    from src.config import ZONE_ROAD_CAPACITY_VPH
+
+    hazard = ['Zone_1']
+    total_vehicles = int(ZONE_ROAD_CAPACITY_VPH * 0.90)  # 90% of raw – should trigger overload
+    congestion_map = {z: 0.3 for z in ['Zone_1','Zone_2','Zone_3','Zone_4','Zone_5']}
+
+    result = calculate_evacuation_routes(hazard, total_vehicles, congestion_map)
+    overloaded = [p for p in result['evacuation_plan'] if p['corridor_overloaded']]
+    assert len(overloaded) > 0, "Should flag overload when vehicles exceed 85% capacity"
+
+def test_evacuation_capacity_margin_is_085():
+    from src.config import EVACUATION_CAPACITY_MARGIN
+    assert EVACUATION_CAPACITY_MARGIN == 0.85
