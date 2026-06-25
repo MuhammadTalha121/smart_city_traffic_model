@@ -1576,3 +1576,71 @@ def test_evacuation_capacity_does_not_exceed_85_percent():
 def test_evacuation_capacity_margin_is_085():
     from src.config import EVACUATION_CAPACITY_MARGIN
     assert EVACUATION_CAPACITY_MARGIN == 0.85
+
+
+
+
+
+
+
+# ===== – Toll Ceiling Tests =====
+
+def test_toll_does_not_exceed_daily_ceiling():
+    from src.model import calculate_dynamic_toll_with_ceiling
+    from src.config import TOLL_DAILY_CEILING_SAR
+
+    # Accumulated 100, base toll at 0.6 is 23 → total 123 > 120, cap to 20
+    result = calculate_dynamic_toll_with_ceiling(
+        zone='Zone_1',
+        congestion_score=0.6,          # changed from 0.5 to 0.6
+        daily_toll_accumulated=100.0
+    )
+    assert result['toll_amount'] == 20.0
+    assert result['ceiling_applied'] is True
+    assert 'capped' in result['reason'].lower()
+
+    # Already at ceiling → toll becomes 0
+    result = calculate_dynamic_toll_with_ceiling(
+        zone='Zone_1',
+        congestion_score=0.5,
+        daily_toll_accumulated=TOLL_DAILY_CEILING_SAR
+    )
+    assert result['toll_amount'] == 0.0
+    assert result['ceiling_applied'] is True
+    assert 'reached' in result['reason'].lower()
+
+
+def test_circuit_breaker_activates_above_threshold():
+    from src.model import calculate_dynamic_toll_with_ceiling
+    from src.config import TOLL_CIRCUIT_BREAKER_THRESHOLD, TOLL_CIRCUIT_BREAKER_REDUCTION
+
+    # Congestion just below threshold → normal toll
+    normal = calculate_dynamic_toll_with_ceiling(
+        zone='Zone_1',
+        congestion_score=TOLL_CIRCUIT_BREAKER_THRESHOLD - 0.01,
+        daily_toll_accumulated=0.0
+    )
+    # Congestion at threshold → half toll
+    reduced = calculate_dynamic_toll_with_ceiling(
+        zone='Zone_1',
+        congestion_score=TOLL_CIRCUIT_BREAKER_THRESHOLD,
+        daily_toll_accumulated=0.0
+    )
+    # Normal toll at 0.89 score: base 5 * (1 + 0.89*6) = 5 * 6.34 = 31.7
+    # Reduced at 0.90: 31.7 * 0.5 = 15.85
+    assert reduced['toll_amount'] < normal['toll_amount']
+    assert reduced['reason'].startswith('Circuit breaker')
+    assert reduced['ceiling_applied'] is False  # circuit breaker is not the ceiling
+
+
+def test_toll_ceiling_reason_string_is_human_readable():
+    from src.model import calculate_dynamic_toll_with_ceiling
+
+    result = calculate_dynamic_toll_with_ceiling(
+        zone='Zone_1',
+        congestion_score=0.95,
+        daily_toll_accumulated=110.0
+    )
+    # Should have a reason that mentions either circuit breaker or ceiling
+    assert len(result['reason']) > 10
+    assert isinstance(result['reason'], str)
