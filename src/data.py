@@ -6,7 +6,129 @@ from src.config import (
     CITY_PROFILES, HOURLY_MULTIPLIERS, WEATHER_SPEED_IMPACT,
     FRIDAY_PRAYER_HOURS, SAUDI_CITIES,
     HAJJ_INBOUND, HAJJ_PEAK, HAJJ_OUTBOUND, HAJJ_ROUTE_ZONES,
+    RECURRING_EVENTS, 
 )
+from typing import List, Dict, Optional, Tuple
+
+
+
+
+
+
+def is_school_holiday(city: str, check_date=None) -> bool:
+    """
+    Return True if check_date falls outside all configured school terms for city
+    (i.e., it IS a holiday/break). Returns False (treat as term-time) if city
+    has no SCHOOL_TERM_DATES config — unknown cities default to conservative
+    assumption (term-time traffic), never synthetic holiday suppression.
+    Karachi uses a different academic calendar and is intentionally excluded
+    from SCHOOL_TERM_DATES; this function returns False for it.
+    """
+    from src.config import SCHOOL_TERM_DATES
+    from datetime import date as date_type
+    import datetime
+
+    if check_date is None:
+        check_date = datetime.date.today()
+    if isinstance(check_date, datetime.datetime):
+        check_date = check_date.date()
+
+    terms = SCHOOL_TERM_DATES.get(city)
+    if not terms:
+        return False
+
+    for term in terms:
+        start = date_type.fromisoformat(term['start'])
+        end   = date_type.fromisoformat(term['end'])
+        if start <= check_date <= end:
+            return False  # inside a term → not a holiday
+
+    return True  # outside all terms → holiday
+
+
+
+def get_active_events(city: str, check_date=None) -> List[Dict]:
+    """
+    Return list of recurring events active on check_date for the given city.
+
+    Handles year-wrap for multi-month events (e.g., Riyadh Season Oct–Mar).
+    Single-day events match on month/day only (year-agnostic).
+    """
+    from src.config import RECURRING_EVENTS
+    import datetime
+
+    if check_date is None:
+        check_date = datetime.date.today()
+    if isinstance(check_date, datetime.datetime):
+        check_date = check_date.date()
+
+    events = RECURRING_EVENTS.get(city, [])
+    active = []
+
+    for ev in events:
+        # Multi-month range (year-wrap aware)
+        if 'start_month' in ev and 'end_month' in ev:
+            start_m = ev['start_month']
+            end_m = ev['end_month']
+            current_m = check_date.month
+            if start_m <= end_m:
+                # Non-wrapping range (e.g., Apr–Jun)
+                if start_m <= current_m <= end_m:
+                    active.append(ev)
+            else:
+                # Wrapping range (e.g., Oct–Mar)
+                if current_m >= start_m or current_m <= end_m:
+                    active.append(ev)
+        # Single-day event (month + day)
+        elif 'month' in ev and 'day' in ev:
+            if check_date.month == ev['month'] and check_date.day == ev['day']:
+                active.append(ev)
+
+    return active
+
+
+def apply_event_multipliers(df: pd.DataFrame, city: str = 'Riyadh',
+                            check_date=None) -> pd.DataFrame:
+    """
+    Apply recurring event multipliers to vehicle_count for active events.
+
+    Multipliers are applied only during the event's configured peak_hours.
+    Stacks on top of existing patterns (school holidays, Ramadan, Hajj).
+    Vehicle count is clipped to [0, 500] after each multiplier to respect
+    IDS limits.
+
+    Must be called AFTER apply_hourly_patterns().
+    """
+    from src.config import RECURRING_EVENTS
+
+    df = df.copy()
+
+    active_events = get_active_events(city, check_date)
+    if not active_events:
+        df['event_multiplier'] = 1.0
+        df['active_event_names'] = ''
+        return df
+
+    # Build a combined multiplier mask per row
+    def _row_multiplier(row):
+        hour = row['hour']
+        mult = 1.0
+        names = []
+        for ev in active_events:
+            if hour in ev.get('peak_hours', []):
+                mult *= ev['multiplier']
+                names.append(ev['name'])
+        return pd.Series([mult, '|'.join(names) if names else ''])
+
+    df[['event_multiplier', 'active_event_names']] = df.apply(_row_multiplier, axis=1)
+
+    # Apply multiplier only where it's > 1.0
+    mask = df['event_multiplier'] > 1.0
+    df.loc[mask, 'vehicle_count'] = (
+        df.loc[mask, 'vehicle_count'] * df.loc[mask, 'event_multiplier']
+    ).clip(0, 500)
+
+    return df
 
 
 def generate_traffic_data(city: str = 'Riyadh', n_days: int = 30,
@@ -72,7 +194,8 @@ def _resolve_hajj_multiplier(hour: int, phase_dict: dict) -> float:
 
 def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
                            ramadan: bool = False,
-                           hajj: bool = False) -> pd.DataFrame:
+                           hajj: bool = False,
+                           school_holiday: bool = False) -> pd.DataFrame:
     """
     Apply city-specific hourly traffic multipliers and Saudi behavioral patterns.
 
@@ -163,6 +286,19 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
     else:
         df['friday_prayer_drop'] = 0
 
+    
+    # --- School holiday demand shift ---
+    # Hajj takes priority over school holiday (mass-gathering overrides all).
+    # school_holiday suppresses the 07:00–08:00 school-run spike and boosts midday.
+    if school_holiday and not hajj:
+        from src.config import SCHOOL_HOLIDAY_MULTIPLIERS
+        for hour_val, mult in SCHOOL_HOLIDAY_MULTIPLIERS.items():
+            mask = df['hour'] == hour_val
+            df.loc[mask, 'vehicle_count'] = (
+                df.loc[mask, 'vehicle_count'] * mult
+            ).clip(0, 500)
+    df['is_school_holiday'] = int(school_holiday and not hajj)
+
     df['is_late_night'] = df['hour'].isin([21, 22, 23, 0]).astype(int)
     df['is_ramadan']    = int(ramadan and not hajj)
     df['is_hajj']       = int(hajj)
@@ -190,6 +326,7 @@ def validate_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
 
     df = generate_traffic_data(city=city, n_days=n_days)
     df = apply_hourly_patterns(df, city=city)
+    df = apply_event_multipliers(df, city=city)
 
     results = []
 
@@ -265,11 +402,15 @@ def validate_hajj_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
     -------
     pd.DataFrame with columns: Check | Expected | Actual | Status
     """
-    df_standard = apply_hourly_patterns(
-        generate_traffic_data(city=city, n_days=n_days), city=city
+    df_standard = apply_event_multipliers(
+        apply_hourly_patterns(
+            generate_traffic_data(city=city, n_days=n_days), city=city
+        ), city=city
     )
-    df_hajj = apply_hourly_patterns(
-        generate_traffic_data(city=city, n_days=n_days), city=city, hajj=True
+    df_hajj = apply_event_multipliers(
+        apply_hourly_patterns(
+            generate_traffic_data(city=city, n_days=n_days), city=city, hajj=True
+        ), city=city
     )
 
     results = []
@@ -384,3 +525,7 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     ]).reset_index(drop=True)
 
     return df
+
+
+
+
