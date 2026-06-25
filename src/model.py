@@ -12,9 +12,12 @@ from typing import Tuple, Dict, List, Optional
 from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIES, NOISE_BASE_DB, 
                         NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, 
                         NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS,
-                        EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY, ZONE_DISTANCES_KM)
+                        EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY, ZONE_DISTANCES_KM,
+                        RECURRING_EVENTS, EVACUATION_CAPACITY_MARGIN)
 from datetime import datetime
 
+
+effective_capacity = ZONE_ROAD_CAPACITY_VPH * EVACUATION_CAPACITY_MARGIN
 
 FEATURE_COLS = [
     'hour', 'vehicle_count', 'avg_speed', 'weather', 'event',
@@ -31,6 +34,9 @@ DAY_ENCODING      = {
     'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3,
     'Friday': 4, 'Saturday': 5, 'Sunday': 6
 }
+
+
+
 
 
 def prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, list]:
@@ -2411,6 +2417,9 @@ def calculate_evacuation_routes(
         if z not in speed_map:
             speed_map[z] = DEFAULT_SPEED_KMPH
 
+        # ---- Apply HCM margin-of-safety ----
+    effective_capacity = ZONE_ROAD_CAPACITY_VPH * EVACUATION_CAPACITY_MARGIN
+
     # 1. Build safe point list
     safe_points = list(EVACUATION_SAFE_POINTS.items())  # [(name, {'zone':..., 'capacity':...})]
 
@@ -2509,7 +2518,7 @@ def calculate_evacuation_routes(
     # 7. Initial overload check
     overloaded_safe = {}
     for safe_name, (route, alloc, _) in safe_routes.items():
-        overloaded = any(corridor_load.get(z, 0) > ZONE_ROAD_CAPACITY_VPH for z in route)
+        overloaded = any(corridor_load.get(z, 0) > effective_capacity for z in route)
         overloaded_safe[safe_name] = overloaded
 
     # 8. Redistribute if overloaded (simple iterative reduction)
@@ -2522,7 +2531,7 @@ def calculate_evacuation_routes(
         excess_list = []
         for sn in overloaded_names:
             route, _, _ = safe_routes[sn]
-            excess = max(0, max(corridor_load.get(z, 0) - ZONE_ROAD_CAPACITY_VPH for z in route))
+            excess = max(0, max(corridor_load.get(z, 0) - effective_capacity for z in route))
             excess_list.append((sn, excess))
         excess_list.sort(key=lambda x: -x[1])
         if excess_list[0][1] <= 0:
@@ -2572,13 +2581,13 @@ def calculate_evacuation_routes(
                 corridor_load[zone] = corridor_load.get(zone, 0) + alloc
 
         for sn, (route, _, _) in safe_routes.items():
-            overloaded_safe[sn] = any(corridor_load.get(z, 0) > ZONE_ROAD_CAPACITY_VPH for z in route)
+            overloaded_safe[sn] = any(corridor_load.get(z, 0) > effective_capacity for z in route)
 
     # 9. Build evacuation_plan with both clearance and travel time
     evacuation_plan = []
     for safe_name, (route, alloc, total_distance) in safe_routes.items():
         # Clearance time based on capacity (queue drain)
-        clearance_mins = (alloc / ZONE_ROAD_CAPACITY_VPH) * 60 if ZONE_ROAD_CAPACITY_VPH > 0 else 0
+        clearance_mins = (alloc / effective_capacity) * 60 if effective_capacity > 0 else 0
 
         # Compute travel time using actual speeds from speed_map
         # We'll compute average speed along the route, or use minimum speed as conservative.
@@ -2807,3 +2816,7 @@ def compute_equity_summary(city: str, days: int = 30) -> Dict:
         "emissions_delta_flags": emissions_delta_flags,
         "note": "All metrics are aggregated at zone level; no individual data is used."
     }
+
+
+
+
