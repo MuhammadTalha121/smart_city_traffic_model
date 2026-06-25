@@ -2165,9 +2165,9 @@ def cooperative_route(
 
 @app.get('/toll/active-pricing')
 def toll_active_pricing(city: str = 'Riyadh'):
-    """Public endpoint — no auth. Returns current toll for all tolled zones."""
+    """Public endpoint — no auth. Returns current toll for all tolled zones with ceiling info."""
     from src.config import TOLLED_ZONES
-    from src.model import calculate_dynamic_toll, congestion_level
+    from src.model import calculate_dynamic_toll_with_ceiling, congestion_level
     import datetime
 
     df = app.state.df
@@ -2176,19 +2176,22 @@ def toll_active_pricing(city: str = 'Riyadh'):
     for zone in TOLLED_ZONES:
         zone_df = df[df['zone'] == zone]
         score = float(zone_df['congestion_score'].mean()) if not zone_df.empty else 0.3
+        toll_result = calculate_dynamic_toll_with_ceiling(zone, score, daily_toll_accumulated=0.0)
         results.append({
             'zone'            : zone,
-            'toll_sar'        : calculate_dynamic_toll(zone, score),
+            'toll_sar'        : toll_result['toll_amount'],
             'congestion_level': congestion_level(score),
             'last_updated'    : now,
+            'ceiling_applied' : toll_result['ceiling_applied'],
+            'reason'          : toll_result['reason'],
         })
     return {'city': city, 'tolled_zones': results}
 
 
 @app.post('/toll/estimate')
 def toll_estimate(payload: dict, api_key: str = Depends(require_api_key)):
-    """Authenticated. Returns estimated toll for a journey."""
-    from src.model import calculate_dynamic_toll, predict_single, congestion_level
+    """Authenticated. Returns estimated toll for a journey with ceiling info."""
+    from src.model import calculate_dynamic_toll_with_ceiling, congestion_level
 
     origin      = payload.get('origin_zone', 'Zone_1')
     destination = payload.get('destination_zone', 'Zone_2')
@@ -2203,19 +2206,26 @@ def toll_estimate(payload: dict, api_key: str = Depends(require_api_key)):
     origin_score = zone_score(origin)
     dest_score   = zone_score(destination)
 
-    origin_toll = calculate_dynamic_toll(origin, origin_score, vehicle)
-    dest_toll   = calculate_dynamic_toll(destination, dest_score, vehicle)
-    total_toll  = round(origin_toll + dest_toll, 2)
+    origin_result = calculate_dynamic_toll_with_ceiling(origin, origin_score, 0.0, vehicle)
+    dest_result   = calculate_dynamic_toll_with_ceiling(destination, dest_score, 0.0, vehicle)
+
+    total_toll = round(origin_result['toll_amount'] + dest_result['toll_amount'], 2)
+    total_ceiling_applied = origin_result['ceiling_applied'] or dest_result['ceiling_applied']
 
     return {
-        'origin_zone'      : origin,
-        'destination_zone' : destination,
-        'vehicle_type'     : vehicle,
-        'hour'             : hour,
-        'origin_toll_sar'  : origin_toll,
-        'destination_toll_sar': dest_toll,
-        'total_toll_sar'   : total_toll,
-        'congestion_level' : congestion_level(max(origin_score, dest_score)),
+        'origin_zone'          : origin,
+        'destination_zone'     : destination,
+        'vehicle_type'         : vehicle,
+        'hour'                 : hour,
+        'origin_toll_sar'      : origin_result['toll_amount'],
+        'origin_ceiling_applied': origin_result['ceiling_applied'],
+        'origin_reason'        : origin_result['reason'],
+        'destination_toll_sar' : dest_result['toll_amount'],
+        'dest_ceiling_applied' : dest_result['ceiling_applied'],
+        'dest_reason'          : dest_result['reason'],
+        'total_toll_sar'       : total_toll,
+        'total_ceiling_applied': total_ceiling_applied,
+        'congestion_level'     : congestion_level(max(origin_score, dest_score)),
     }
 
 
