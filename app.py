@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 
-from src.datex_export import generate_datex_payload
+from src.datex_export import generate_datex_payload, generate_csv_data, generate_geojson_payload
 
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -41,7 +41,7 @@ from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPE
 
 from src.drt import DRTAllocator
 
-from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, get_active_events, apply_event_multipliers
 from src.model import (
     train_xgboost, prepare_features, predict_single, congestion_level,
     detect_anomalies, forecast_congestion, explain_prediction,
@@ -226,10 +226,22 @@ def _get_active_schedule(city: str) -> dict:
         next_event      = 'Hajj begins'
         days_until      = (next_year_start - today).days
 
+        # --- Recurring Events ---
+    from src.data import get_active_events
+    active_events = get_active_events(city, today)
+
     return {
-        "schedule"  : schedule,
-        "next_event": next_event,
-        "days_until": days_until,
+        "schedule"     : schedule,
+        "next_event"   : next_event,
+        "days_until"   : days_until,
+        "active_events": [
+            {
+                "name"       : ev["name"],
+                "multiplier" : ev["multiplier"],
+                "peak_hours" : ev["peak_hours"],
+            }
+            for ev in active_events
+        ],
     }
 
 
@@ -242,6 +254,7 @@ async def lifespan(app: FastAPI):
     for city in ["Riyadh", "NEOM", "Dubai", "Karachi"]:
         df = generate_traffic_data(city=city)
         df = apply_hourly_patterns(df, city=city)
+        df = apply_event_multipliers(df, city=city)
         df = add_lag_features(df)
         city_dfs[city] = df
 
@@ -446,6 +459,7 @@ class PredictRequest(BaseModel):
     event:           int   = Field(0, ge=0, le=1)
     hour_multiplier: float = Field(1.0, gt=0)
     hajj_mode:       bool  = Field(False, description="Set True during Hajj season to activate mass-gathering traffic model")
+    school_holiday: bool = Field(False, description="Set True during school holiday periods to apply term-break demand pattern")
 
 
 class BatchPredictRequest(BaseModel):
@@ -668,11 +682,18 @@ def predict(
     # ── end IDS ───────────────────────────────────────────────────────────
 
 
+    active_events = get_active_events(p["city"])
+    event_mult = 1.0
+    for ev in active_events:
+        if p["hour"] in ev.get('peak_hours', []):
+            event_mult *= ev['multiplier']
+    adjusted_vehicle_count = min(p["vehicle_count"] * event_mult, 500)
+
     result = predict_single(
         city            = p["city"],
         zone            = p["zone"],
         hour            = p["hour"],
-        vehicle_count   = p["vehicle_count"],
+        vehicle_count   = adjusted_vehicle_count,
         avg_speed       = p["avg_speed"],
         weather         = p["weather"],
         road_type       = p["road_type"],
@@ -683,10 +704,17 @@ def predict(
         hour_multiplier = p["hour_multiplier"],
     )
 
+    # Annotate active events in response
+    result["active_events"] = [
+        {"name": ev["name"], "multiplier": ev["multiplier"], "peak_hours": ev["peak_hours"]}
+        for ev in active_events
+    ]
+
     # Annotate active schedule in response
     schedule_info        = _get_active_schedule(p["city"])
     result["schedule"]   = schedule_info["schedule"]
     result["hajj_mode"]  = p["hajj_mode"]
+    result["school_holiday_mode"] = p["school_holiday"]
 
     row = {
         "vehicle_count"        : p["vehicle_count"],
@@ -1895,6 +1923,62 @@ def export_geojson(
     """
     payload = generate_geojson_payload(city)
     return JSONResponse(content=payload, media_type="application/geo+json")
+
+
+
+@app.get("/export/csv", tags=["export"])
+@limiter.limit("10/minute")
+def export_csv(
+    request: Request,
+    city: Optional[str] = None,
+    zone: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    include_anomalies: bool = False,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    Export historical traffic data as CSV for offline analytics.
+
+    Query parameters:
+      - city: filter by city name (e.g., Riyadh)
+      - zone: filter by zone name (e.g., Zone_1)
+      - start_date: ISO date (YYYY-MM-DD) – inclusive
+      - end_date: ISO date (YYYY-MM-DD) – inclusive
+      - include_anomalies: if true, adds an anomaly_flag column (1=anomalous)
+
+    Returns a CSV file download.
+
+    Authentication required (X-API-Key header).
+    Rate limit: 10 requests per minute.
+    """
+    from datetime import datetime
+
+    from io import StringIO
+
+    df = generate_csv_data(city, zone, start_date, end_date, include_anomalies)
+
+    # Force-add FIRST, before any empty check
+    if include_anomalies and 'anomaly_flag' not in df.columns:
+        df = df.copy()
+        df['anomaly_flag'] = 0
+
+    # Only 404 if genuinely no data AND no anomaly header was requested
+    if df.empty and not include_anomalies:
+        raise HTTPException(status_code=404, detail="No data found for the given filters.")
+
+    output = StringIO()
+    df.to_csv(output, index=False)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=traffic_data_"
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            )
+        }
+    )
 
 
 
