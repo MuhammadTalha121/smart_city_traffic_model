@@ -1371,6 +1371,68 @@ def calculate_dynamic_toll(zone: str, congestion_score: float, vehicle_type: str
     return round(min(toll, MAX_DYNAMIC_TOLL_SAR), 2)
 
 
+
+
+def check_toll_ceiling(zone: str, daily_toll_accumulated: float, congestion_score: float) -> Dict:
+    """
+    Check if toll should be capped or reduced due to daily ceiling or circuit breaker.
+
+    Returns:
+        dict with toll_amount, ceiling_applied, reason, base_toll
+    """
+    from src.config import (
+        TOLL_DAILY_CEILING_SAR,
+        TOLL_CIRCUIT_BREAKER_THRESHOLD,
+        TOLL_CIRCUIT_BREAKER_REDUCTION,
+    )
+
+    base_toll = calculate_dynamic_toll(zone, congestion_score, vehicle_type='passenger')
+    applied_toll = base_toll
+    ceiling_applied = False
+    reason = "Normal pricing"
+
+    # Circuit breaker: extreme congestion reduces toll by 50%
+    if congestion_score >= TOLL_CIRCUIT_BREAKER_THRESHOLD:
+        applied_toll = base_toll * TOLL_CIRCUIT_BREAKER_REDUCTION
+        reason = f"Circuit breaker active – extreme congestion ({congestion_score:.2f} >= {TOLL_CIRCUIT_BREAKER_THRESHOLD})"
+
+    # Daily ceiling: prevent exceeding max per zone per day
+    if daily_toll_accumulated + applied_toll > TOLL_DAILY_CEILING_SAR:
+        if daily_toll_accumulated >= TOLL_DAILY_CEILING_SAR:
+            applied_toll = 0.0
+            ceiling_applied = True
+            reason = f"Daily ceiling reached – zone has accumulated {daily_toll_accumulated:.2f} SAR already"
+        else:
+            applied_toll = TOLL_DAILY_CEILING_SAR - daily_toll_accumulated
+            ceiling_applied = True
+            reason = f"Toll capped at daily ceiling – remaining capacity {applied_toll:.2f} SAR"
+
+    return {
+        'toll_amount': round(applied_toll, 2),
+        'ceiling_applied': ceiling_applied,
+        'reason': reason,
+        'base_toll': round(base_toll, 2),
+    }
+
+
+def calculate_dynamic_toll_with_ceiling(zone: str, congestion_score: float,
+                                        daily_toll_accumulated: float = 0.0,
+                                        vehicle_type: str = 'passenger') -> Dict:
+    """
+    Returns full toll decision including ceiling status.
+    """
+    from src.config import TOLL_EXEMPT_VEHICLES, TOLLED_ZONES
+
+    if vehicle_type in TOLL_EXEMPT_VEHICLES:
+        return {'toll_amount': 0.0, 'ceiling_applied': False, 'reason': 'Exempt vehicle', 'base_toll': 0.0}
+    if zone not in TOLLED_ZONES:
+        return {'toll_amount': 0.0, 'ceiling_applied': False, 'reason': 'Zone not tolled', 'base_toll': 0.0}
+    return check_toll_ceiling(zone, daily_toll_accumulated, congestion_score)
+
+
+
+
+
 def evaluate_transit_priority(bus_distance_m: float,
                                current_green_remaining_s: float,
                                passenger_count: int) -> dict:
