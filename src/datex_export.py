@@ -239,3 +239,80 @@ def generate_geojson_payload(city: str) -> dict:
         "generated_at": datetime.now().isoformat(),
         "city": city
     }
+
+
+
+
+def generate_csv_data(
+    city: Optional[str] = None,
+    zone: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    include_anomalies: bool = False
+) -> pd.DataFrame:
+    import os
+    from datetime import datetime
+    from app import app
+
+    log_path = "predictions_log.csv"
+
+    # Read the log if it exists
+    if os.path.exists(log_path):
+        df = pd.read_csv(log_path)
+    else:
+        df = pd.DataFrame()
+
+    # If empty, return empty DF with anomaly_flag column if requested
+    if df.empty:
+        if include_anomalies:
+            return pd.DataFrame(columns=['anomaly_flag'])
+        return df
+
+    # Parse timestamps and apply filters
+    if 'timestamp' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        if start_date:
+            start = pd.to_datetime(start_date)
+            df = df[df['timestamp'] >= start]
+        if end_date:
+            end = pd.to_datetime(end_date)
+            df = df[df['timestamp'] <= end]
+
+    if city and 'city' in df.columns:
+        df = df[df['city'] == city]
+    if zone and 'zone' in df.columns:
+        df = df[df['zone'] == zone]
+
+    # Add anomaly_flag if requested (DO THIS BEFORE ANY DROPPING)
+    if include_anomalies:
+        # Attempt to compute real anomaly flags using city stats
+        city_for_stats = city if city else "Riyadh"
+        city_df = app.state.city_dfs.get(city_for_stats)
+        if city_df is None:
+            city_df = app.state.df
+
+        if city_df is not None and not city_df.empty:
+            try:
+                stats = city_df.groupby(['zone', 'hour'])['congestion_score'].agg(['mean', 'std']).reset_index()
+                df['hour'] = df['hour'].astype(int)
+                stats['hour'] = stats['hour'].astype(int)
+                df = df.merge(stats, on=['zone', 'hour'], how='left')
+                df['anomaly_flag'] = ((df['congestion_score'] > df['mean'] + 2 * df['std']) & (df['std'].notna())).astype(int)
+                df = df.drop(columns=['mean', 'std'])
+            except Exception:
+                # If stats fail, set all to 0
+                df['anomaly_flag'] = 0
+        else:
+            # No city data, set all to 0
+            df['anomaly_flag'] = 0
+
+        # --- FINAL SAFETY: ensure the column exists ---
+        if 'anomaly_flag' not in df.columns:
+            df['anomaly_flag'] = 0
+
+    # ---  if include_anomalies is True, column must exist ---
+    if include_anomalies:
+        df = df.copy()
+        df['anomaly_flag'] = df.get('anomaly_flag', 0)
+        print(f"DEBUG cols={list(df.columns)}")
+    return df
