@@ -1470,3 +1470,81 @@ def test_emissions_delta_flag_is_correlational_not_causal_in_output_text(client)
             assert "Correlational" in flag["correlational_note"]
             # Also ensure it doesn't claim causation
             assert not any(word in flag["correlational_note"].lower() for word in ["cause", "causal", "prove"])
+
+
+
+
+# =====  Recurring Event Calendar Tests =====
+
+def test_national_day_produces_elevated_evening_congestion():
+    """National Day (Sep 23) peak hours should show elevated vehicle counts."""
+    from src.data import generate_traffic_data, apply_hourly_patterns, apply_event_multipliers
+    from src.config import RECURRING_EVENTS
+
+    # Find National Day config
+    national_day = next(
+        (e for e in RECURRING_EVENTS.get('Riyadh', []) if e['name'] == 'National Day'),
+        None
+    )
+    assert national_day is not None, "National Day not found in RECURRING_EVENTS"
+
+    # Generate data for Sep 23
+    from datetime import date
+    check_date = date(2025, 9, 23)
+
+    df = generate_traffic_data(city='Riyadh', n_days=1)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = apply_event_multipliers(df, city='Riyadh', check_date=check_date)
+
+    # Peak hours should be multiplied
+    for h in national_day['peak_hours']:
+        peak_rows = df[df['hour'] == h]
+        assert not peak_rows.empty, f"No data for hour {h}"
+        # vehicle_count should reflect the 1.6x multiplier
+        # Compare against same hour without event multiplier
+        baseline = generate_traffic_data(city='Riyadh', n_days=1)
+        baseline = apply_hourly_patterns(baseline, city='Riyadh')
+        baseline_val = baseline[baseline['hour'] == h]['vehicle_count'].mean()
+        event_val = peak_rows['vehicle_count'].mean()
+        assert event_val > baseline_val * 1.5, (
+            f"Hour {h}: expected event-elevated count, got {event_val:.1f} vs baseline {baseline_val:.1f}"
+        )
+
+    # Non-peak hours should NOT be multiplied
+    non_peak = [h for h in range(24) if h not in national_day['peak_hours']]
+    for h in non_peak[:3]:  # sample a few
+        rows = df[df['hour'] == h]
+        baseline = generate_traffic_data(city='Riyadh', n_days=1)
+        baseline = apply_hourly_patterns(baseline, city='Riyadh')
+        baseline_val = baseline[baseline['hour'] == h]['vehicle_count'].mean()
+        event_val = rows['vehicle_count'].mean()
+        assert abs(event_val - baseline_val) < baseline_val * 0.1, (
+            f"Hour {h}: non-peak hour should not be multiplied, got {event_val:.1f} vs baseline {baseline_val:.1f}"
+        )
+
+
+def test_get_active_events_returns_empty_outside_season():
+    """July should have no active recurring events in Riyadh."""
+    from src.data import get_active_events
+    from datetime import date
+
+    july_date = date(2025, 7, 15)
+    active = get_active_events('Riyadh', july_date)
+    assert active == [], f"Expected no events in July, got {active}"
+
+
+def test_schedule_active_includes_active_events_field(client):
+    """/schedule/active must include active_events list in response."""
+    from fastapi.testclient import TestClient
+    from app import app
+
+    client = TestClient(app)
+
+    response = client.get(
+        "/schedule/active?city=Riyadh",
+        headers={"X-API-Key": os.getenv("API_KEY", "test-key")}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "active_events" in data, f"Missing active_events field in response: {data.keys()}"
+    assert isinstance(data["active_events"], list), "active_events should be a list"
