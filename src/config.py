@@ -547,6 +547,8 @@ EVACUATION_SAFE_POINTS = {
 }
 ZONE_ROAD_CAPACITY_VPH = 1800  # vehicles per hour per zone
 
+# HCM practice: never plan to 100% of modelled capacity – apply 85% margin
+EVACUATION_CAPACITY_MARGIN: float = 0.85
 
 
 # ===== Prometheus Instrumentation =====
@@ -593,4 +595,55 @@ ZONE_CENTROIDS = {
     'Zone_3': [46.65, 24.65],
     'Zone_4': [46.80, 24.70],
     'Zone_5': [46.70, 24.60],
+}
+
+
+
+SCHOOL_TERM_DATES: Dict[str, List[Dict]] = {
+    'Riyadh': [
+        {'term': 'T1', 'start': '2025-08-25', 'end': '2025-11-15'},
+        {'term': 'T2', 'start': '2025-11-29', 'end': '2026-02-28'},
+        {'term': 'T3', 'start': '2026-03-08', 'end': '2026-06-05'},
+    ],
+    'Dubai': [
+        {'term': 'T1', 'start': '2025-08-25', 'end': '2025-11-15'},
+        {'term': 'T2', 'start': '2025-11-29', 'end': '2026-02-28'},
+        {'term': 'T3', 'start': '2026-03-08', 'end': '2026-06-05'},
+    ],
+}
+SCHOOL_HOLIDAY_MULTIPLIERS: Dict[int, float] = {
+    7: 0.6, 8: 0.7, 9: 1.0, 14: 1.2, 15: 1.2, 16: 1.1, 17: 1.3, 18: 1.3
+}
+
+
+
+
+
+RECURRING_EVENTS: Dict[str, List[Dict]] = {
+    'Riyadh': [
+        {
+            'name'       : 'Riyadh Season',
+            'start_month': 10,
+            'end_month'  : 3,       # year-wrap: Oct of year N to Mar of year N+1
+            'multiplier' : 1.4,
+            'peak_hours' : [19, 20, 21, 22],
+        },
+        {
+            'name'      : 'National Day',
+            'month'     : 9,
+            'day'       : 23,
+            'multiplier': 1.6,
+            'peak_hours': [18, 19, 20, 21, 22],
+        },
+        {
+            'name'      : 'Founding Day',
+            'month'     : 2,
+            'day'       : 22,
+            'multiplier': 1.3,
+            'peak_hours': [17, 18, 19, 20],
+        },
+    ],
+    'NEOM'   : [],
+    'Dubai'  : [],
+    'Karachi': [],
 }
