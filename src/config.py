@@ -430,6 +430,16 @@ VMS_METRO_STATIONS = {
 }
 
 
+# Semantic validation rules
+VMS_FORBIDDEN_PATTERNS: List[str] = [
+    'UNKNOWN', 'NONE', 'N/A', 'NULL', 'ERROR', 'NAN'
+]
+VMS_MAX_WORDS: int = 12        # highway sign readability at 100 km/h
+VMS_REQUIRED_ACTION_VERBS: List[str] = [
+    'REDUCE', 'SLOW', 'DIVERT', 'CAUTION', 'PROCEED', 'AVOID', 'USE'
+]
+
+
 
 
 # =====– Role-Based Access Control =====
@@ -509,6 +519,8 @@ PARETO_DEFAULT_WEIGHTS = {
     'emission_weight': 0.30,
     'cost_weight': 0.30,
 }
+
+EMISSIONS_ROUTING_WEIGHT: float = 0.0
 
 
 
@@ -649,3 +661,14 @@ RECURRING_EVENTS: Dict[str, List[Dict]] = {
     'Dubai'  : [],
     'Karachi': [],
 }
+
+
+
+
+
+#  MQTT Interface
+import os as _os
+MQTT_BROKER_HOST: str  = _os.getenv('MQTT_BROKER_HOST', '')
+MQTT_BROKER_PORT: int  = int(_os.getenv('MQTT_BROKER_PORT', '1883'))
+MQTT_TOPIC_PREFIX: str = 'smart_city/traffic'
+MQTT_ENABLED: bool     = bool(_os.getenv('MQTT_BROKER_HOST', ''))
