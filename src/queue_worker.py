@@ -45,11 +45,42 @@ class TelemetryQueue:
         """
         Add a reading to the queue. Returns True if enqueued, False if queue is full.
         """
+        # ---- 1. Try to put into the in‑process queue ----
         try:
             self.queue.put_nowait(reading)
-            return True
         except Full:
             return False
+
+        # ---- 2. Optionally publish to MQTT (if configured) ----
+        # We'll only publish if MQTT is enabled and we have a client.
+        try:
+            from src.mqtt_adapter import get_publisher as _get_publisher
+            if not hasattr(self, '_publisher'):
+                self._publisher = _get_publisher(self.queue)
+            # We need a method that publishes to MQTT only, not to the queue.
+            # We'll add a new method to the publisher, or use a direct check.
+            # For simplicity, we'll check if the publisher has a client and is connected,
+            # then publish directly using paho (or we can add a method).
+            # Since we already have the publisher, we can add a new method to it.
+            # Let's assume we've added a `publish_mqtt_only` method.
+            # If not, we can call the existing publish but we must avoid re-queueing.
+            # Instead, we'll use the publisher's internal mqtt_client directly.
+
+            if self._publisher.mqtt_client and self._publisher._connected:
+                import json
+                self._publisher.mqtt_client.publish(
+                    f"smart_city/traffic/telemetry",
+                    json.dumps(reading),
+                    qos=0
+                )
+            
+            self._publisher.publish_mqtt_only('telemetry', reading)
+        except Exception as e:
+            # Log but don't fail the enqueue
+            import logging
+            logging.warning(f"MQTT publish failed: {e}")
+
+        return True
 
     def _process_batch(self) -> int:
         """
