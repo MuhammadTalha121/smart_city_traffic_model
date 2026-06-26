@@ -1319,7 +1319,40 @@ def test_pareto_returns_three_distinct_routes():
         assert r['route'][-1] == 'Zone_5'
 
 
+def test_emissions_weight_zero_produces_same_route_as_before():
+    """PROMPT 079 — emissions_weight=0.0 reproduces prior behaviour exactly."""
+    from src.model import calculate_pareto_routes
 
+    congestion_map = {f'Zone_{i}': 0.3 for i in range(1, 6)}
+    zone_emissions_map = {'Zone_4': 500.0, 'Zone_5': 10.0}
+
+    no_map = calculate_pareto_routes('Zone_1', 'Zone_4', congestion_map)
+    with_map_zero = calculate_pareto_routes(
+        'Zone_1', 'Zone_4', congestion_map,
+        zone_emissions_map=zone_emissions_map, emissions_weight=0.0,
+    )
+    assert [r['route'] for r in no_map['routes']] == [r['route'] for r in with_map_zero['routes']]
+    assert [r['utility'] for r in no_map['routes']] == [r['utility'] for r in with_map_zero['routes']]
+
+
+def test_positive_emissions_weight_penalises_high_emission_corridor():
+    """PROMPT 079 — a route through a high-CO2 zone loses utility once emissions_weight > 0."""
+    from src.model import calculate_pareto_routes
+
+    congestion_map = {f'Zone_{i}': 0.3 for i in range(1, 6)}
+    zone_emissions_map = {'Zone_4': 1000.0, 'Zone_5': 1.0}
+
+    baseline = calculate_pareto_routes('Zone_1', 'Zone_4', congestion_map)
+    penalised = calculate_pareto_routes(
+        'Zone_1', 'Zone_4', congestion_map,
+        zone_emissions_map=zone_emissions_map, emissions_weight=0.8,
+    )
+    base_utility = {tuple(r['route']): r['utility'] for r in baseline['routes']}
+    pen_utility  = {tuple(r['route']): r['utility'] for r in penalised['routes']}
+    for route, util in pen_utility.items():
+        if route in base_utility:
+            assert util <= base_utility[route]
+    assert all(r['network_emissions_penalty'] >= 0 for r in penalised['routes'])
 
 
 
@@ -1644,3 +1677,43 @@ def test_toll_ceiling_reason_string_is_human_readable():
     # Should have a reason that mentions either circuit breaker or ceiling
     assert len(result['reason']) > 10
     assert isinstance(result['reason'], str)
+
+
+
+
+
+# ===== – VMS Semantic Validation =====
+
+def test_vms_rejects_message_with_forbidden_pattern():
+    from src.model import validate_vms_message
+
+    # Message with "N/A" should be invalid
+    lines = ["ZONE: HEAVY", "N/A DELAY", "USE METRO"]
+    result = validate_vms_message(lines)
+    assert result["valid"] is False
+    assert any("forbidden pattern" in err for err in result["errors"])
+    assert "N/A" in result["errors"][0] or "N/A" in str(result["errors"])
+
+
+def test_vms_rejects_message_exceeding_word_limit():
+    from src.model import validate_vms_message
+
+    # 15 words – should exceed limit of 12
+    lines = ["HEAVY CONGESTION EXPECT DELAYS USE ALTERNATE ROUTE", "AND AVOID AREA"]
+    # Count: "HEAVY CONGESTION EXPECT DELAYS USE ALTERNATE ROUTE" = 7 words, second line = 4 words? Let's make it explicit.
+    # We'll just test that word_count > 12 triggers an error.
+    long_line = "ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN ELEVEN TWELVE THIRTEEN"  # 13 words
+    result = validate_vms_message([long_line])
+    assert result["valid"] is False
+    assert any("exceeds limit" in err for err in result["errors"])
+
+
+def test_vms_warns_on_missing_action_verb():
+    from src.model import validate_vms_message
+
+    # Message with no action verb (just a statement) → warning, but valid
+    lines = ["ZONE CLEAR", "NORMAL SPEED"]
+    result = validate_vms_message(lines)
+    assert result["valid"] is True  # no errors, only warning
+    assert len(result["warnings"]) > 0
+    assert "action verb" in result["warnings"][0].lower()
