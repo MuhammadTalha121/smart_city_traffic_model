@@ -80,3 +80,62 @@ def test_changelog_entry_created_on_promotion(tmp_path, monkeypatch):
     assert "Model Changelog" in content
     assert "Riyadh" in content
     assert "promoted" in content
+
+
+
+
+# ===== Optuna HPO staging-gate verification =====
+
+def test_optuna_hpo_writes_to_staging_not_live_path(tmp_path, monkeypatch):
+    """run_hpo=True must write only to the staging slot, identical to the
+    non-HPO path — confirms there is no second write path to model.joblib."""
+    staging, live, _ = _patch_paths(monkeypatch, tmp_path)
+
+    joblib.dump({"model": _DummyModel(0.5), "r2": 0.5, "timestamp": "t0", "hpo_used": False}, live)
+    live_mtime_before = os.path.getmtime(live)
+
+    def fake_optimize(X, y):
+        return {
+            "best_params": {"n_estimators": 100, "max_depth": 3,
+                             "learning_rate": 0.1, "subsample": 0.8},
+            "best_cv_mae": 0.05, "n_trials_run": 1, "study_name": "fake_study",
+        }
+    monkeypatch.setattr("src.model.optimize_hyperparameters", fake_optimize)
+
+    from src.pipeline import retrain_model
+    result = retrain_model(city="Riyadh", run_hpo=True)
+
+    assert result["hpo_used"] is True
+    assert result["model_path"] == staging
+    assert os.path.exists(staging)
+    assert os.path.getmtime(live) == live_mtime_before, (
+        "HPO retrain must never write directly to the live model path"
+    )
+
+
+def test_optuna_promotion_requires_evaluate_staged_model_approval(tmp_path, monkeypatch):
+    """An HPO-sourced staged model that regresses must be rejected by the
+    same gate as a non-HPO model — HPO origin grants no bypass."""
+    staging, live, _ = _patch_paths(monkeypatch, tmp_path)
+
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city="Riyadh", n_days=10)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    _, y_true, _ = prepare_features(df)
+    true_mean = float(y_true.mean())
+
+    joblib.dump({"model": _DummyModel(true_mean), "r2": 0.9,
+                 "timestamp": "t0", "hpo_used": False}, live)
+    joblib.dump({"model": _DummyModel(true_mean + 0.9), "r2": 0.1,
+                 "timestamp": "t1", "hpo_used": True}, staging)
+
+    evaluation = evaluate_staged_model(city="Riyadh")
+    assert evaluation["recommendation"] == "reject"
+
+    with pytest.raises(ValueError):
+        promote_staged_model(city="Riyadh", drift_score=1.6, evaluation=evaluation)
+
+    assert joblib.load(live)["timestamp"] == "t0"
