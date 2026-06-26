@@ -1144,6 +1144,28 @@ def test_pareto_recommendations_returns_routes(client):
 
 
 
+def test_pareto_emissions_weight_zero_default_unchanged(client):
+    payload = {"city": "Riyadh", "origin_zone": "Zone_1", "destination_zone": "Zone_4"}
+    r1 = client.post("/routing/pareto-recommendations", json=payload, headers={"X-API-Key": TEST_KEY})
+    r2 = client.post("/routing/pareto-recommendations",
+                      json={**payload, "emissions_weight": 0.0},
+                      headers={"X-API-Key": TEST_KEY})
+    assert r1.status_code == 200 and r2.status_code == 200
+    d1, d2 = r1.json(), r2.json()
+    assert [r["route"] for r in d1["routes"]] == [r["route"] for r in d2["routes"]]
+    assert [r["utility"] for r in d1["routes"]] == [r["utility"] for r in d2["routes"]]
+
+
+def test_pareto_positive_emissions_weight_adds_penalty_field(client):
+    payload = {"city": "Riyadh", "origin_zone": "Zone_1", "destination_zone": "Zone_4", "emissions_weight": 0.5}
+    response = client.post("/routing/pareto-recommendations", json=payload, headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    for route in response.json()["routes"]:
+        assert "network_emissions_penalty" in route
+        assert route["network_emissions_penalty"] >= 0
+
+
+
 
 # ===== Air quality API tests =====
 
