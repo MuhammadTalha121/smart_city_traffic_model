@@ -13,7 +13,7 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
                         NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, 
                         NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS,
                         EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY, ZONE_DISTANCES_KM,
-                        RECURRING_EVENTS, EVACUATION_CAPACITY_MARGIN)
+                        RECURRING_EVENTS, EVACUATION_CAPACITY_MARGIN, EMISSIONS_ROUTING_WEIGHT)
 from datetime import datetime
 
 
@@ -1950,6 +1950,55 @@ def generate_vms_message(
 
 
 
+def validate_vms_message(lines: List[str]) -> Dict:
+    """
+    Semantic validation for VMS messages.
+
+    Checks:
+      - No forbidden pattern (e.g., UNKNOWN, N/A) appears in any line.
+      - Total word count across all lines ≤ VMS_MAX_WORDS.
+      - At least one action verb from VMS_REQUIRED_ACTION_VERBS appears (warning only).
+
+    Returns:
+        dict with valid (bool), errors (list), warnings (list)
+    """
+    from src.config import VMS_FORBIDDEN_PATTERNS, VMS_MAX_WORDS, VMS_REQUIRED_ACTION_VERBS
+
+    errors = []
+    warnings = []
+
+    # 1. Check each line for forbidden patterns
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        for pattern in VMS_FORBIDDEN_PATTERNS:
+            if pattern in line.upper():
+                errors.append(f"Line {i+1} contains forbidden pattern '{pattern}'")
+
+    # 2. Count total words across all non-empty lines
+    full_text = " ".join([line for line in lines if line.strip()])
+    word_count = len(full_text.split())
+    if word_count > VMS_MAX_WORDS:
+        errors.append(f"Total word count ({word_count}) exceeds limit of {VMS_MAX_WORDS}")
+
+    # 3. Check for required action verb (warning only)
+    found_verb = any(
+        verb in full_text.upper()
+        for verb in VMS_REQUIRED_ACTION_VERBS
+    )
+    if not found_verb:
+        warnings.append("No action verb found – message may be advisory only")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "word_count": word_count,
+    }
+
+
+
+
 
 # ==========
 
@@ -2148,21 +2197,18 @@ def calculate_pareto_routes(
     destination_zone: str,
     congestion_map: Dict[str, float],
     weights: Optional[Dict[str, float]] = None,
+    zone_emissions_map: Optional[Dict[str, float]] = None,
+    emissions_weight: float = EMISSIONS_ROUTING_WEIGHT,
 ) -> Dict:
     """
     Generate Pareto-optimal route recommendations balancing time, emissions, and cost.
 
-    Parameters:
-        origin_zone: Starting zone (e.g., 'Zone_1')
-        destination_zone: Target zone
-        congestion_map: {zone: congestion_score} for all zones
-        weights: optional dict with time_weight, emission_weight, cost_weight
-                 (defaults to PARETO_DEFAULT_WEIGHTS)
-
-    Returns:
-        dict with:
-            routes: list of top 3 routes with scores
-            recommended_for: 'fastest', 'cleanest', 'cheapest'
+    PROMPT 079: zone_emissions_map (zone -> aggregate CO2 kg, e.g. from
+    compute_equity_summary) lets a route be penalised for passing through a zone
+    that already carries a high emissions burden — distinct from emission_score,
+    which only measures the route's own CO2. emissions_weight is opt-in and
+    defaults to 0.0, so omitting both new params reproduces prior behaviour
+    and route order exactly.
     """
     import heapq
     from src.config import ZONE_ADJACENCY, PARETO_DEFAULT_WEIGHTS
@@ -2175,7 +2221,6 @@ def calculate_pareto_routes(
     w_emission = weights.get('emission_weight', 0.3)
     w_cost = weights.get('cost_weight', 0.3)
 
-    # Enumerate all simple paths (max 5 hops to avoid explosion)
     def find_paths(current, target, path, max_hops=5):
         if current == target:
             return [path]
@@ -2197,7 +2242,6 @@ def calculate_pareto_routes(
             'message': 'No route found between zones.'
         }
 
-    # Score each path
     scored = []
     for path in all_paths:
         time_score = 0.0
@@ -2206,65 +2250,65 @@ def calculate_pareto_routes(
 
         for zone in path:
             c = congestion_map.get(zone, 0.1)
-            time_score += c  # higher congestion = higher time cost
-            # Estimate emissions for 1 hour at current congestion
+            time_score += c
             level = congestion_level(c)
             em = compute_emissions(level, vehicle_count=100, duration_hours=1.0)
             emission_score += em['co2_kg']
-            # Toll cost
             cost_score += calculate_dynamic_toll(zone, c)
+
+        network_penalty_raw = (
+            sum(zone_emissions_map.get(z, 0.0) for z in path)
+            if zone_emissions_map else 0.0
+        )
 
         scored.append({
             'route': path,
             'time_score': round(time_score, 4),
             'emission_score': round(emission_score, 4),
             'cost_score': round(cost_score, 2),
+            'network_penalty_raw': network_penalty_raw,
         })
 
-    # Normalize scores (0–1) across all paths
     if len(scored) > 1:
         time_vals = [s['time_score'] for s in scored]
         emit_vals = [s['emission_score'] for s in scored]
         cost_vals = [s['cost_score'] for s in scored]
+        pen_vals  = [s['network_penalty_raw'] for s in scored]
 
         min_t, max_t = min(time_vals), max(time_vals)
         min_e, max_e = min(emit_vals), max(emit_vals)
         min_c, max_c = min(cost_vals), max(cost_vals)
+        min_p, max_p = min(pen_vals),  max(pen_vals)
 
         for s in scored:
             s['time_score_norm'] = (s['time_score'] - min_t) / (max_t - min_t + 1e-9)
             s['emission_score_norm'] = (s['emission_score'] - min_e) / (max_e - min_e + 1e-9)
             s['cost_score_norm'] = (s['cost_score'] - min_c) / (max_c - min_c + 1e-9)
+            s['network_penalty_norm'] = (s['network_penalty_raw'] - min_p) / (max_p - min_p + 1e-9)
     else:
         for s in scored:
             s['time_score_norm'] = 0.0
             s['emission_score_norm'] = 0.0
             s['cost_score_norm'] = 0.0
+            s['network_penalty_norm'] = 0.0
 
-    # Compute utility
     for s in scored:
+        s['network_emissions_penalty'] = round(s['network_penalty_norm'] * emissions_weight, 4)
         s['utility'] = (
             s['time_score_norm'] * w_time +
             s['emission_score_norm'] * w_emission +
             s['cost_score_norm'] * w_cost
-        )
+        ) - s['network_emissions_penalty']
+        del s['network_penalty_raw']
+        del s['network_penalty_norm']
 
-    # Sort by utility descending
     scored.sort(key=lambda x: x['utility'], reverse=True)
 
-    # Top 3 routes
     top_routes = scored[:3]
 
-    # Determine recommended_for based on best of each criterion
     fastest = min(scored, key=lambda x: x['time_score'])
     cleanest = min(scored, key=lambda x: x['emission_score'])
     cheapest = min(scored, key=lambda x: x['cost_score'])
-
-    recommendations = {
-        'fastest': fastest,
-        'cleanest': cleanest,
-        'cheapest': cheapest,
-    }
 
     return {
         'origin_zone': origin_zone,
@@ -2276,6 +2320,7 @@ def calculate_pareto_routes(
             'cheapest': {'route': cheapest['route'], 'cost_score': cheapest['cost_score']},
         },
         'total_paths_found': len(all_paths),
+        'emissions_weight_applied': emissions_weight,
     }
 
 
