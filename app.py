@@ -94,6 +94,40 @@ scheduler      = BackgroundScheduler()
 
 VALID_SOURCES = ["weather", "osm", "mock", "micromobility"]
 
+
+# ── Quota configuration ──
+DAILY_QUOTA_LIMIT = int(os.getenv("DAILY_QUOTA_LIMIT", "10000"))
+QUOTA_EXEMPT_ENDPOINTS = ["/health", "/sla/current"]
+
+def _write_usage_log(log_data: dict) -> None:
+    """Append a single usage log row to usage_log.csv."""
+    log_path = "usage_log.csv"
+    row = pd.DataFrame([log_data])
+    write_header = not os.path.exists(log_path)
+    row.to_csv(log_path, mode="a", header=write_header, index=False)
+
+def get_today_usage_for_key(key_hash: str) -> int:
+    """
+    Count how many requests this API key (first 8 chars) has made today.
+    """
+    log_path = "usage_log.csv"
+    if not os.path.exists(log_path):
+        return 0
+
+    try:
+        df = pd.read_csv(log_path)
+    except Exception:
+        return 0
+
+    if "timestamp" not in df.columns or "api_key_hash" not in df.columns:
+        return 0
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    today = datetime.now().date()
+    today_mask = df["timestamp"].dt.date == today
+    key_mask = df["api_key_hash"] == key_hash
+    return int(df[today_mask & key_mask].shape[0])
+
 def _get_registry() -> Dict[str, Dict]:
     try:
         return app.state.key_registry
@@ -396,40 +430,65 @@ QUEUE_DEPTH_GAUGE = Gauge(
 @app.middleware("http")
 async def usage_logging_middleware(request: Request, call_next):
     """
-    Log every request to usage_log.csv after processing.
-
-    Captures endpoint, method, hashed API key (first 8 chars),
-    HTTP status code, and response time in milliseconds.
-    Never logs request body or full API key.
+    Log every request to usage_log.csv and enforce daily per‑key quota.
     """
     import time
 
-    start    = time.monotonic()
+    raw_key  = request.headers.get("X-API-Key", "anonymous")
+    key_hash = raw_key[:8] if raw_key != "anonymous" else "anonymous"
+    endpoint = request.url.path
+    method   = request.method
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Quota check (skip for exempt endpoints and anonymous) ──
+    if endpoint not in QUOTA_EXEMPT_ENDPOINTS and raw_key != "anonymous":
+        today_usage = get_today_usage_for_key(key_hash)
+        if today_usage >= DAILY_QUOTA_LIMIT:
+            # Log the blocked request (status 429) before returning
+            _write_usage_log({
+                "timestamp": timestamp,
+                "endpoint": endpoint,
+                "method": method,
+                "api_key_hash": key_hash,
+                "response_code": 429,
+                "response_time_ms": 0,  # no processing time
+            })
+
+            # Calculate seconds until midnight
+            now = datetime.now()
+            seconds_until_midnight = (
+                (24 - now.hour - 1) * 3600 +
+                (60 - now.minute - 1) * 60 +
+                (60 - now.second)
+            )
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "DAILY_QUOTA_EXCEEDED",
+                    "message": f"Daily quota of {DAILY_QUOTA_LIMIT} requests exceeded.",
+                    "retry_after": "tomorrow 00:00",
+                    "key_prefix": key_hash,
+                    "calls_today": today_usage,
+                },
+                headers={"Retry-After": str(seconds_until_midnight)}
+            )
+
+    # ── Process request ──
+    start = time.monotonic()
     response = await call_next(request)
     duration = round((time.monotonic() - start) * 1000, 1)
 
-    raw_key    = request.headers.get("X-API-Key", "anonymous")
-    key_hash   = raw_key[:8] if raw_key != "anonymous" else "anonymous"
-    endpoint   = request.url.path
-    method     = request.method
-    status     = response.status_code
-    timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    log_path = "usage_log.csv"
-    row = pd.DataFrame([{
-        "timestamp"      : timestamp,
-        "endpoint"       : endpoint,
-        "method"         : method,
-        "api_key_hash"   : key_hash,
-        "response_code"  : status,
+    # ── Log the successful (or other) request ──
+    _write_usage_log({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoint": endpoint,
+        "method": method,
+        "api_key_hash": key_hash,
+        "response_code": response.status_code,
         "response_time_ms": duration,
-    }])
-    write_header = not os.path.exists(log_path)
-    row.to_csv(log_path, mode="a", header=write_header, index=False)
+    })
 
     return response
-
-
 
 
 
