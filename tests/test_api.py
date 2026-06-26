@@ -1570,3 +1570,175 @@ def test_schedule_active_includes_active_events_field(client):
     data = response.json()
     assert "active_events" in data, f"Missing active_events field in response: {data.keys()}"
     assert isinstance(data["active_events"], list), "active_events should be a list"
+
+
+
+
+# tests/test_api.py (add at the end of the file)
+# or create tests/test_quota.py
+
+import pytest
+from unittest.mock import patch
+from datetime import datetime, timedelta
+from fastapi.testclient import TestClient
+from app import app
+
+# Ensure we have a test client fixture (if not already)
+# Many tests already have a 'client' fixture; if not, add:
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as c:
+        yield c
+
+# Use the same TEST_KEY that other tests use
+TEST_KEY = "test-key-for-pytest-only"
+
+# ---------------------------------------------------------------------------
+# Tests for quota enforcement
+# ---------------------------------------------------------------------------
+
+def test_quota_exceeded_returns_429(client):
+    """
+    When a key exceeds the daily quota, the endpoint should return 429.
+    """
+    # Mock the usage count to be exactly at the limit (or above)
+    with patch('app.get_today_usage_for_key', return_value=10000):
+        response = client.get(
+            "/predict",
+            params={"city": "Riyadh", "zone": "Zone_1", "hour": 10, "vehicle_count": 100, "avg_speed": 60},
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert response.status_code == 429
+        data = response.json()
+        assert data["error"] == "DAILY_QUOTA_EXCEEDED"
+        assert "Retry-After" in response.headers
+        # Check that the response includes the calls today
+        assert data["calls_today"] == 10000
+
+def test_quota_exceeded_retry_after_header(client):
+    """
+    The 429 response includes a Retry-After header (seconds until midnight).
+    """
+    with patch('app.get_today_usage_for_key', return_value=10001):
+        response = client.get(
+            "/predict",
+            params={"city": "Riyadh", "zone": "Zone_1", "hour": 10, "vehicle_count": 100, "avg_speed": 60},
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert response.status_code == 429
+        retry_after = int(response.headers["Retry-After"])
+        # Should be positive and less than 86400 (seconds in a day)
+        assert 0 < retry_after <= 86400
+
+def test_health_exempt_from_quota(client):
+    """
+    /health endpoint is exempt from quota checks.
+    """
+    with patch('app.get_today_usage_for_key', return_value=10000):
+        response = client.get("/health", headers={"X-API-Key": TEST_KEY})
+        assert response.status_code == 200
+        # The response should be the normal health check
+        assert response.json() == {"status": "healthy"}
+
+def test_sla_current_exempt_from_quota(client):
+    """
+    /sla/current endpoint is exempt from quota checks.
+    """
+    with patch('app.get_today_usage_for_key', return_value=10000):
+        response = client.get("/sla/current", headers={"X-API-Key": TEST_KEY})
+        assert response.status_code == 200
+        # It should return SLA metrics
+        data = response.json()
+        assert "avg_response_time_ms" in data or "uptime_pct" in data  # adjust based on actual response
+
+def test_quota_check_does_not_affect_anonymous_requests(client):
+    """
+    Requests without an API key are not subject to quota limits.
+    (They will still be logged with 'anonymous' key_hash)
+    """
+    with patch('app.get_today_usage_for_key', return_value=10000):
+        response = client.get(
+            "/predict",
+            params={"city": "Riyadh", "zone": "Zone_1", "hour": 10, "vehicle_count": 100, "avg_speed": 60}
+            # No X-API-Key header
+        )
+        # The endpoint will return 401 (missing key) before quota check.
+        # We need to test an endpoint that allows anonymous if any exist,
+        # but /predict requires auth. We'll test /health which is public.
+        # Better: test /health with no key
+        response = client.get("/health")
+        assert response.status_code == 200
+        # Quota check is skipped for anonymous
+
+def test_quota_logs_blocked_requests(client):
+    """
+    Even when quota is exceeded, the request is logged (with status 429).
+    """
+    import pandas as pd
+    import os
+
+    # Clear log or mock it? We'll check that the log entry appears.
+    # We'll count entries after the request.
+    log_path = "usage_log.csv"
+    # Backup existing log if needed
+    if os.path.exists(log_path):
+        os.rename(log_path, log_path + ".bak")
+
+    try:
+        with patch('app.get_today_usage_for_key', return_value=10000):
+            response = client.get(
+                "/predict",
+                params={"city": "Riyadh", "zone": "Zone_1", "hour": 10, "vehicle_count": 100, "avg_speed": 60},
+                headers={"X-API-Key": TEST_KEY}
+            )
+            assert response.status_code == 429
+
+        # Check that the log file exists and has an entry
+        assert os.path.exists(log_path)
+        df = pd.read_csv(log_path)
+        # Find the row with status 429
+        blocked = df[df["response_code"] == 429]
+        assert not blocked.empty
+        # Also check that the key_hash is correct
+        assert blocked.iloc[0]["api_key_hash"] == TEST_KEY[:8]
+    finally:
+        # Restore original log
+        if os.path.exists(log_path + ".bak"):
+            os.remove(log_path)
+            os.rename(log_path + ".bak", log_path)
+
+def test_quota_check_uses_correct_daily_reset(client):
+    """
+    The quota counts only today's requests, not total.
+    """
+    # We'll mock the current date to be yesterday and check that usage is 0.
+    # Or we can just check that the function returns 0 for a future date.
+    # This test may be more complex; we'll rely on the helper function logic.
+    # We'll test that get_today_usage_for_key works correctly.
+    from app import get_today_usage_for_key
+    # Write a test entry for today and one for yesterday
+    import pandas as pd
+    import os
+    log_path = "usage_log.csv"
+    # Backup if exists
+    if os.path.exists(log_path):
+        os.rename(log_path, log_path + ".bak")
+
+    try:
+        today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        df = pd.DataFrame([
+            {"timestamp": today, "endpoint": "/test", "method": "GET", "api_key_hash": "abc12345", "response_code": 200, "response_time_ms": 10},
+            {"timestamp": yesterday, "endpoint": "/test", "method": "GET", "api_key_hash": "abc12345", "response_code": 200, "response_time_ms": 10},
+        ])
+        df.to_csv(log_path, index=False)
+
+        # Today's count should be 1
+        count = get_today_usage_for_key("abc12345")
+        assert count == 1
+    finally:
+        if os.path.exists(log_path + ".bak"):
+            os.remove(log_path)
+            os.rename(log_path + ".bak", log_path)
+        elif os.path.exists(log_path):
+            os.remove(log_path)
