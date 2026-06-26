@@ -643,3 +643,95 @@ def compute_sla_metrics(days: int = 30) -> dict:
         "error_rate_pct"   : error_pct,
         "met_all_slas"     : met_all,
     }
+
+
+
+
+
+# ──— Key registry persistence ─────────────────────────
+import json as _json
+import uuid as _uuid
+
+KEY_REGISTRY_PATH = "key_registry.json"
+
+
+def load_key_registry(registry_path: str = KEY_REGISTRY_PATH) -> list:
+    """
+    Load key registry from JSON file.
+    Falls back to API_KEYS env var if file does not exist.
+    Returns a list of key dicts with full metadata.
+    """
+    if os.path.exists(registry_path):
+        with open(registry_path, 'r') as f:
+            return _json.load(f).get('keys', [])
+
+    # Fallback: seed from API_KEYS env var
+    env_registry = build_key_registry()
+    keys = []
+    for key, info in env_registry.items():
+        keys.append({
+            'key':        key,
+            'city':       info.get('city', '*'),
+            'role':       info.get('role', 'operator'),
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'revoked':    False,
+            'revoked_at': None,
+        })
+    save_key_registry(keys, registry_path)
+    return keys
+
+
+def save_key_registry(keys: list, registry_path: str = KEY_REGISTRY_PATH) -> None:
+    """Write key list to JSON file."""
+    with open(registry_path, 'w') as f:
+        _json.dump({'keys': keys}, f, indent=2)
+
+
+def add_key_to_registry(city: str, role: str,
+                         registry_path: str = KEY_REGISTRY_PATH) -> str:
+    """Generate a new key, persist it, return the full key (shown once only)."""
+    import secrets as _secrets
+    new_key = 'sk_live_' + _secrets.token_hex(24)
+    keys = load_key_registry(registry_path)
+    keys.append({
+        'key':        new_key,
+        'city':       city,
+        'role':       role,
+        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'revoked':    False,
+        'revoked_at': None,
+    })
+    save_key_registry(keys, registry_path)
+    return new_key
+
+
+def revoke_key_from_registry(key_prefix: str,
+                              registry_path: str = KEY_REGISTRY_PATH) -> bool:
+    """Revoke a key by its first 8 chars. Returns True if found and revoked."""
+    keys = load_key_registry(registry_path)
+    found = False
+    for entry in keys:
+        if entry['key'].startswith(key_prefix) and not entry['revoked']:
+            entry['revoked']    = True
+            entry['revoked_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            found = True
+            break
+    if found:
+        save_key_registry(keys, registry_path)
+    return found
+
+
+def list_registry_keys(registry_path: str = KEY_REGISTRY_PATH) -> list:
+    """Return all keys with only the first 8 chars visible — never the full key."""
+    keys = load_key_registry(registry_path)
+    return [
+        {
+            'key_prefix': entry['key'][:8],
+            'city':       entry['city'],
+            'role':       entry['role'],
+            'created_at': entry['created_at'],
+            'revoked':    entry.get('revoked', False),
+            'revoked_at': entry.get('revoked_at'),
+        }
+        for entry in keys
+    ]
