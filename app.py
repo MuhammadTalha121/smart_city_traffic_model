@@ -26,6 +26,10 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTEN
 from src.datex_export import generate_datex_payload, generate_csv_data, generate_geojson_payload
 
 
+from src.siri_export import (
+    to_siri_vehicle_activity, to_siri_estimated_timetable, build_siri_service_delivery,
+)
+
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 import time
@@ -37,7 +41,8 @@ from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPE
                          NOISE_THRESHOLDS, ZONE_ADJACENCY, PRIORITY_VEHICLE_SPEED_KMPH, TELEMETRY_QUEUE_MAX_SIZE,
                         TELEMETRY_BATCH_SIZE,
                         TELEMETRY_FLUSH_INTERVAL_S, PARKING_HUBS, LATENCY_SLA_THRESHOLD_MS, METRICS_ENDPOINT,
-                        DRT_ELIGIBLE_ZONES, DRT_SHUTTLE_CAPACITY, DRT_MAX_WAIT_MINS, MAX_DATA_AGE_SECONDS)
+                        DRT_ELIGIBLE_ZONES, DRT_SHUTTLE_CAPACITY, DRT_MAX_WAIT_MINS, MAX_DATA_AGE_SECONDS,
+                        EMISSIONS_ROUTING_WEIGHT)
 
 from src.drt import DRTAllocator
 
@@ -55,6 +60,7 @@ from src.model import (
     compute_thermal_risk, compute_thermal_risk, calculate_egress_plan,
     generate_vms_message, calculate_pareto_routes, estimate_air_quality,
     validate_freight_entry, calculate_evacuation_routes, train_xgboost_quantile, predict_with_confidence,
+    validate_vms_message,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -270,6 +276,7 @@ async def lifespan(app: FastAPI):
     app.state.data_source  = "mock"
     app.state.data_source_fetched_at = datetime.now()
     app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    app.state.last_drt_allocation = {}
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
 
@@ -1982,6 +1989,53 @@ def export_csv(
 
 
 
+@app.get("/export/siri", tags=["export"])
+@limiter.limit("20/minute")
+def export_siri(
+    request: Request,
+    city: str = "Riyadh",
+    include_vehicles: bool = True,
+    include_timetable: bool = True,
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    SIRI-shaped export (SIRI-VM VehicleActivity + SIRI-ET EstimatedTimetableDelivery).
+    Not a full SIRI implementation — see src/siri_export.py module docstring for scope.
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+    _assert_city_permitted(auth, city)
+
+    vehicle_activities = []
+    if include_vehicles:
+        cached = getattr(app.state, "last_drt_allocation", {}).get(city, {})
+        for trip in cached.get("trips", []):
+            vehicle_activities.append(to_siri_vehicle_activity(trip))
+
+    estimated_journeys = []
+    if include_timetable:
+        df = app.state.city_dfs[city]
+        for zone in sorted(df["zone"].unique()):
+            zone_rows = df[df["zone"] == zone].sort_values("timestamp")
+            if zone_rows.empty:
+                continue
+            latest = zone_rows.iloc[-1]
+            timing = compute_signal_timing(
+                congestion_score=float(latest["congestion_score"]),
+                vehicle_count=float(latest.get("vehicle_count", 0)),
+                hour=int(latest["hour"]),
+                is_weekend=int(latest.get("is_weekend", 0)),
+            )
+            estimated_journeys.append(to_siri_estimated_timetable(zone, timing))
+
+    return build_siri_service_delivery(
+        vehicle_activities, estimated_journeys, producer_ref=f"SmartCityTraffic-{city}",
+    )
+
+
+
+
+
 @app.get("/mobility/last-mile", tags=["mobility"])
 def last_mile_efficiency(
     city: str  = "Riyadh",
@@ -2681,6 +2735,29 @@ async def vms_active_boards(
 
         msg = generate_vms_message(zone, level, weather, delay)
 
+                # ---- Semantic validation ----
+        validation = validate_vms_message(msg["lines"])
+        if not validation["valid"]:
+            # Log the failure (we'll print for now, but could log to a file)
+            print(f"[VMS] Validation failed for zone {zone}: {validation['errors']}")
+            # Fallback to a safe message
+            safe_lines = ["CHECK TRAFFIC", "DRIVE SAFE", ""]
+            msg = generate_vms_message(zone, "Low", "clear", 0)  # reuse generator with low congestion
+            # But to be safe, manually set a fixed fallback:
+            msg = {
+                "lines": safe_lines,
+                "char_counts": [len(l) for l in safe_lines],
+                "compliant": True,
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "validation_errors": validation["errors"],
+                "fallback": True,
+            }
+        else:
+            # Add validation warnings even if valid (so operators see them)
+            if validation["warnings"]:
+                msg["validation_warnings"] = validation["warnings"]
+        # ---------------------------------
+
         # Track if all zones are Low
         if level != 'Low':
             all_low = False
@@ -2732,6 +2809,70 @@ def delete_api_key(
         return {"status": "deactivated"}
     else:
         raise HTTPException(status_code=404, detail="Key not found or already inactive")
+
+
+
+
+# ── Admin key management endpoints ───────────────────
+from src.pipeline import (
+    add_key_to_registry, revoke_key_from_registry, list_registry_keys
+)
+
+
+class AdminKeyRequest(BaseModel):
+    city: str = Field("Riyadh", description="City scope for the key")
+    role: str = Field("OPERATOR", description="OPERATOR or ADMIN")
+
+
+@app.post("/admin/keys", tags=["admin"])
+def admin_create_key(
+    body: AdminKeyRequest,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Create a new API key. Returns the full key once — store it immediately.
+    ADMIN role required.
+    """
+    if body.role.upper() not in ("OPERATOR", "ADMIN"):
+        raise HTTPException(status_code=400, detail="role must be OPERATOR or ADMIN")
+    new_key = add_key_to_registry(city=body.city, role=body.role.upper())
+    return {
+        "api_key":  new_key,
+        "city":     body.city,
+        "role":     body.role.upper(),
+        "warning":  "Store this key now. It will not be shown again.",
+    }
+
+
+@app.delete("/admin/keys/{key_prefix}", tags=["admin"])
+def admin_revoke_key(
+    key_prefix: str,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Revoke a key by its first 8 characters.
+    ADMIN role required.
+    """
+    revoked = revoke_key_from_registry(key_prefix)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Key not found or already revoked.")
+    return {"revoked": True, "key_prefix": key_prefix}
+
+
+@app.get("/admin/keys", tags=["admin"])
+def admin_list_keys(
+    auth: Dict = Depends(require_admin),
+):
+    """
+    List all keys — masked to first 8 chars only.
+    ADMIN role required.
+    """
+    return {"keys": list_registry_keys()}
+
+
+
+
+
 
 @app.post("/auth/rotate", tags=["auth"])
 def rotate_api_key(
@@ -3133,6 +3274,10 @@ class ParetoRouteRequest(BaseModel):
     time_weight: Optional[float] = Field(None, ge=0, le=1)
     emission_weight: Optional[float] = Field(None, ge=0, le=1)
     cost_weight: Optional[float] = Field(None, ge=0, le=1)
+    emissions_weight: float = Field(
+        EMISSIONS_ROUTING_WEIGHT, ge=0,
+        description="PROMPT 079: penalises routes through zones with high aggregate CO2. Opt-in, default 0.0.",
+    )
 
 @app.post("/routing/pareto-recommendations", tags=["routing"])
 @limiter.limit("20/minute")
@@ -3141,16 +3286,12 @@ async def pareto_recommendations(
     payload: ParetoRouteRequest,
     auth: Dict = Depends(require_api_key),
 ):
-    """
-    Return Pareto-optimal route recommendations balancing time, CO2, and toll cost.
-    """
     _assert_city_permitted(auth, payload.city)
 
     df = app.state.city_dfs.get(payload.city, app.state.df)
     if df is None:
         raise HTTPException(status_code=404, detail=f"City '{payload.city}' not found.")
 
-    # Build congestion map from latest zone scores
     latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
     congestion_map = {
         str(row['zone']): float(row['congestion_score'])
@@ -3162,7 +3303,6 @@ async def pareto_recommendations(
     if payload.destination_zone not in congestion_map:
         raise HTTPException(status_code=422, detail=f"Unknown destination_zone: {payload.destination_zone}")
 
-    # Prepare weights
     weights = {}
     if payload.time_weight is not None:
         weights['time_weight'] = payload.time_weight
@@ -3171,21 +3311,29 @@ async def pareto_recommendations(
     if payload.cost_weight is not None:
         weights['cost_weight'] = payload.cost_weight
 
-    # Ensure weights sum to 1 if any provided
     if weights:
         total = sum(weights.values())
         if total != 0:
             weights = {k: v/total for k, v in weights.items()}
+
+    zone_emissions_map = None
+    if payload.emissions_weight > 0:
+        from src.model import compute_equity_summary
+        equity = compute_equity_summary(city=payload.city, days=7)
+        zone_emissions_map = {
+            z['zone']: z['total_co2_kg'] for z in equity.get('zones', [])
+        }
 
     result = calculate_pareto_routes(
         origin_zone=payload.origin_zone,
         destination_zone=payload.destination_zone,
         congestion_map=congestion_map,
         weights=weights if weights else None,
+        zone_emissions_map=zone_emissions_map,
+        emissions_weight=payload.emissions_weight,
     )
     result['city'] = payload.city
     return result
-
 
 
 
@@ -3441,21 +3589,28 @@ async def request_shuttle(
     if payload.destination_zone not in zones:
         raise HTTPException(status_code=422, detail=f"Unknown destination_zone: {payload.destination_zone}")
 
+    # ---- Initialise state attributes if missing ----
     if not hasattr(app.state, 'drt_pending_requests'):
         app.state.drt_pending_requests = []
+    if not hasattr(app.state, 'last_drt_allocation'):
+        app.state.last_drt_allocation = {}
 
+    # ---- Add request to pending queue ----
     app.state.drt_pending_requests.append({
         'origin_zone': payload.origin_zone,
         'destination_zone': payload.destination_zone,
         'passengers': payload.passenger_count,
     })
 
+    # ---- Compute available shuttles ----
     avg_congestion = float(df['congestion_score'].mean())
     available = max(1, int(10 - avg_congestion * 8))
 
+    # ---- Build congestion map ----
     latest = df.sort_values('timestamp').groupby('zone').last().reset_index()
     congestion_map = {str(row['zone']): float(row['congestion_score']) for _, row in latest.iterrows()}
 
+    # ---- Allocate – this defines `result` ----
     allocator = DRTAllocator()
     result = allocator.allocate(
         requests=app.state.drt_pending_requests,
@@ -3463,14 +3618,16 @@ async def request_shuttle(
         congestion_map=congestion_map,
     )
 
+    # ---- Store result (now defined) ----
+    app.state.last_drt_allocation[payload.city] = result
+
+    # ---- Clear pending requests ----
     app.state.drt_pending_requests = []
 
     return {
         "city": payload.city,
         **result,
     }
-
-
 
 @app.get("/equity/summary", tags=["equity"])
 @limiter.limit("20/minute")
