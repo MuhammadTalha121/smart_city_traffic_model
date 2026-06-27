@@ -221,6 +221,21 @@ ALERT_THRESHOLDS: Dict[str, float] = {
 
 
 
+SLA_TARGETS: Dict[str, float] = {
+    'uptime_pct'      : 99.0,
+    'avg_response_ms' : 500.0,
+    'p95_response_ms' : 1000.0,
+    'error_rate_pct'  : 1.0,
+}
+SLA_BREACH_SEVERITY: Dict[str, str] = {
+    'uptime_pct'      : 'Critical',
+    'avg_response_ms' : 'Elevated',
+    'p95_response_ms' : 'Elevated',
+    'error_rate_pct'  : 'High',
+}
+SLA_TREND_WINDOW_DAYS: int = 7
+
+
 # ---------------------------------------------------------------------------
 #  Road Segment Speed Degradation Index
 # ---------------------------------------------------------------------------
@@ -560,6 +575,30 @@ EVACUATION_SAFE_POINTS = {
     'Safe_South': {'zone': 'Zone_4', 'capacity': 3000},
 }
 ZONE_ROAD_CAPACITY_VPH = 1800  # vehicles per hour per zone
+
+# ===== — Data Quality / Lineage Fault Detection =====
+DATA_QUALITY_REPEAT_VALUE_THRESHOLD: int    = 3     # same value N consecutive readings = suspect
+DATA_QUALITY_SPEED_FLOOR_KMPH: float        = 5.0   # below this at non-zero volume = sensor fault
+DATA_QUALITY_VOLUME_SPIKE_MULTIPLIER: float = 4.0   # >4x rolling mean = spike flag
+
+# ===== HCM Demand-Flow Ratio =====
+# NOTE: distinct from ZONE_ROAD_CAPACITY_VPH (1800, a single flat value used
+# only by calculate_evacuation_routes() for corridor flow during evacuation
+# planning). ROAD_CAPACITY_VPH is per-road-type and used for steady-state
+# HCM v/c-ratio LOS classification — different purpose, not a duplicate.
+HCM_LOS_VC_THRESHOLDS: Dict[str, float] = {
+    'A': 0.35,
+    'B': 0.54,
+    'C': 0.72,
+    'D': 0.88,
+    'E': 1.00,
+    # > 1.00 → F
+}
+ROAD_CAPACITY_VPH: Dict[str, int] = {
+    'highway' : 2200,
+    'arterial': 1600,
+    'local'   : 800,
+}
 
 # HCM practice: never plan to 100% of modelled capacity – apply 85% margin
 EVACUATION_CAPACITY_MARGIN: float = 0.85
