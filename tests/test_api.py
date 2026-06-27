@@ -1742,3 +1742,105 @@ def test_quota_check_uses_correct_daily_reset(client):
             os.rename(log_path + ".bak", log_path)
         elif os.path.exists(log_path):
             os.remove(log_path)
+
+
+
+
+
+
+
+def test_data_quality_endpoint_includes_lineage_faults_field(client):
+    response = client.get(
+        "/data/quality?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "lineage_faults" in data
+    assert "active_source"  in data
+    assert "faults"         in data["lineage_faults"]
+    assert "quality_score"  in data["lineage_faults"]
+
+
+
+
+def test_sla_breach_alert_fires_when_uptime_below_99():
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from src.pipeline import check_sla_breach_alerts
+
+    log_path = "usage_log.csv"
+    backup = pd.read_csv(log_path) if os.path.exists(log_path) else None
+
+    now = datetime.now()
+    rows = [{
+        "timestamp": (now - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoint": "/predict", "method": "POST", "api_key_hash": "abcd1234",
+        "response_code": 500 if i < 5 else 200, "response_time_ms": 100.0,
+    } for i in range(100)]
+    pd.DataFrame(rows).to_csv(log_path, index=False)
+
+    try:
+        alerts = check_sla_breach_alerts(days=1)
+        assert any(a["metric"] == "uptime_pct" for a in alerts)
+    finally:
+        backup.to_csv(log_path, index=False) if backup is not None else os.remove(log_path)
+
+
+def test_sla_breach_alert_empty_when_all_slas_met():
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from src.pipeline import check_sla_breach_alerts
+
+    log_path = "usage_log.csv"
+    backup = pd.read_csv(log_path) if os.path.exists(log_path) else None
+
+    now = datetime.now()
+    rows = [{
+        "timestamp": (now - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoint": "/predict", "method": "POST", "api_key_hash": "abcd1234",
+        "response_code": 200, "response_time_ms": 50.0,
+    } for i in range(50)]
+    pd.DataFrame(rows).to_csv(log_path, index=False)
+
+    try:
+        assert check_sla_breach_alerts(days=1) == []
+    finally:
+        backup.to_csv(log_path, index=False) if backup is not None else os.remove(log_path)
+
+
+def test_sla_trend_returns_improving_when_uptime_increases():
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from src.pipeline import compute_sla_trend
+
+    log_path = "usage_log.csv"
+    backup = pd.read_csv(log_path) if os.path.exists(log_path) else None
+
+    today = datetime.now().date()
+    rows = []
+    for day_offset in range(6, 0, -1):
+        day = today - timedelta(days=day_offset)
+        error_count = 10 if day_offset > 3 else 0
+        for i in range(20):
+            rows.append({
+                "timestamp": f"{day} {8 + i % 10}:00:00",
+                "endpoint": "/predict", "method": "POST", "api_key_hash": "abcd1234",
+                "response_code": 500 if i < error_count else 200,
+                "response_time_ms": 100.0,
+            })
+    pd.DataFrame(rows).to_csv(log_path, index=False)
+
+    try:
+        assert compute_sla_trend(window_days=7)["trend"] == "improving"
+    finally:
+        backup.to_csv(log_path, index=False) if backup is not None else os.remove(log_path)
+
+
+def test_sla_report_endpoint_includes_trend_and_breach_fields(client):
+    response = client.get("/sla/report?days=30", headers={"X-API-Key": TEST_KEY})
+    assert response.status_code == 200
+    data = response.json()
+    assert "trend" in data
+    assert "breach_alerts" in data
+    assert "trend" in data["trend"]
