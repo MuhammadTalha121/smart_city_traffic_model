@@ -22,6 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
+from src.reporter import generate_api_doc_package
 
 from src.datex_export import generate_datex_payload, generate_csv_data, generate_geojson_payload
 
@@ -46,7 +47,8 @@ from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPE
 
 from src.drt import DRTAllocator
 
-from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, get_active_events, apply_event_multipliers
+from src.data import (generate_traffic_data, apply_hourly_patterns, add_lag_features,
+                       get_active_events, apply_event_multipliers, detect_lineage_faults)
 from src.model import (
     train_xgboost, prepare_features, predict_single, congestion_level,
     detect_anomalies, forecast_congestion, explain_prediction,
@@ -66,11 +68,12 @@ from src.ids import SensorIntrusionDetector
 
 
 from src.ledger import ViolationLedger, verify_ledger_chain, LedgerIntegrityError
-from src.config import VIOLATION_LEDGER_PATH
+from src.config import VIOLATION_LEDGER_PATH, SLA_TREND_WINDOW_DAYS
 
 from src.adapters import get_adapter, GreenWavePlanner, GreenWavePlanner, is_data_stale
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
+from src.pipeline import read_predictions_log, compute_sla_trend, check_sla_breach_alerts
 
 from src.auth import validate_key, create_key, deactivate_key, rotate_key, init_auth_db
 
@@ -321,6 +324,14 @@ async def lifespan(app: FastAPI):
                 log_alert(alerts)
                 deliver_webhook_alert(alerts, WEBHOOK_URL)
                 print(f"[Alert] {len(alerts)} alert(s) fired for {city}")
+
+
+
+        sla_alerts = check_sla_breach_alerts(days=1)
+        if sla_alerts:
+            log_alert(sla_alerts)
+            deliver_webhook_alert(sla_alerts, WEBHOOK_URL)
+            print(f"[Alert] {len(sla_alerts)} SLA breach alert(s) fired")
 
     scheduler.add_job(_scheduled_alerts, "interval", minutes=15)
     print("[Scheduler] Alert threshold monitoring scheduled every 15 minutes")
@@ -877,7 +888,8 @@ def predict(
     )
     
 
-    log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"])
+    log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"],
+                   data_source=app.state.data_source)
     if _ids_result["risk_level"] == "Suspicious":
         result["ids_warning"] = {
             "flags":      _ids_result["flags"],
@@ -1146,7 +1158,7 @@ def emissions_summary(
             "note"                  : "No predictions logged yet.",
         }
 
-    log_df = pd.read_csv(log_path)
+    log_df = read_predictions_log(log_path)
     if log_df.empty or "congestion_score" not in log_df.columns:
         return {
             "city"              : city,
@@ -1388,7 +1400,7 @@ def history_patterns(
             "note"               : "No predictions logged yet.",
         }
 
-    log_df = pd.read_csv(log_path)
+    log_df = read_predictions_log(log_path)
 
     if "timestamp" in log_df.columns:
         log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
@@ -1472,7 +1484,7 @@ def history_trend(
             "note"       : "No predictions logged yet.",
         }
 
-    log_df = pd.read_csv(log_path)
+    log_df = read_predictions_log(log_path)
 
     if "timestamp" in log_df.columns:
         log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
@@ -1592,8 +1604,9 @@ def roads_service_level(
         avg_speed = float(latest.get('avg_speed', 65))
         road_type = str(latest.get('road_type', 'arterial'))
         weather   = str(latest.get('weather', 'clear'))
+        vehicle_count = float(latest.get('vehicle_count', 100.0))
 
-        sdi_result = compute_speed_degradation_index(avg_speed, road_type, weather)
+        sdi_result = compute_speed_degradation_index(avg_speed, road_type, weather, vehicle_count)
         results.append({
             'zone'             : zone,
             'road_type'        : road_type,
@@ -1707,6 +1720,29 @@ def safety_pedestrian(
 
 
 
+
+@app.post("/reports/api-docs", dependencies=[Depends(admin_required)])
+async def generate_api_docs():
+    """
+    Generate a self-contained HTML government API documentation package.
+    Requires ADMIN role.
+    Returns the HTML file as a download.
+    """
+    try:
+        output_path = generate_api_doc_package(output_dir="reports")
+        return FileResponse(
+            output_path,
+            media_type="text/html",
+            filename="api_documentation.html"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Documentation generation failed: {str(e)}")
+
+
+
+
+
+
 @app.get("/analytics/usage", tags=["analytics"])
 @limiter.limit("20/minute")
 def analytics_usage(
@@ -1809,12 +1845,11 @@ def sla_report(
     days: int  = 30,
     auth: Dict = Depends(require_admin),
 ):
-    """
-    Full SLA compliance report for the past N days. Admin only.
-
-    Targets: uptime >= 99%, avg response < 500ms, p95 < 1000ms.
-    """
-    return compute_sla_metrics(days=days)
+    """Full SLA compliance report. Admin only. Now includes trend + breach_alerts."""
+    metrics = compute_sla_metrics(days=days)
+    metrics["trend"] = compute_sla_trend(window_days=SLA_TREND_WINDOW_DAYS)
+    metrics["breach_alerts"] = check_sla_breach_alerts(days=days)
+    return metrics
 
 
 @app.get("/sla/current", tags=["sla"])
@@ -1834,8 +1869,16 @@ def data_quality(
     hours: int = 24,
     auth:  Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
 ):
-    """Summarise input quality flags from the predictions audit log."""
+    """
+    Summarise input quality flags from the predictions audit log, plus
+    upstream lineage faults (PROMPT 087) detected on the active data
+    source's current traffic DataFrame.
+    """
     _assert_city_permitted(auth, city)
+
+    active_source  = app.state.data_source
+    lineage_df     = app.state.city_dfs.get(city, app.state.df)
+    lineage_result = detect_lineage_faults(lineage_df, active_source)
 
     log_path = "predictions_log.csv"
 
@@ -1844,10 +1887,12 @@ def data_quality(
             "city": city, "hours": hours,
             "total_predictions": 0, "flagged_predictions": 0,
             "flag_rate_pct": 0.0, "common_warnings": [],
+            "active_source"  : active_source,
+            "lineage_faults" : lineage_result,
             "message": "No predictions logged yet.",
         }
 
-    log_df = pd.read_csv(log_path)
+    log_df = read_predictions_log(log_path)
     if "city" in log_df.columns:
         log_df = log_df[log_df["city"] == city]
 
@@ -1862,6 +1907,8 @@ def data_quality(
             "city": city, "hours": hours,
             "total_predictions": 0, "flagged_predictions": 0,
             "flag_rate_pct": 0.0, "common_warnings": [],
+            "active_source"  : active_source,
+            "lineage_faults" : lineage_result,
         }
 
     warning_counts: dict = {}
@@ -1885,6 +1932,8 @@ def data_quality(
         "flagged_predictions": flagged,
         "flag_rate_pct"      : round(flagged / total * 100, 2),
         "common_warnings"    : common_warnings,
+        "active_source"      : active_source,
+        "lineage_faults"     : lineage_result,
     }
 
 
