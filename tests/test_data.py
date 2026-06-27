@@ -60,3 +60,54 @@ def test_validate_data_all_pass():
     report = validate_data(city="Riyadh", n_days=30)
     failed = report[report["Status"] == "FAIL"]
     assert len(failed) == 0, f"Validation failed on: {failed['Check'].tolist()}"
+
+
+
+
+
+def test_repeated_speed_values_flagged_as_caching_fault():
+    from src.data import detect_lineage_faults
+
+    df = pd.DataFrame({
+        'zone'         : ['Zone_1'] * 5,
+        'timestamp'    : pd.date_range('2026-01-01', periods=5, freq='h'),
+        'avg_speed'    : [60.0, 60.0, 60.0, 60.0, 45.0],
+        'vehicle_count': [100, 105, 98, 110, 120],
+    })
+    result = detect_lineage_faults(df, source='weather')
+
+    repeat_faults = [f for f in result['faults'] if f['type'] == 'repeated_value']
+    assert len(repeat_faults) >= 1, "Expected a repeated_value fault for 4 identical avg_speed readings"
+    assert repeat_faults[0]['rows_affected'] == 4
+
+
+def test_nonzero_volume_with_zero_speed_flagged_as_sensor_fault():
+    from src.data import detect_lineage_faults
+
+    df = pd.DataFrame({
+        'zone'         : ['Zone_1'] * 3,
+        'timestamp'    : pd.date_range('2026-01-01', periods=3, freq='h'),
+        'avg_speed'    : [0.0, 55.0, 50.0],
+        'vehicle_count': [150, 100, 95],
+    })
+    result = detect_lineage_faults(df, source='mock')
+
+    sensor_faults = [f for f in result['faults'] if f['type'] == 'sensor_fault']
+    assert len(sensor_faults) == 1
+    assert sensor_faults[0]['rows_affected'] == 1
+
+
+
+
+
+
+def test_all_five_cultural_calibrations_still_pass_after_full_chain(capsys):
+    """
+    Consolidate the five core Saudi cultural calibrations into one test.
+    This delegates to validate_data() and verifies that all 5 checks pass.
+    """
+    from src.data import validate_data
+    validate_data(city='Riyadh')
+    captured = capsys.readouterr()
+    # The output should contain the final summary line.
+    assert "5 / 5 checks passed" in captured.out, "Cultural calibrations are not all passing"
