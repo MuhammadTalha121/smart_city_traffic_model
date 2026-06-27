@@ -17,6 +17,7 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
 from datetime import datetime
 
 
+
 effective_capacity = ZONE_ROAD_CAPACITY_VPH * EVACUATION_CAPACITY_MARGIN
 
 FEATURE_COLS = [
@@ -760,9 +761,21 @@ def get_intervention(zone: str, hour: int, congestion_level_str: str) -> Dict:
     }
 
 
-def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv', interval_width: float = None):
+def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv',
+                    interval_width: float = None, data_source: str = 'mock'):
     """
     Append a prediction and its explanation to the audit log CSV.
+
+    Schema-safe append. Root cause of the 'Expected 14 fields... saw 15'
+    ParserError: PROMPT 087 added the data_source column to an
+    already-populated log file whose on-disk header was never migrated —
+    pandas' C parser cannot read a CSV where row field counts vary. Before
+    appending, this now compares the new row's columns against the
+    existing file's header; if new columns are present, the file is
+    rewritten once with those columns backfilled empty for every
+    historical row, so all rows past and future stay consistent. This
+    keeps the column-addition pattern (INV-1, additive fields) safe for
+    any future column added to this log.
     """
     import os
     from datetime import datetime
@@ -782,11 +795,27 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
         'co2_kg'          : prediction.get('emissions', {}).get('co2_kg', ''),
         'fuel_litres'     : prediction.get('emissions', {}).get('fuel_litres', ''),
         'interval_width'  : interval_width if interval_width is not None else '',
+        'data_source'     : data_source,
     }
 
-    log_df     = pd.DataFrame([row])
-    write_header = not os.path.exists(log_path)
+    if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            existing_header = f.readline().strip().split(',')
+        missing_cols = [c for c in row.keys() if c not in existing_header]
+        if missing_cols:
+            existing_df = pd.read_csv(log_path, engine='python', on_bad_lines='skip')
+            for col in missing_cols:
+                existing_df[col] = ''
+            existing_df.to_csv(log_path, index=False)
+
+    log_df       = pd.DataFrame([row])
+    write_header = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
     log_df.to_csv(log_path, mode='a', header=write_header, index=False)
+
+
+
+
+
 
 
 def estimate_response_time(
@@ -1018,23 +1047,8 @@ def compute_speed_degradation_index(
     avg_speed: float,
     road_type: str,
     weather:   str,
+    vehicle_count: float = 100.0,   # PROMPT 086 — default keeps old callers working
 ) -> Dict:
-    """
-    Compute the Speed Degradation Index (SDI) and HCM Level of Service.
-
-    SDI = (free_flow_speed - avg_speed) / free_flow_speed, clipped to [0, 1].
-    LOS classification follows the Highway Capacity Manual thresholds.
-
-    Parameters
-    ----------
-    avg_speed : Current average speed in km/h.
-    road_type : One of highway, arterial, local.
-    weather   : Current weather condition (used for context in output only).
-
-    Returns
-    -------
-    dict with sdi, level_of_service, free_flow_speed, current_speed, speed_loss_kmph.
-    """
     from src.config import FREE_FLOW_SPEED_KMPH
 
     free_flow   = FREE_FLOW_SPEED_KMPH.get(road_type, 70)
@@ -1048,12 +1062,18 @@ def compute_speed_degradation_index(
     elif sdi < 0.70: los = 'E'
     else           : los = 'F'
 
+    vc_result = compute_hcm_vc_ratio(vehicle_count, road_type)
+
     return {
         'sdi'             : round(sdi, 4),
         'level_of_service': los,
         'free_flow_speed' : free_flow,
         'current_speed'   : round(float(avg_speed), 1),
         'speed_loss_kmph' : speed_loss,
+        'vc_ratio'        : vc_result['vc_ratio'],
+        'los_from_vc'     : vc_result['los_from_vc'],
+        'saturation_pct'  : vc_result['saturation_pct'],
+        'near_capacity'   : vc_result['near_capacity'],
     }
 
 
@@ -2810,13 +2830,14 @@ def compute_equity_summary(city: str, days: int = 30) -> Dict:
     import pandas as pd
     from datetime import datetime, timedelta
     from src.model import calculate_dynamic_toll, calculate_pareto_routes
+    from src.pipeline import read_predictions_log
 
     # ---- 1. Load predictions_log.csv ----
     log_path = "predictions_log.csv"
     if not os.path.exists(log_path):
         return {"city": city, "period_days": days, "zones": [], "note": "predictions_log.csv not found."}
 
-    df_log = pd.read_csv(log_path)
+    df_log = read_predictions_log(log_path)
     if df_log.empty:
         return {"city": city, "period_days": days, "zones": [], "note": "predictions_log.csv is empty."}
 
@@ -2927,3 +2948,33 @@ def compute_equity_summary(city: str, days: int = 30) -> Dict:
 
 
 
+
+
+def compute_hcm_vc_ratio(vehicle_count: float, road_type: str) -> Dict:
+    """
+    HCM volume-to-capacity (v/c) ratio and the LOS grade it implies.
+
+    Complementary to compute_speed_degradation_index()'s SDI-based LOS:
+    SDI flags any speed loss vs free-flow (including low-volume caution
+    driving, e.g. fog), which isn't necessarily saturation. v/c measures
+    demand against road capacity directly, so it's the better signal for
+    *is this road actually saturated* — and rises before speed visibly
+    degrades, making it a leading indicator SDI can't provide alone.
+    """
+    from src.config import ROAD_CAPACITY_VPH, HCM_LOS_VC_THRESHOLDS
+
+    capacity = ROAD_CAPACITY_VPH.get(road_type, ROAD_CAPACITY_VPH['arterial'])
+    vc_ratio = float(vehicle_count) / capacity
+
+    los_from_vc = 'F'
+    for level, threshold in HCM_LOS_VC_THRESHOLDS.items():
+        if vc_ratio <= threshold:
+            los_from_vc = level
+            break
+
+    return {
+        'vc_ratio'      : round(vc_ratio, 4),
+        'los_from_vc'   : los_from_vc,
+        'saturation_pct': round(min(vc_ratio, 1.0) * 100, 1),
+        'near_capacity' : vc_ratio >= HCM_LOS_VC_THRESHOLDS['D'],
+    }
