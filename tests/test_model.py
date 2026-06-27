@@ -1717,3 +1717,32 @@ def test_vms_warns_on_missing_action_verb():
     assert result["valid"] is True  # no errors, only warning
     assert len(result["warnings"]) > 0
     assert "action verb" in result["warnings"][0].lower()
+
+
+
+
+
+
+def test_hcm_vc_ratio_highway_at_capacity_returns_los_e():
+    from src.model import compute_hcm_vc_ratio
+    result = compute_hcm_vc_ratio(vehicle_count=2200, road_type='highway')
+    assert result['los_from_vc']    == 'E'
+    assert result['saturation_pct'] == 100.0
+    assert result['vc_ratio']       == 1.0
+
+
+def test_hcm_vc_ratio_low_volume_returns_los_a():
+    from src.model import compute_hcm_vc_ratio
+    result = compute_hcm_vc_ratio(vehicle_count=100, road_type='highway')
+    assert result['los_from_vc']   == 'A'
+    assert result['near_capacity'] is False
+
+
+def test_near_capacity_flag_true_above_88_percent():
+    from src.model import compute_hcm_vc_ratio
+    at = compute_hcm_vc_ratio(vehicle_count=1936, road_type='highway')   # 1936/2200 = 0.88
+    assert at['vc_ratio'] >= 0.88
+    assert at['near_capacity'] is True
+
+    below = compute_hcm_vc_ratio(vehicle_count=1800, road_type='highway')  # ≈0.818
+    assert below['near_capacity'] is False
