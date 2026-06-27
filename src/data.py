@@ -391,6 +391,133 @@ def validate_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
     return report
 
 
+
+
+def detect_lineage_faults(df: pd.DataFrame, source: str) -> dict:
+    """
+    Input-pipeline health monitoring for adapter-sourced traffic data.
+
+    Distinct from validate_data() (statistical distribution validation of
+    the *synthetic generation process*) and detect_anomalies() in
+    src/model.py (operational *traffic-pattern* anomaly detection on
+    congestion/volume). This function instead asks whether the data
+    itself looks like it came from a healthy sensor/API feed: repeated
+    identical readings (caching fault — e.g. Open-Meteo returning the
+    same value for hours, which is a feed problem, not real atmospheric
+    stability), physically implausible speed/volume combinations (stuck
+    sensor), and short-window volume spikes (ingestion-quality issue,
+    not the same signal as detect_anomalies()'s 7-day expected-vs-actual
+    comparison).
+
+    Parameters
+    ----------
+    df     : DataFrame with at least zone, timestamp, avg_speed,
+             vehicle_count.
+    source : Active data source name (e.g. 'weather', 'osm', 'mock'),
+             carried through into the report only.
+
+    Returns
+    -------
+    dict with source, faults (list of {type, rows_affected, description}),
+    quality_score (0.0-1.0).
+    """
+    from src.config import (
+        DATA_QUALITY_REPEAT_VALUE_THRESHOLD,
+        DATA_QUALITY_SPEED_FLOOR_KMPH,
+        DATA_QUALITY_VOLUME_SPIKE_MULTIPLIER,
+    )
+
+    required = {'zone', 'timestamp', 'avg_speed', 'vehicle_count'}
+    if df is None or df.empty or not required.issubset(df.columns):
+        return {'source': source, 'faults': [], 'quality_score': 1.0}
+
+    df = df.copy().sort_values(['zone', 'timestamp']).reset_index(drop=True)
+    faults = []
+    flagged_row_idx = set()
+
+    # --- 1. Repeated identical avg_speed values (caching fault) ---
+    for zone, zone_df in df.groupby('zone'):
+        zone_df = zone_df.sort_values('timestamp')
+        speeds  = zone_df['avg_speed'].values
+        idxs    = zone_df.index.values
+
+        run_start = 0
+        for i in range(1, len(speeds) + 1):
+            if i < len(speeds) and speeds[i] == speeds[run_start]:
+                continue
+            run_len = i - run_start
+            if run_len >= DATA_QUALITY_REPEAT_VALUE_THRESHOLD:
+                affected = list(idxs[run_start:i])
+                flagged_row_idx.update(affected)
+                faults.append({
+                    'type'         : 'repeated_value',
+                    'rows_affected': len(affected),
+                    'description'  : (
+                        f"{zone}: avg_speed repeated identical value "
+                        f"({speeds[run_start]}) for {run_len} consecutive readings — "
+                        f"possible caching fault rather than real atmospheric stability."
+                    ),
+                })
+            run_start = i
+
+    # --- 2. Non-zero volume with near-zero speed (sensor fault) ---
+    sensor_fault_mask = (
+        (df['avg_speed'] < DATA_QUALITY_SPEED_FLOOR_KMPH) & (df['vehicle_count'] > 0)
+    )
+    if sensor_fault_mask.any():
+        affected = list(df.index[sensor_fault_mask])
+        flagged_row_idx.update(affected)
+        faults.append({
+            'type'         : 'sensor_fault',
+            'rows_affected': len(affected),
+            'description'  : (
+                f"avg_speed below {DATA_QUALITY_SPEED_FLOOR_KMPH} km/h with nonzero "
+                f"vehicle_count in {len(affected)} row(s) — physically implausible, "
+                f"likely a stuck or faulty speed sensor."
+            ),
+        })
+
+    # --- 3. Volume spike vs recent rolling mean (ingestion spike) ---
+    df['_rolling_mean'] = (
+        df.groupby('zone')['vehicle_count']
+          .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+    )
+    spike_mask = (
+        df['_rolling_mean'].notna() &
+        (df['_rolling_mean'] > 0) &
+        (df['vehicle_count'] > DATA_QUALITY_VOLUME_SPIKE_MULTIPLIER * df['_rolling_mean'])
+    )
+    if spike_mask.any():
+        affected = list(df.index[spike_mask])
+        flagged_row_idx.update(affected)
+        faults.append({
+            'type'         : 'volume_spike',
+            'rows_affected': len(affected),
+            'description'  : (
+                f"vehicle_count exceeded {DATA_QUALITY_VOLUME_SPIKE_MULTIPLIER}x the "
+                f"3-reading rolling mean in {len(affected)} row(s) — flagged as an "
+                f"ingestion-quality spike, distinct from detect_anomalies()'s "
+                f"traffic-pattern anomaly detection."
+            ),
+        })
+
+    total_rows    = len(df)
+    quality_score = (
+        round(max(0.0, 1.0 - len(flagged_row_idx) / total_rows), 4) if total_rows else 1.0
+    )
+
+    return {
+        'source'       : source,
+        'faults'       : faults,
+        'quality_score': quality_score,
+    }
+
+
+
+
+
+
+
 def validate_hajj_data(city: str = 'Riyadh', n_days: int = 30) -> pd.DataFrame:
     """
     Validate that Hajj mode produces statistically distinct traffic patterns.
