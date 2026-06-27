@@ -18,6 +18,25 @@ DRIFT_WINDOW  = 500   # number of recent predictions to evaluate
 DRIFT_THRESHOLD = 1.3  # retrain if recent MAE is 1.3x the baseline
 
 
+def read_predictions_log(log_path: str = "predictions_log.csv", **read_csv_kwargs) -> pd.DataFrame:
+    """
+    Defensive read of predictions_log.csv. Falls back to the python
+    engine with on_bad_lines='skip' if the file has rows from before a
+    schema migration (see log_prediction()) — old malformed rows are
+    dropped rather than crashing every caller. New writes can't drift
+    again after the log_prediction() fix; this only covers files that
+    already drifted on disk before that fix existed.
+    """
+    if not os.path.exists(log_path):
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(log_path, **read_csv_kwargs)
+    except pd.errors.ParserError:
+        kwargs = dict(read_csv_kwargs)
+        kwargs.pop('engine', None)
+        return pd.read_csv(log_path, engine='python', on_bad_lines='skip', **kwargs)
+
+
 def compute_drift_score(log_path: str = LOG_PATH) -> float:
     """
     Compare recent prediction MAE against a naive baseline.
@@ -30,7 +49,7 @@ def compute_drift_score(log_path: str = LOG_PATH) -> float:
     if not os.path.exists(log_path):
         return 1.0
 
-    df = pd.read_csv(log_path)
+    df = read_predictions_log(log_path)
 
     if len(df) < 10:
         return 1.0
@@ -644,6 +663,99 @@ def compute_sla_metrics(days: int = 30) -> dict:
         "met_all_slas"     : met_all,
     }
 
+
+def check_sla_breach_alerts(days: int = 1) -> list:
+    """
+    Compare current SLA metrics against SLA_TARGETS. SLA is system-level,
+    not per-zone, so each alert uses zone='system', city='all' — verified
+    safe against deliver_webhook_alert()/log_alert(), both of which treat
+    zone/city as opaque strings.
+    """
+    from src.config import SLA_TARGETS, SLA_BREACH_SEVERITY
+
+    metrics = compute_sla_metrics(days=days)
+    if metrics.get('total_requests', 0) == 0:
+        return []
+
+    checks = {
+        'uptime_pct'     : (metrics.get('uptime_pct'),      SLA_TARGETS['uptime_pct'],      'gte'),
+        'avg_response_ms': (metrics.get('avg_response_ms'), SLA_TARGETS['avg_response_ms'], 'lte'),
+        'p95_response_ms': (metrics.get('p95_response_ms'), SLA_TARGETS['p95_response_ms'], 'lte'),
+        'error_rate_pct' : (metrics.get('error_rate_pct'),  SLA_TARGETS['error_rate_pct'],  'lte'),
+    }
+
+    alerts = []
+    for metric, (value, target, direction) in checks.items():
+        if value is None:
+            continue
+        breached = (value < target) if direction == 'gte' else (value > target)
+        if breached:
+            alerts.append({
+                'zone'     : 'system',
+                'city'     : 'all',
+                'metric'   : metric,
+                'value'    : value,
+                'threshold': target,
+                'severity' : SLA_BREACH_SEVERITY[metric],
+            })
+    return alerts
+
+
+def compute_sla_trend(window_days: int = 7) -> dict:
+    """
+    Daily uptime/response-time trend from usage_log.csv over the trailing
+    window_days. Needs >= 6 days of data (3 per half); otherwise returns
+    'stable' with a note rather than a misleading trend.
+    """
+    log_path = "usage_log.csv"
+    empty = {
+        'dates': [], 'uptime_pcts': [], 'avg_response_ms_per_day': [],
+        'trend': 'stable', 'trend_delta_pct': 0.0,
+    }
+
+    if not os.path.exists(log_path):
+        return {**empty, 'note': 'No usage data yet.'}
+
+    log_df = pd.read_csv(log_path)
+    if 'timestamp' not in log_df.columns or log_df.empty:
+        return {**empty, 'note': 'No usage data yet.'}
+
+    log_df['timestamp'] = pd.to_datetime(log_df['timestamp'], errors='coerce')
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=window_days)
+    log_df = log_df[log_df['timestamp'] >= cutoff]
+    if log_df.empty:
+        return {**empty, 'note': 'No usage data in window.'}
+
+    log_df['date'] = log_df['timestamp'].dt.date
+    dates, uptime_pcts, avg_rts = [], [], []
+
+    for date, grp in log_df.groupby('date'):
+        total = len(grp)
+        successes = int((grp['response_code'] < 400).sum()) if 'response_code' in grp.columns else total
+        avg_rt = round(float(grp['response_time_ms'].mean()), 1) if 'response_time_ms' in grp.columns and total else None
+        dates.append(str(date))
+        uptime_pcts.append(round(successes / total * 100, 3) if total else 100.0)
+        avg_rts.append(avg_rt)
+
+    if len(dates) < 6:
+        return {
+            'dates': dates, 'uptime_pcts': uptime_pcts,
+            'avg_response_ms_per_day': avg_rts,
+            'trend': 'stable', 'trend_delta_pct': 0.0,
+            'note': f'Only {len(dates)} day(s) of data — need >= 6 for a meaningful trend.',
+        }
+
+    half = len(uptime_pcts) // 2
+    first_avg = sum(uptime_pcts[:half]) / half
+    last_avg  = sum(uptime_pcts[-half:]) / half
+    delta = round(last_avg - first_avg, 3)
+    trend = 'improving' if delta > 0.5 else 'degrading' if delta < -0.5 else 'stable'
+
+    return {
+        'dates': dates, 'uptime_pcts': uptime_pcts,
+        'avg_response_ms_per_day': avg_rts,
+        'trend': trend, 'trend_delta_pct': delta,
+    }
 
 
 
