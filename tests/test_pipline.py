@@ -139,3 +139,130 @@ def test_optuna_promotion_requires_evaluate_staged_model_approval(tmp_path, monk
         promote_staged_model(city="Riyadh", drift_score=1.6, evaluation=evaluation)
 
     assert joblib.load(live)["timestamp"] == "t0"
+
+
+
+
+
+from unittest.mock import patch, MagicMock
+import pytest
+import pandas as pd
+from src.pipeline import check_incident_alerts
+from src.config import ALERT_THRESHOLDS
+
+
+def test_incident_alert_fires_on_moderate_severity():
+    """
+    Moderate severity incidents must generate alerts.
+    """
+    mock_df = pd.DataFrame({
+        "zone": ["Zone_1", "Zone_1"],
+        "weather": ["Clear", "Clear"],
+        "road_type": ["urban", "urban"],
+        "vehicle_count": [100, 50],
+        "avg_speed": [60, 30],
+        "hour": [8, 8],
+    })
+
+    # Patch where detect_incidents is actually defined: src.model
+    with patch("src.model.detect_incidents") as mock_detect, \
+         patch("src.model.estimate_incident_clearance_time") as mock_clearance:
+
+        mock_detect.return_value = {
+            "incident_detected": True,
+            "severity": "Moderate",
+            "speed_drop_pct": 0.45,
+            "volume_change_pct": -0.35,
+            "confidence": "High",
+            "recommended_action": "Dispatch roadside assistance; monitor",
+        }
+        mock_clearance.return_value = 30
+
+        alerts = check_incident_alerts(mock_df, city="Riyadh")
+
+        assert len(alerts) == 1
+        assert alerts[0]["severity"] == "Moderate"
+        assert alerts[0]["alert_type"] == "incident"
+        assert alerts[0]["estimated_clearance_mins"] == 30
+        assert alerts[0]["city"] == "Riyadh"
+        assert alerts[0]["zone"] == "Zone_1"
+
+
+def test_incident_alert_suppressed_for_minor_severity():
+    """
+    Minor incidents must be detected but not elevated to alerts.
+    """
+    mock_df = pd.DataFrame({
+        "zone": ["Zone_1", "Zone_1"],
+        "weather": ["Clear", "Clear"],
+        "road_type": ["urban", "urban"],
+        "vehicle_count": [100, 90],
+        "avg_speed": [60, 50],
+        "hour": [8, 8],
+    })
+
+    with patch("src.model.detect_incidents") as mock_detect:
+
+        mock_detect.return_value = {
+            "incident_detected": True,
+            "severity": "Minor",
+            "speed_drop_pct": 0.25,
+            "volume_change_pct": -0.15,
+            "confidence": "Medium",
+            "recommended_action": "Monitor situation",
+        }
+
+        alerts = check_incident_alerts(mock_df, city="Riyadh")
+
+        assert len(alerts) == 0
+
+
+def test_incident_alert_included_in_webhook_payload():
+    """
+    Verify that check_incident_alerts returns proper structure that can be
+    combined with congestion alerts into a unified payload.
+    """
+    from src.pipeline import check_incident_alerts, check_thresholds
+
+    # Mock DataFrame with timestamp column (required by detect_anomalies)
+    mock_df = pd.DataFrame({
+        "zone": ["Zone_1", "Zone_1"],
+        "timestamp": pd.to_datetime(["2024-01-01 08:00", "2024-01-01 09:00"]),
+        "weather": ["Clear", "Clear"],
+        "road_type": ["urban", "urban"],
+        "vehicle_count": [100, 50],
+        "avg_speed": [60, 30],
+        "hour": [8, 9],
+        "congestion_score": [0.3, 0.5],
+    })
+
+    with patch("src.model.detect_incidents") as mock_detect, \
+         patch("src.model.estimate_incident_clearance_time") as mock_clearance:
+
+        mock_detect.return_value = {
+            "incident_detected": True,
+            "severity": "Major",
+            "speed_drop_pct": 0.55,
+            "volume_change_pct": -0.40,
+            "confidence": "High",
+            "recommended_action": "Close lane 2",
+        }
+        mock_clearance.return_value = 45
+
+        incident_alerts = check_incident_alerts(mock_df, city="Riyadh")
+
+        # Verify structure matches what _scheduled_alerts expects
+        assert len(incident_alerts) == 1
+        assert incident_alerts[0]["alert_type"] == "incident"
+        assert incident_alerts[0]["severity"] == "Major"
+
+        # Simulate payload construction (same as _scheduled_alerts)
+        payload = {
+            "congestion_alerts": [],  # No congestion alerts in this test
+            "incident_alerts": incident_alerts,
+        }
+
+        assert "incident_alerts" in payload
+        assert len(payload["incident_alerts"]) == 1
+        assert payload["incident_alerts"][0]["severity"] == "Major"
+        assert len(payload["congestion_alerts"]) == 0
