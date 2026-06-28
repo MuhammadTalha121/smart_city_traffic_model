@@ -11,6 +11,7 @@ from src.model import (
     compute_emissions, compute_last_mile_index, compute_pavement_wear_index,
     compute_cooperative_route, predict_ev_charger_demand, recommend_tidal_flow,
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, calculate_evacuation_routes,
+    estimate_incident_clearance_time, detect_incidents
 )
 from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH, ZONE_DISTANCES_KM
 
@@ -1746,3 +1747,59 @@ def test_near_capacity_flag_true_above_88_percent():
 
     below = compute_hcm_vc_ratio(vehicle_count=1800, road_type='highway')  # ≈0.818
     assert below['near_capacity'] is False
+
+
+
+
+
+def test_incident_detected_on_sudden_speed_collapse():
+    from src.model import detect_incidents
+    from src.data import generate_traffic_data
+
+    df = generate_traffic_data(city="Riyadh", n_days=2)
+    zone = "Zone_1"
+
+    zone_df = df[df['zone'] == zone].sort_index()
+    
+    # Need at least 30 rows (2 windows of 15)
+    assert len(zone_df) >= 30, f"Not enough rows: {len(zone_df)}"
+
+    baseline_indices = zone_df.index[-30:-15]
+    recent_indices   = zone_df.index[-15:]
+
+    baseline_avg_speed   = df.loc[baseline_indices, 'avg_speed'].mean()
+    baseline_avg_volume  = df.loc[baseline_indices, 'vehicle_count'].mean()
+
+    # Use .loc on the main df directly — avoids SettingWithCopyWarning
+    df.loc[recent_indices, 'avg_speed']      = baseline_avg_speed * 0.35   # 65% drop
+    df.loc[recent_indices, 'vehicle_count']  = baseline_avg_volume * 0.45  # 55% drop
+
+    result = detect_incidents(df, zone, window_minutes=15)
+
+    assert result['incident_detected'] is True, f"Expected incident, got: {result}"
+    assert result['severity'] in ('Major', 'Critical')
+    assert result['speed_drop_pct'] >= 0.40
+
+    
+
+def test_incident_not_triggered_by_normal_congestion():
+    # Normal congestion: high volume, gradual speed drop (not sudden)
+    df = generate_traffic_data(city="Riyadh", n_days=1)
+    zone = "Zone_1"
+    zone_df = df[df['zone'] == zone].sort_index()
+    baseline = zone_df.iloc[-30:-15]
+    recent = zone_df.iloc[-15:]
+    # Gradually reduce speed (not sudden)
+    recent['avg_speed'] = baseline['avg_speed'].mean() * 0.9  # only 10% drop
+    recent['vehicle_count'] = baseline['vehicle_count'].mean() * 1.5  # high volume
+    df.loc[recent.index, 'avg_speed'] = recent['avg_speed']
+    df.loc[recent.index, 'vehicle_count'] = recent['vehicle_count']
+    result = detect_incidents(df, zone, window_minutes=15)
+    assert result['incident_detected'] == False
+    assert result['severity'] is None
+
+def test_incident_clearance_time_longer_in_sandstorm():
+    # Test clearance time longer in sandstorm
+    minor_clear_normal = estimate_incident_clearance_time("Minor", "clear", "urban")
+    minor_clear_sandstorm = estimate_incident_clearance_time("Minor", "sandstorm", "urban")
+    assert minor_clear_sandstorm > minor_clear_normal
