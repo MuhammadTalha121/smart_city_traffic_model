@@ -394,6 +394,72 @@ def check_thresholds(df: pd.DataFrame, city: str = 'Riyadh') -> list:
     return alerts
 
 
+
+
+def check_incident_alerts(city_df: pd.DataFrame, city: str = "Riyadh") -> list:
+    """
+    Scans all zones in city_df for traffic incidents using detect_incidents().
+
+    Returns a list of alert dicts with the same schema as check_thresholds()
+    for incidents whose severity meets or exceeds
+    ALERT_THRESHOLDS["incident_severity_min"].
+
+    Parameters
+    ----------
+    city_df : pd.DataFrame
+        Full city DataFrame from app.state.city_dfs.
+    city    : str
+        City name for alert payload context.
+
+    Returns
+    -------
+    list of dicts, one per triggered incident alert.
+    """
+    from src.model import detect_incidents, estimate_incident_clearance_time
+    from src.config import ALERT_THRESHOLDS
+
+    severity_rank = {"Minor": 0, "Moderate": 1, "Major": 2, "Critical": 3}
+    min_severity  = ALERT_THRESHOLDS.get("incident_severity_min", "Moderate")
+    min_rank      = severity_rank.get(min_severity, 1)
+    alerts        = []
+
+    for zone in city_df["zone"].unique():
+        zone_df = city_df[city_df["zone"] == zone]
+        if zone_df.empty:
+            continue
+
+        result = detect_incidents(zone_df, zone=zone, city=city, log=True)
+
+        if result.get("incident_detected"):
+            incident_rank = severity_rank.get(result.get("severity"), 0)
+            if incident_rank >= min_rank:
+                weather   = str(zone_df["weather"].iloc[-1]) if "weather" in zone_df.columns else "Clear"
+                road_type = str(zone_df["road_type"].iloc[-1]) if "road_type" in zone_df.columns else "urban"
+
+                clearance = estimate_incident_clearance_time(
+                    result.get("severity"),
+                    weather,
+                    road_type
+                )
+
+                alerts.append({
+                    "alert_type":             "incident",
+                    "city":                   city,
+                    "zone":                   zone,
+                    "severity":               result.get("severity"),
+                    "speed_drop_pct":         result.get("speed_drop_pct"),
+                    "confidence":             result.get("confidence"),
+                    "recommended_action":     result.get("recommended_action"),
+                    "estimated_clearance_mins": clearance,
+                })
+
+    return alerts
+
+
+
+
+
+
 def deliver_webhook_alert(alerts: list, webhook_url: str) -> bool:
     """
     POST alert payload to a webhook URL.
