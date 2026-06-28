@@ -1,0 +1,5 @@
+timestamp,city,zone,severity,speed_drop_pct,volume_change_pct,confidence,clearance_mins
+2026-06-28T11:20:08.221766,Riyadh,Zone_1,Moderate,0.5666,-0.5818,High,34.5
+2026-06-28T11:37:19.616407,Riyadh,Zone_1,Major,0.65,-0.55,High,69.0
+2026-06-28T15:40:15.330184,Riyadh,Zone_1,Major,0.65,-0.55,High,69.0
+2026-06-28T15:55:18.876727,Riyadh,Zone_1,Major,0.65,-0.55,High,69.0
