@@ -219,6 +219,7 @@ ALERT_THRESHOLDS: Dict[str, float] = {
     'response_time_mins'  : 8.0,
 }
 
+ALERT_THRESHOLDS["incident_severity_min"] = "Moderate"
 
 
 SLA_TARGETS: Dict[str, float] = {
@@ -234,6 +235,19 @@ SLA_BREACH_SEVERITY: Dict[str, str] = {
     'error_rate_pct'  : 'High',
 }
 SLA_TREND_WINDOW_DAYS: int = 7
+
+
+
+INCIDENT_SPEED_DROP_THRESHOLD: float = 0.40   # 40% sudden speed drop → suspect incident
+INCIDENT_VOLUME_DROP_THRESHOLD: float = 0.30   # 30% volume drop with speed drop → blocked lane
+INCIDENT_PERSISTENCE_MINUTES: int    = 10      # must persist N minutes to confirm
+INCIDENT_SEVERITY_LEVELS: Dict[str, float] = {
+    "Minor":    0.20,   # speed drop 20–40%
+    "Moderate": 0.40,   # speed drop 40–60%
+    "Major":    0.60,   # speed drop > 60%
+    "Critical": 0.80,   # near-zero speed + volume collapse
+}
+
 
 
 # ---------------------------------------------------------------------------
@@ -711,3 +725,24 @@ MQTT_BROKER_HOST: str  = _os.getenv('MQTT_BROKER_HOST', '')
 MQTT_BROKER_PORT: int  = int(_os.getenv('MQTT_BROKER_PORT', '1883'))
 MQTT_TOPIC_PREFIX: str = 'smart_city/traffic'
 MQTT_ENABLED: bool     = bool(_os.getenv('MQTT_BROKER_HOST', ''))
+
+
+
+
+
+INCIDENT_SPEED_DROP_THRESHOLD: float = 0.40
+# 40% sudden speed drop relative to zone baseline → suspect incident
+ 
+INCIDENT_VOLUME_DROP_THRESHOLD: float = 0.30
+# 30% volume drop coinciding with speed drop → blocked lane (raises confidence)
+ 
+INCIDENT_PERSISTENCE_MINUTES: int = 10
+# Condition must persist at least N minutes before an incident is confirmed.
+# For hourly synthetic data this is enforced structurally (window_rows ≥ 1).
+ 
+INCIDENT_SEVERITY_LEVELS: Dict[str, float] = {
+    "Minor":    0.20,   # speed drop 20–40 %
+    "Moderate": 0.40,   # speed drop 40–60 %
+    "Major":    0.60,   # speed drop 60–80 %
+    "Critical": 0.80,   # near-zero speed + volume collapse
+}
