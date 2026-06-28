@@ -13,7 +13,9 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
                         NOISE_VEHICLE_COEFFICIENT, NOISE_SPEED_COEFFICIENT, 
                         NOISE_ROAD_TYPE_PREMIUM, NOISE_THRESHOLDS,
                         EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY, ZONE_DISTANCES_KM,
-                        RECURRING_EVENTS, EVACUATION_CAPACITY_MARGIN, EMISSIONS_ROUTING_WEIGHT)
+                        RECURRING_EVENTS, EVACUATION_CAPACITY_MARGIN, EMISSIONS_ROUTING_WEIGHT,
+                        INCIDENT_SPEED_DROP_THRESHOLD, INCIDENT_VOLUME_DROP_THRESHOLD, INCIDENT_SEVERITY_LEVELS,
+                        INCIDENT_PERSISTENCE_MINUTES)
 from datetime import datetime
 
 
@@ -2978,3 +2980,391 @@ def compute_hcm_vc_ratio(vehicle_count: float, road_type: str) -> Dict:
         'saturation_pct': round(min(vc_ratio, 1.0) * 100, 1),
         'near_capacity' : vc_ratio >= HCM_LOS_VC_THRESHOLDS['D'],
     }
+
+
+
+
+
+def detect_incidents(df: pd.DataFrame, zone: str, window_minutes: int = 15) -> dict:
+    """
+    Detects likely incidents distinct from general congestion.
+    Signature: sudden speed drop + volume drop (not just volume spike).
+    Anomaly detection (detect_anomalies) catches volume spikes — this catches
+    the inverse: speed collapses with or without volume change.
+    Returns:
+      incident_detected: bool
+      severity:          str  (Minor/Moderate/Major/Critical or None)
+      speed_drop_pct:    float
+      volume_change_pct: float
+      confidence:        str  (Low/Medium/High)
+      recommended_action: str
+    """
+    # Filter data for the zone and sort by timestamp
+    zone_df = df[df['zone'] == zone].sort_values('timestamp')
+    if len(zone_df) < window_minutes:  # not enough data
+        return _default_incident_response()
+    
+    # Use the last `window_minutes` rows (assume data is at 1-min intervals or resample)
+    # For simplicity, we'll take the last window_minutes rows (assuming 1 per minute)
+    # In production, we'd resample to 1-min frequency. We'll assume the data is at 1-min resolution.
+    # Actually, the existing synthetic data is hourly, but we'll handle generic case.
+    # For this example, we'll take the last window_minutes rows.
+    recent = zone_df.tail(window_minutes)
+    
+    # Calculate speed drop: compare recent average speed to baseline (e.g., previous period)
+    # Baseline: average speed from hour before the window (same time of day)
+    # For simplicity, we'll use the mean speed of the entire zone_df as baseline, or we can use previous hours.
+    # The specification says "sudden speed drop", so we compare recent average to the preceding window.
+    # We'll use a rolling window: compare recent average to the period immediately before.
+    if len(zone_df) < 2 * window_minutes:
+        return _default_incident_response()
+    
+    prev = zone_df.iloc[-2*window_minutes : -window_minutes]
+    recent_avg_speed = recent['avg_speed'].mean()
+    prev_avg_speed = prev['avg_speed'].mean()
+    
+    if prev_avg_speed == 0:
+        return _default_incident_response()
+    
+    speed_drop_pct = (prev_avg_speed - recent_avg_speed) / prev_avg_speed
+    speed_drop_pct = max(0, speed_drop_pct)  # cap at 0
+    
+    # Volume change: compare recent average vehicle_count to previous period
+    recent_volume = recent['vehicle_count'].mean()
+    prev_volume = prev['vehicle_count'].mean()
+    if prev_volume == 0:
+        volume_change_pct = 0
+    else:
+        volume_change_pct = (recent_volume - prev_volume) / prev_volume  # negative = drop
+    
+    # Check if incident criteria met
+    incident_detected = False
+    severity = None
+    confidence = "Low"
+    recommended_action = "Monitor"
+    
+    # Speed drop threshold
+    if speed_drop_pct >= INCIDENT_SPEED_DROP_THRESHOLD:
+        # Check persistence: ensure the drop is consistent across the window (not just one point)
+        # We'll check if the minimum speed in recent is significantly lower than prev average
+        min_speed_recent = recent['avg_speed'].min()
+        if (prev_avg_speed - min_speed_recent) / prev_avg_speed >= INCIDENT_SPEED_DROP_THRESHOLD * 0.8:
+            # Also check volume drop (blocked lane)
+            volume_drop = volume_change_pct < 0 and abs(volume_change_pct) >= INCIDENT_VOLUME_DROP_THRESHOLD
+            incident_detected = True
+            # Determine severity based on speed_drop_pct
+            if speed_drop_pct >= INCIDENT_SEVERITY_LEVELS["Critical"]:
+                severity = "Critical"
+                confidence = "High"
+                recommended_action = "Immediate dispatch emergency services; alert traffic control"
+            elif speed_drop_pct >= INCIDENT_SEVERITY_LEVELS["Major"]:
+                severity = "Major"
+                confidence = "High"
+                recommended_action = "Dispatch tow truck; alert traffic control"
+            elif speed_drop_pct >= INCIDENT_SEVERITY_LEVELS["Moderate"]:
+                severity = "Moderate"
+                confidence = "Medium"
+                recommended_action = "Dispatch roadside assistance; monitor"
+            else:
+                severity = "Minor"
+                confidence = "Low"
+                recommended_action = "Monitor; confirm with camera"
+    else:
+        incident_detected = False
+    
+    # If no incident, return default
+    if not incident_detected:
+        return _default_incident_response()
+    
+    return {
+        "incident_detected": True,
+        "severity": severity,
+        "speed_drop_pct": round(speed_drop_pct, 3),
+        "volume_change_pct": round(volume_change_pct, 3),
+        "confidence": confidence,
+        "recommended_action": recommended_action
+    }
+
+def _default_incident_response():
+    return {
+        "incident_detected": False,
+        "severity": None,
+        "speed_drop_pct": 0.0,
+        "volume_change_pct": 0.0,
+        "confidence": None,
+        "recommended_action": "No incident detected"
+    }
+
+
+
+
+
+
+def estimate_incident_clearance_time(severity: str, weather: str, road_type: str) -> float:
+    """
+    Returns estimated minutes to clear based on severity and conditions.
+    """
+    base_times = {
+        "Minor": 15,
+        "Moderate": 30,
+        "Major": 60,
+        "Critical": 90
+    }
+    base = base_times.get(severity, 15)
+    # Weather multiplier
+    weather_mult = WEATHER_SPEED_IMPACT.get(weather, 1.0)
+    # If weather reduces speed, clearance time increases (inverse)
+    if weather_mult > 0:
+        weather_factor = 1.0 / weather_mult
+    else:
+        weather_factor = 1.0
+    # Road type: highway vs urban
+    road_factor = 1.0
+    if road_type == "highway":
+        road_factor = 0.8  # faster clearance on highways due to better access
+    elif road_type == "arterial":
+        road_factor = 1.2
+    # Sandstorm adds extra time
+    if weather == "sandstorm":
+        weather_factor *= 1.5
+    estimated = base * weather_factor * road_factor
+    return round(estimated, 1)
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+#  Independent Incident Detection Engine
+# ---------------------------------------------------------------------------
+
+import csv as _incident_csv
+import os as _incident_os
+from pathlib import Path as _incident_Path
+from datetime import datetime as _incident_dt
+
+INCIDENTS_LOG_PATH = "incidents_log.csv"
+_INCIDENTS_FIELDS = [
+    "timestamp", "city", "zone", "severity",
+    "speed_drop_pct", "volume_change_pct", "confidence", "clearance_mins",
+]
+
+_SEVERITY_ORDER = {"Minor": 1, "Moderate": 2, "Major": 3, "Critical": 4}
+
+
+def _log_incident(record: dict) -> None:
+    """Append one incident row to incidents_log.csv (append-only)."""
+    path = _incident_Path(INCIDENTS_LOG_PATH)
+    is_new = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = _incident_csv.DictWriter(f, fieldnames=_INCIDENTS_FIELDS)
+        if is_new:
+            writer.writeheader()
+        writer.writerow({k: record.get(k, "") for k in _INCIDENTS_FIELDS})
+
+
+def estimate_incident_clearance_time(
+    severity: str,
+    weather: str,
+    road_type: str,
+) -> float:
+    """
+    Estimate minutes to clear an incident based on severity and conditions.
+
+    Base clearance times (minutes):
+      Minor    → 15
+      Moderate → 30
+      Major    → 60
+      Critical → 90
+
+    Modifiers:
+      Sandstorm   → +50 %  (emergency vehicles slowed, reduced visibility)
+      Fog / rain  → +25 %
+      Highway     → +15 %  (high-speed lanes harder to manage)
+      Local       → −10 %  (lower speeds, easier access)
+
+    Returns float (minutes), minimum 5.
+    """
+    base = {"Minor": 15, "Moderate": 30, "Major": 60, "Critical": 90}.get(severity, 30)
+
+    weather_factor = 1.0
+    if weather == "sandstorm":
+        weather_factor = 1.50
+    elif weather in ("fog", "rain"):
+        weather_factor = 1.25
+
+    road_factor = 1.0
+    if road_type == "highway":
+        road_factor = 1.15
+    elif road_type == "local":
+        road_factor = 0.90
+
+    return max(5.0, round(base * weather_factor * road_factor, 1))
+
+
+def detect_incidents(
+    df,
+    zone: str,
+    window_minutes: int = 15,
+    city: str = "Riyadh",
+    log: bool = True,
+) -> dict:
+    """
+    Detect likely incidents distinct from general congestion.
+
+    Incident signature: sudden speed DROP (possibly with volume drop).
+    This is the inverse of detect_anomalies(), which catches volume SPIKES.
+
+    Algorithm
+    ---------
+    1. Filter to the zone; sort by timestamp.
+    2. Take the most recent `window_minutes` of data (approximated as the
+       last N rows where each row represents one hour — for synthetic data).
+    3. Compute a rolling baseline speed (rows before the window).
+    4. If the latest window's mean speed is < (1 - INCIDENT_SPEED_DROP_THRESHOLD)
+       * baseline_speed, a speed collapse is detected.
+    5. Classify severity via INCIDENT_SEVERITY_LEVELS thresholds.
+    6. Optionally check volume drop for the "blocked lane" sub-type.
+    7. Log if incident detected and log=True.
+
+    Parameters
+    ----------
+    df            : City DataFrame (from app.state.city_dfs or city_df).
+    zone          : Zone identifier string.
+    window_minutes: Approximate window size (used as row count for hourly data).
+    city          : City name — included in the log row.
+    log           : Whether to write to incidents_log.csv.
+
+    Returns
+    -------
+    dict with keys:
+      incident_detected : bool
+      severity          : str | None
+      speed_drop_pct    : float
+      volume_change_pct : float
+      confidence        : str   (Low / Medium / High)
+      recommended_action: str
+      clearance_mins    : float | None
+      zone              : str
+      city              : str
+      timestamp         : str
+    """
+    from src.config import (
+        INCIDENT_SPEED_DROP_THRESHOLD,
+        INCIDENT_VOLUME_DROP_THRESHOLD,
+        INCIDENT_SEVERITY_LEVELS,
+        INCIDENT_PERSISTENCE_MINUTES,
+    )
+
+    _no_incident = {
+        "incident_detected": False,
+        "severity": None,
+        "speed_drop_pct": 0.0,
+        "volume_change_pct": 0.0,
+        "confidence": "Low",
+        "recommended_action": "No action required.",
+        "clearance_mins": None,
+        "zone": zone,
+        "city": city,
+        "timestamp": _incident_dt.now().isoformat(),
+    }
+
+    zone_df = df[df["zone"] == zone].sort_values("timestamp") if "zone" in df.columns else df.sort_values("timestamp")
+
+    if len(zone_df) < 4:
+        return _no_incident
+
+    # NOTE: synthetic data is hourly-granularity. window_minutes is used
+    # directly as a row count (not minutes/60) since there is no finer
+    # time resolution to convert against. This is a known approximation —
+    # a real deployment with sub-hourly telemetry should convert properly.
+    window_rows = max(1, window_minutes)
+    if len(zone_df) < window_rows * 2:
+        window_rows = max(1, len(zone_df) // 2)
+
+    baseline = zone_df.iloc[-(window_rows * 2):-window_rows]
+    recent   = zone_df.iloc[-window_rows:]
+
+    baseline_speed   = float(baseline["avg_speed"].mean())
+    recent_speed     = float(recent["avg_speed"].mean())
+    baseline_volume  = float(baseline["vehicle_count"].mean())
+    recent_volume    = float(recent["vehicle_count"].mean())
+
+    if baseline_speed <= 0:
+        return _no_incident
+
+    speed_drop_pct = (baseline_speed - recent_speed) / baseline_speed
+    volume_change_pct = (recent_volume - baseline_volume) / max(baseline_volume, 1.0)
+
+    # --- Primary trigger: speed collapse ---
+    if speed_drop_pct < INCIDENT_SPEED_DROP_THRESHOLD:
+        return _no_incident
+
+    # --- Severity classification ---
+    severity = "Minor"
+    for level in ("Critical", "Major", "Moderate", "Minor"):
+        if speed_drop_pct >= INCIDENT_SEVERITY_LEVELS[level]:
+            severity = level
+            break
+
+    # --- Confidence: higher when volume also drops (blocked lane) ---
+    if -volume_change_pct >= INCIDENT_VOLUME_DROP_THRESHOLD:
+        confidence = "High"
+    elif speed_drop_pct >= 0.55:
+        confidence = "High"
+    elif speed_drop_pct >= 0.40:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    # --- Weather / road context from most-recent row ---
+    latest = zone_df.iloc[-1]
+    weather = str(latest.get("weather", "clear"))
+    road_type = str(latest.get("road_type", "arterial"))
+
+    clearance_mins = estimate_incident_clearance_time(severity, weather, road_type)
+
+    # --- Recommended action ---
+    actions = {
+        "Minor":
+            f"Monitor {zone}. Deploy one traffic officer if clearance exceeds {clearance_mins:.0f} min.",
+        "Moderate":
+            f"Dispatch traffic officers to {zone}. Activate alternate route signage. "
+            f"Expected clearance: {clearance_mins:.0f} min.",
+        "Major":
+            f"ALERT: Major incident in {zone}. Dispatch emergency services and activate "
+            f"diversion. Expected clearance: {clearance_mins:.0f} min.",
+        "Critical":
+            f"CRITICAL: Severe incident in {zone}. Full emergency response required. "
+            f"Implement network-wide diversion. Expected clearance: {clearance_mins:.0f} min.",
+    }
+    recommended_action = actions.get(severity, "Monitor zone.")
+
+    result = {
+        "incident_detected": True,
+        "severity": severity,
+        "speed_drop_pct": round(speed_drop_pct, 4),
+        "volume_change_pct": round(volume_change_pct, 4),
+        "confidence": confidence,
+        "recommended_action": recommended_action,
+        "clearance_mins": clearance_mins,
+        "zone": zone,
+        "city": city,
+        "timestamp": _incident_dt.now().isoformat(),
+    }
+
+    # --- Log ---
+    if log:
+        _log_incident({
+            "timestamp": result["timestamp"],
+            "city": city,
+            "zone": zone,
+            "severity": severity,
+            "speed_drop_pct": round(speed_drop_pct, 4),
+            "volume_change_pct": round(volume_change_pct, 4),
+            "confidence": confidence,
+            "clearance_mins": clearance_mins,
+        })
+
+    return result
