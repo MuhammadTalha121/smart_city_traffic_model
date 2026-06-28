@@ -2,9 +2,11 @@ import os
 import csv
 from typing import Optional
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
+
+
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
 from src.reporter import generate_weekly_report
@@ -62,7 +64,10 @@ from src.model import (
     compute_thermal_risk, compute_thermal_risk, calculate_egress_plan,
     generate_vms_message, calculate_pareto_routes, estimate_air_quality,
     validate_freight_entry, calculate_evacuation_routes, train_xgboost_quantile, predict_with_confidence,
-    validate_vms_message,
+    validate_vms_message, detect_incidents,
+        estimate_incident_clearance_time,
+        INCIDENTS_LOG_PATH,
+        _SEVERITY_ORDER,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -317,16 +322,55 @@ async def lifespan(app: FastAPI):
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
 
+        # Deduplication cache for alerts: key -> last_sent_timestamp
+    app.state._last_alert_sent = {}
+
     def _scheduled_alerts():
+        from src.pipeline import check_incident_alerts
+
         for city, city_df in app.state.city_dfs.items():
-            alerts = check_thresholds(city_df, city=city)
-            if alerts:
-                log_alert(alerts)
-                deliver_webhook_alert(alerts, WEBHOOK_URL)
-                print(f"[Alert] {len(alerts)} alert(s) fired for {city}")
+            # --- Congestion alerts ---
+            congestion_alerts = check_thresholds(city_df, city=city)
 
+            # --- Incident alerts ---
+            incident_alerts = check_incident_alerts(city_df, city=city)
 
+            # --- Combine and deduplicate ---
+            all_alerts = congestion_alerts + incident_alerts
+            fresh_alerts = []
 
+            for alert in all_alerts:
+                alert_type = alert.get("alert_type", "congestion")
+                severity = alert.get("severity", alert.get("metric", "Unknown"))
+                key = f"{alert_type}:{city}:{alert['zone']}:{severity}"
+                last_sent = app.state._last_alert_sent.get(key)
+                now = datetime.now(timezone.utc)
+
+                if last_sent is None or (now - last_sent).total_seconds() > 900:
+                    app.state._last_alert_sent[key] = now
+                    fresh_alerts.append(alert)
+
+            # --- Log and deliver ---
+            if fresh_alerts:
+                log_alert(fresh_alerts)
+
+                # Build combined payload for webhook
+                payload = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "city": city,
+                    "congestion_alerts": [
+                        a for a in fresh_alerts if a.get("alert_type") != "incident"
+                    ],
+                    "incident_alerts": [
+                        a for a in fresh_alerts if a.get("alert_type") == "incident"
+                    ],
+                }
+                deliver_webhook_alert(payload["congestion_alerts"] + payload["incident_alerts"], WEBHOOK_URL)
+                print(f"[Alert] {len(fresh_alerts)} alert(s) fired for {city} "
+                      f"({len(payload['congestion_alerts'])} congestion, "
+                      f"{len(payload['incident_alerts'])} incident)")
+
+        # --- SLA breach alerts (separate loop, no dedup needed) ---
         sla_alerts = check_sla_breach_alerts(days=1)
         if sla_alerts:
             log_alert(sla_alerts)
@@ -412,28 +456,30 @@ app.add_middleware(
 
 
 # ===== Prometheus Metrics =====
-REQUEST_COUNT = Counter(
-    'api_requests_total',
-    'Total API requests',
-    ['endpoint', 'method', 'status_code']
-)
+from prometheus_client import REGISTRY
 
-REQUEST_LATENCY = Histogram(
-    'api_request_duration_seconds',
-    'API request latency in seconds',
-    ['endpoint'],
-    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
-)
+def _counter(name, doc, labels):
+    try:
+        return Counter(name, doc, labels)
+    except ValueError:
+        return REGISTRY._names_to_collectors[name]
 
-DRIFT_SCORE_GAUGE = Gauge(
-    'model_drift_score',
-    'Current model drift score'
-)
+def _histogram(name, doc, labels, buckets=None):
+    try:
+        return Histogram(name, doc, labels, **({"buckets": buckets} if buckets else {}))
+    except ValueError:
+        return REGISTRY._names_to_collectors[name]
 
-QUEUE_DEPTH_GAUGE = Gauge(
-    'telemetry_queue_depth',
-    'Current telemetry queue depth'
-)
+def _gauge(name, doc):
+    try:
+        return Gauge(name, doc)
+    except ValueError:
+        return REGISTRY._names_to_collectors[name]
+
+REQUEST_COUNT     = _counter('api_requests_total', 'Total API requests', ['endpoint', 'method', 'status_code'])
+REQUEST_LATENCY   = _histogram('api_request_duration_seconds', 'API request latency in seconds', ['endpoint'], buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0])
+DRIFT_SCORE_GAUGE = _gauge('model_drift_score', 'Current model drift score')
+QUEUE_DEPTH_GAUGE = _gauge('telemetry_queue_depth', 'Current telemetry queue depth')
 
 
 
@@ -1721,7 +1767,7 @@ def safety_pedestrian(
 
 
 
-@app.post("/reports/api-docs", dependencies=[Depends(admin_required)])
+@app.post("/reports/api-docs", dependencies=[Depends(require_admin)])
 async def generate_api_docs():
     """
     Generate a self-contained HTML government API documentation package.
@@ -3754,6 +3800,129 @@ async def equity_summary(
     from src.model import compute_equity_summary
     result = compute_equity_summary(city=city, days=days)
     return result
+
+
+
+
+
+@app.get("/incidents/active", tags=["incidents"])
+@limiter.limit("20/minute")
+def incidents_active(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return all currently detected incidents across all zones for a city,
+    sorted by severity descending (Critical first).
+ 
+    Runs detect_incidents() live against the latest city DataFrame —
+    no caching, always reflects current conditions.
+ 
+    Each incident entry includes: zone, severity, speed_drop_pct,
+    volume_change_pct, confidence, recommended_action, clearance_mins,
+    and timestamp.
+ 
+    Returns an empty list (not 404) when no incidents are detected.
+    Rate limit: 20 req/min per IP. Role: OPERATOR or ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+ 
+    df = app.state.city_dfs.get(city, app.state.df)
+    zones = df["zone"].unique() if "zone" in df.columns else []
+ 
+    active = []
+    for zone in zones:
+        result = detect_incidents(df, zone=zone, city=city, log=True)
+        if result["incident_detected"]:
+            active.append(result)
+ 
+    # Sort Critical → Major → Moderate → Minor
+    active.sort(
+        key=lambda x: _SEVERITY_ORDER.get(x.get("severity", "Minor"), 0),
+        reverse=True,
+    )
+ 
+    return {
+        "city": city,
+        "total_incidents": len(active),
+        "incidents": active,
+        "timestamp": datetime.now().isoformat(),
+    }
+ 
+ 
+@app.get("/incidents/history", tags=["incidents"])
+@limiter.limit("20/minute")
+def incidents_history(
+    request: Request,
+    city: str = "Riyadh",
+    hours: int = 24,
+    zone: Optional[str] = None,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return historical incidents from incidents_log.csv for the past N hours.
+ 
+    Filters by city (required) and optionally by zone. Results are sorted
+    newest first. Returns an empty list when the log doesn't exist yet.
+ 
+    Parameters:
+      city  — Target city (default Riyadh).
+      hours — Look-back window in hours (default 24).
+      zone  — Optional zone filter (e.g. Zone_1).
+ 
+    Rate limit: 20 req/min per IP. Role: OPERATOR or ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+ 
+    log_path = INCIDENTS_LOG_PATH
+ 
+    if not os.path.exists(log_path):
+        return {
+            "city": city,
+            "hours": hours,
+            "zone_filter": zone,
+            "total_incidents": 0,
+            "incidents": [],
+            "note": "No incidents logged yet.",
+        }
+ 
+    log_df = pd.read_csv(log_path)
+ 
+    # --- Time filter ---
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        cutoff = pd.Timestamp.now() - pd.Timedelta(hours=hours)
+        log_df = log_df[log_df["timestamp"] >= cutoff]
+ 
+    # --- City filter ---
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+ 
+    # --- Zone filter (optional) ---
+    if zone and "zone" in log_df.columns:
+        log_df = log_df[log_df["zone"] == zone]
+ 
+    # Newest first
+    if "timestamp" in log_df.columns:
+        log_df = log_df.sort_values("timestamp", ascending=False)
+ 
+    records = log_df.to_dict(orient="records")
+    # Convert Timestamp objects to strings for JSON serialisation
+    for r in records:
+        if hasattr(r.get("timestamp"), "isoformat"):
+            r["timestamp"] = r["timestamp"].isoformat()
+ 
+    return {
+        "city": city,
+        "hours": hours,
+        "zone_filter": zone,
+        "total_incidents": len(records),
+        "incidents": records,
+    }
+
+
+
 
 
 
