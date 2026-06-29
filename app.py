@@ -7,6 +7,20 @@ from typing import Dict, List, Tuple, Optional
 import pandas as pd
 
 
+
+from fastapi import UploadFile, File, Form
+import tempfile
+from src.calibration import (
+    load_real_counts,
+    compute_calibration_error,
+    compute_calibration_factors,
+    save_calibration_factors,
+    load_calibration_factors,
+    generate_calibration_report,
+)
+from src.config import CALIBRATION_FACTORS_PATH
+
+
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
 from src.reporter import generate_weekly_report
@@ -722,6 +736,81 @@ def pipeline_trigger(auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])))
         app.state.last_retrain = result["timestamp"]
 
     return result
+
+
+
+
+
+@app.get("/calibration/status", tags=["calibration"])
+def calibration_status(auth: Dict = Depends(require_admin)):
+    """Return last calibration run metrics and whether factors are active. Admin only."""
+    factors = load_calibration_factors(CALIBRATION_FACTORS_PATH)
+    if factors is None:
+        return {
+            "calibrated": False,
+            "factors_path": CALIBRATION_FACTORS_PATH,
+            "message": "No calibration factors found. POST /calibration/upload to calibrate.",
+        }
+    return {
+        "calibrated": True,
+        "computed_at": factors.get("computed_at"),
+        "zones": factors.get("zones", 0),
+        "total_entries": factors.get("total_entries", 0),
+        "metrics": factors.get("metrics", {}),
+        "factors": factors.get("factors", {}),
+    }
+
+
+@app.post("/calibration/upload", tags=["calibration"])
+@limiter.limit("10/minute")
+def calibration_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    city: str = Form("Riyadh"),
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Upload a real traffic-count CSV (columns: zone, hour, vehicle_count) and
+    compute calibration factors against the city's synthetic data. Admin only.
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=422, detail="File must be a CSV")
+
+    synthetic_df = app.state.city_dfs.get(city)
+    if synthetic_df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    content = file.file.read()
+    tmp = tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False)
+    try:
+        tmp.write(content)
+        tmp.close()
+        real_df = load_real_counts(tmp.name)
+
+        error_metrics = compute_calibration_error(synthetic_df, real_df)
+        factors = compute_calibration_factors(synthetic_df, real_df)
+        factors["metrics"] = error_metrics
+        factors["city"] = city
+        save_calibration_factors(factors, CALIBRATION_FACTORS_PATH)
+
+        report_path = f"reports/calibration_report_{city.lower()}.md"
+        generate_calibration_report(synthetic_df, real_df, report_path)
+
+        return {
+            "status": "success",
+            "city": city,
+            "metrics": error_metrics,
+            "factors_saved": True,
+            "report_path": report_path,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        os.remove(tmp.name)
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
