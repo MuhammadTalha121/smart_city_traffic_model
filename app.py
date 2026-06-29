@@ -8,7 +8,7 @@ import pandas as pd
 
 
 
-from fastapi import UploadFile, File, Form
+from fastapi import UploadFile, File, Form, Body
 import tempfile
 from src.calibration import (
     load_real_counts,
@@ -20,6 +20,7 @@ from src.calibration import (
 )
 from src.config import CALIBRATION_FACTORS_PATH
 
+from src.simulator import apply_scenario, run_scenario
 
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
@@ -1135,6 +1136,37 @@ def interventions_active(
         "total_interventions": len(results),
         "interventions"      : results,
     }
+
+
+
+
+@app.post("/scenarios/run")
+@limiter.limit("10/minute")
+async def scenarios_run(
+    request: Request,
+    body: dict = Body(...),
+    user: dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    city        = body.get("city")
+    scenario    = body.get("scenario", {})
+    hours_ahead = body.get("hours_ahead", 3)
+
+    if not city:
+        raise HTTPException(status_code=422, detail="city is required")
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found")
+
+    try:
+        result = run_scenario(city, scenario, hours_ahead)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
+
+
+
+
 
 
 @app.get("/safety/hotspots", tags=["safety"])
