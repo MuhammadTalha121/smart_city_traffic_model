@@ -18,6 +18,14 @@ DRIFT_WINDOW  = 500   # number of recent predictions to evaluate
 DRIFT_THRESHOLD = 1.3  # retrain if recent MAE is 1.3x the baseline
 
 
+
+def _load_calibration_fns():
+    from src.calibration import load_calibration_factors, apply_calibration_factors
+    return load_calibration_factors, apply_calibration_factors
+
+
+
+
 def read_predictions_log(log_path: str = "predictions_log.csv", **read_csv_kwargs) -> pd.DataFrame:
     """
     Defensive read of predictions_log.csv. Falls back to the python
@@ -81,7 +89,7 @@ def should_retrain(drift_score: float, threshold: float = DRIFT_THRESHOLD) -> bo
     return drift_score >= threshold
 
 
-def retrain_model(city: str = "Riyadh", run_hpo: bool = False) -> dict:
+def retrain_model(city: str = "Riyadh", run_hpo: bool = False, apply_calibration: bool = False) -> dict:
     """
     Regenerate data, retrain XGBoost, and save the new model to disk.
     If run_hpo is True, run Optuna to find best hyperparameters before training.
@@ -96,6 +104,15 @@ def retrain_model(city: str = "Riyadh", run_hpo: bool = False) -> dict:
     df = generate_traffic_data(city=city)
     df = apply_hourly_patterns(df, city=city)
     df = add_lag_features(df)
+
+    # PROMPT 095: apply calibration factors to training data before feature prep
+    if apply_calibration:
+        _, apply_calibration_factors = _load_calibration_fns()
+        load_calibration_factors, _ = _load_calibration_fns()
+        factors = load_calibration_factors()
+        if factors is not None:
+            df = apply_calibration_factors(df, factors.get("factors", {}))
+            print(f"[Pipeline] Calibration factors applied to training data for {city}.")
 
     X, y, _ = prepare_features(df)
 
@@ -250,6 +267,43 @@ def _append_changelog_entry(timestamp, city, drift_score, staged_mae, live_mae,
         f.write(f"| {timestamp} | {city} | {drift_score} | {staged_mae} | {live_mae} | {decision} | {decision_maker} |\n")
 
 
+
+
+def _append_calibration_to_changelog(timestamp: str, city: str, calibration_score: float) -> None:
+    """Append a calibration-triggered note to MODEL_CHANGELOG.md."""
+    write_header = not os.path.exists(MODEL_CHANGELOG_PATH)
+    with open(MODEL_CHANGELOG_PATH, "a", encoding="utf-8") as f:
+        if write_header:
+            f.write("# Model Changelog\n\n")
+            f.write("| Timestamp | City | Drift Score | Staged MAE | Live MAE | Decision | Decision Maker |\n")
+            f.write("|---|---|---|---|---|---|---|\n")
+        f.write(f"| {timestamp} | {city} | — | — | — | calibration_applied (score={calibration_score:.4f}) | automatic |\n")
+
+
+
+
+
+def check_calibration_status() -> dict:
+    from src.config import CALIBRATION_DRIFT_THRESHOLD, CALIBRATION_FACTORS_PATH
+    load_calibration_factors, _ = _load_calibration_fns()
+    factors = load_calibration_factors(filepath=CALIBRATION_FACTORS_PATH)
+    if factors is None:
+        return {"calibration_available": False, "calibration_score": None, "needs_recalibration": False}
+    try:
+        score = float(factors.get("metrics", {}).get("calibration_score", 1.0))
+    except (TypeError, ValueError):
+        return {"calibration_available": True, "calibration_score": None, "needs_recalibration": False}
+    return {
+        "calibration_available": True,
+        "calibration_score": score,
+        "needs_recalibration": score < CALIBRATION_DRIFT_THRESHOLD,
+    }
+
+
+
+
+
+
 def run_pipeline(city: str = "Riyadh") -> dict:
     timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     drift_score = compute_drift_score()
@@ -259,11 +313,26 @@ def run_pipeline(city: str = "Riyadh") -> dict:
     old_r2      = None
     hpo_used    = False
     evaluation  = None
+    calibration_triggered = False
+
+    # --- PROMPT 095: check calibration before deciding to retrain ---
+    cal_status = check_calibration_status()
 
     if should_retrain(drift_score):
         print(f"[Pipeline] Drift score {drift_score} >= {DRIFT_THRESHOLD}. Retraining into staging slot...")
         run_hpo = drift_score >= 1.5
-        result  = retrain_model(city=city, run_hpo=run_hpo)
+
+        # Apply calibration factors to training data if available and needed
+        if cal_status["needs_recalibration"] and cal_status["calibration_available"]:
+            calibration_triggered = True
+            print(f"[Pipeline] Calibration score {cal_status['calibration_score']:.4f} below threshold "
+                  f"{0.15}. Applying calibration factors to training data.")
+            result = retrain_model(city=city, run_hpo=run_hpo, apply_calibration=True)
+            # Log calibration to changelog
+            _append_calibration_to_changelog(timestamp, city, cal_status["calibration_score"])
+        else:
+            result = retrain_model(city=city, run_hpo=run_hpo)
+
         retrained = result["retrained"]
         new_r2    = result["new_r2"]
         old_r2    = result["old_r2"]
@@ -284,16 +353,17 @@ def run_pipeline(city: str = "Riyadh") -> dict:
         print(f"[Pipeline] Drift score {drift_score} — model stable. No retrain needed.")
 
     outcome = {
-        "timestamp"  : timestamp,
-        "city"       : city,
-        "drift_score": drift_score,
-        "retrained"  : retrained,
-        "promoted"   : promoted,
-        "new_r2"     : new_r2,
-        "old_r2"     : old_r2,
-        "hpo_used"   : hpo_used,
-        "staged_mae" : evaluation.get("staged_mae") if evaluation else None,
-        "live_mae"   : evaluation.get("live_mae") if evaluation else None,
+        "timestamp"            : timestamp,
+        "city"                 : city,
+        "drift_score"          : drift_score,
+        "retrained"            : retrained,
+        "promoted"             : promoted,
+        "new_r2"               : new_r2,
+        "old_r2"               : old_r2,
+        "hpo_used"             : hpo_used,
+        "staged_mae"           : evaluation.get("staged_mae") if evaluation else None,
+        "live_mae"             : evaluation.get("live_mae") if evaluation else None,
+        "calibration_triggered": calibration_triggered,
     }
     _log_pipeline_run(outcome)
     return outcome
