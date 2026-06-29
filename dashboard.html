@@ -66,7 +66,6 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* ── Ambient background ── */
   body::before {
     content: '';
     position: fixed;
@@ -79,7 +78,6 @@
     z-index: 0;
   }
 
-  /* ── Header ── */
   header {
     position: sticky;
     top: 0;
@@ -158,7 +156,6 @@
     letter-spacing: 0.04em;
   }
 
-  /* ── Nav tabs ── */
   nav {
     position: sticky;
     top: 64px;
@@ -210,7 +207,6 @@
 
   .tab-icon { margin-right: 6px; font-size: 0.85rem; }
 
-  /* ── Main layout ── */
   main {
     position: relative;
     z-index: 1;
@@ -227,7 +223,6 @@
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* ── KPI grid ── */
   .kpi-grid {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -271,7 +266,6 @@
     font-family: var(--font-mono);
   }
 
-  /* ── Cards ── */
   .card {
     background: var(--bg-card);
     border: 1px solid var(--border);
@@ -311,13 +305,11 @@
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
   .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; }
 
-  /* ── Charts ── */
   .chart-wrap {
     position: relative;
     width: 100%;
   }
 
-  /* ── Prediction panel ── */
   .predict-layout {
     display: grid;
     grid-template-columns: 320px 1fr;
@@ -415,7 +407,6 @@
   .predict-btn:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 8px 30px rgba(212,175,100,0.4); }
   .predict-btn:active { transform: translateY(0); }
 
-  /* ── Result card ── */
   .result-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
@@ -576,7 +567,6 @@
     margin-top: 0.75rem;
   }
 
-  /* ── Anomaly / table ── */
   .data-table {
     width: 100%;
     border-collapse: collapse;
@@ -619,7 +609,6 @@
   .sev-elevated { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--border-accent); }
   .sev-normal { background: var(--jade-soft); color: var(--jade); border: 1px solid rgba(90,175,138,0.2); }
 
-  /* ── Forecast cards ── */
   .forecast-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
 
   .forecast-card {
@@ -665,7 +654,6 @@
     line-height: 1.5;
   }
 
-  /* ── Weather comparison ── */
   .weather-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
 
   .weather-card {
@@ -710,7 +698,6 @@
 
   .wc-unit { font-size: 0.7rem; color: var(--text-muted); font-family: var(--font-mono); }
 
-  /* ── Model insights ── */
   .importance-row {
     display: flex;
     align-items: center;
@@ -750,7 +737,6 @@
     flex-shrink: 0;
   }
 
-  /* ── Alert banner ── */
   .alert-banner {
     display: flex;
     align-items: center;
@@ -767,7 +753,6 @@
 
   .alert-icon { font-size: 1rem; flex-shrink: 0; }
 
-  /* ── Loading shimmer ── */
   .shimmer {
     background: linear-gradient(90deg, var(--bg-card) 0%, var(--bg-card-hover) 50%, var(--bg-card) 100%);
     background-size: 200% 100%;
@@ -780,7 +765,6 @@
     100% { background-position: -200% 0; }
   }
 
-  /* ── Empty state ── */
   .empty-state {
     text-align: center;
     padding: 3rem;
@@ -791,13 +775,11 @@
 
   .empty-icon { font-size: 2rem; margin-bottom: 0.75rem; opacity: 0.4; }
 
-  /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
 
-  /* ── Section label ── */
   .section-label {
     font-size: 0.65rem;
     font-family: var(--font-mono);
@@ -816,7 +798,6 @@
     background: var(--border);
   }
 
-  /* ── Tooltip ── */
   [data-tip] { position: relative; cursor: help; }
   [data-tip]:hover::after {
     content: attr(data-tip);
@@ -836,7 +817,6 @@
     z-index: 200;
   }
 
-  /* ── Responsive ── */
   @media (max-width: 900px) {
     .kpi-grid { grid-template-columns: repeat(3, 1fr); }
     .predict-layout { grid-template-columns: 1fr; }
@@ -867,6 +847,10 @@
   </div>
   <div class="header-right">
     <div class="city-badge" id="city-badge">RIYADH</div>
+    <div class="status-pill" id="ws-status-pill" style="background:var(--rose-soft);border-color:rgba(224,112,112,0.2)">
+      <div class="status-dot" style="background:var(--rose)"></div>
+      <span id="ws-status-text">WS: OFF</span>
+    </div>
     <div class="status-pill">
       <div class="status-dot"></div>
       <span>LIVE</span>
@@ -877,11 +861,13 @@
 <!-- Nav -->
 <nav>
   <button class="tab-btn active" data-tab="predict"><span class="tab-icon">⚡</span>Live Prediction</button>
+  <button class="tab-btn" data-tab="operations"><span class="tab-icon">🎛</span>Operations</button>
   <button class="tab-btn" data-tab="patterns"><span class="tab-icon">📈</span>Hourly Patterns</button>
   <button class="tab-btn" data-tab="zones"><span class="tab-icon">🗺</span>Zone Analysis</button>
   <button class="tab-btn" data-tab="weather"><span class="tab-icon">🌤</span>Weather Impact</button>
   <button class="tab-btn" data-tab="insights"><span class="tab-icon">🤖</span>Model Insights</button>
   <button class="tab-btn" data-tab="forecast"><span class="tab-icon">🔮</span>Forecasting</button>
+  <button class="tab-btn" data-tab="analytics"><span class="tab-icon">📊</span>Analytics</button>
 </nav>
 
 <!-- Main -->
@@ -924,6 +910,17 @@
     </div>
     <div id="toll-zones-wrap">
       <div class="empty-state"><div class="empty-icon">🛣</div>Loading toll data…</div>
+    </div>
+  </div>
+
+  <!-- Live Zone Table (new, always visible) -->
+  <div class="card" id="live-zone-panel" style="margin-bottom:1.25rem">
+    <div class="card-header">
+      <span class="card-title">Live Zone Status</span>
+      <span class="card-tag" id="ws-updated-tag">—</span>
+    </div>
+    <div id="live-zone-table-wrap">
+      <div class="empty-state"><div class="empty-icon">📡</div>Connecting to live feed…</div>
     </div>
   </div>
 
@@ -1024,6 +1021,8 @@
             <div class="result-score-num" id="r-score-num">0.00</div>
             <div class="result-score-meta">
               <div class="result-level-badge" id="r-level-badge">—</div>
+              <div class="result-level-badge" id="r-confidence-badge"
+                   style="font-size:0.65rem;margin-top:4px;background:var(--text-muted)20;border:1px solid var(--border);color:var(--text-muted)">—</div>
               <div class="result-zone-label" id="r-zone-label">—</div>
             </div>
           </div>
@@ -1075,6 +1074,49 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB: OPERATIONS (NEW)
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-operations">
+    <div class="section-label">Operational Controls · Live Data</div>
+
+    <!-- VSL Active Limits -->
+    <div class="card" id="vsl-panel" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Variable Speed Limits</span>
+        <span class="card-tag" id="vsl-tag">LOADING…</span>
+      </div>
+      <div id="vsl-wrap"><div class="empty-state"><div class="empty-icon">🚦</div>Loading…</div></div>
+    </div>
+
+    <!-- VMS Active Boards -->
+    <div class="card" id="vms-panel" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Variable Message Signs</span>
+        <span class="card-tag" id="vms-tag">LOADING…</span>
+      </div>
+      <div id="vms-wrap"><div class="empty-state"><div class="empty-icon">📋</div>Loading…</div></div>
+    </div>
+
+    <!-- Parking Occupancy -->
+    <div class="card" id="parking-panel" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Parking Occupancy Forecast</span>
+        <span class="card-tag" id="parking-tag">LOADING…</span>
+      </div>
+      <div id="parking-wrap"><div class="empty-state"><div class="empty-icon">🅿️</div>Loading…</div></div>
+    </div>
+
+    <!-- DRT Status -->
+    <div class="card" id="drt-panel">
+      <div class="card-header">
+        <span class="card-title">Demand-Responsive Transit</span>
+        <span class="card-tag" id="drt-tag">LOADING…</span>
+      </div>
+      <div id="drt-wrap"><div class="empty-state"><div class="empty-icon">🚌</div>Loading…</div></div>
     </div>
   </div>
 
@@ -1263,6 +1305,51 @@
     </div>
   </div>
 
+  <!-- ══════════════════════════════════════
+       TAB: ANALYTICS (NEW)
+  ══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-analytics">
+    <div class="section-label">API Usage · Quota · System Health</div>
+
+    <!-- Quota -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Daily API Quota</span>
+        <span class="card-tag" id="quota-tag">LOADING…</span>
+      </div>
+      <div id="quota-wrap">
+        <div class="shimmer" style="height:40px;border-radius:8px;margin-bottom:0.75rem"></div>
+      </div>
+    </div>
+
+    <!-- Usage breakdown -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Top Endpoints</span></div>
+        <div class="chart-wrap" style="height:200px">
+          <canvas id="chart-endpoints"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">SLA Metrics</span></div>
+        <div id="sla-wrap">
+          <div class="empty-state"><div class="empty-icon">📈</div>Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry -->
+    <div class="card" style="margin-top:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Telemetry Queue</span>
+        <span class="card-tag" id="telemetry-tag">LOADING…</span>
+      </div>
+      <div id="telemetry-wrap">
+        <div class="empty-state"><div class="empty-icon">📡</div>Loading…</div>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -1270,10 +1357,7 @@
    CONFIG
 ═══════════════════════════════════════════════════ */
 const API_BASE = 'http://127.0.0.1:8000';
-const API_KEY  = '60073ea5e5bcfd40b96ab9d6ca6937a0c802834aa3a2840864e73dcc50e5ec53';
-
-/* The dashboard fetches data from the FastAPI backend.
-   Synthetic data is pre-computed at startup and served as JSON. */
+const API_KEY  = 'c50eb575704f5be5c40d6bb821f2cec8ebfee2dab012bf1ffe686f1e75575780';
 
 const LEVEL_COLORS = {
   Low:      '#5aaf8a',
@@ -1312,6 +1396,8 @@ function chartTick() {
 /* ═══════════════════════════════════════════════════
    TAB SWITCHING
 ═══════════════════════════════════════════════════ */
+let _refreshTimer = null;
+
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1326,7 +1412,22 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'insights')  renderInsightsTab();
     if (btn.dataset.tab === 'forecast')  loadForecast();
     if (btn.dataset.tab === 'predict')   loadTollPricing();
+    if (btn.dataset.tab === 'operations') {
+      renderOperationsTab();
+      clearInterval(_refreshTimer);
+      _refreshTimer = setInterval(renderOperationsTab, 30000);
+    }
+    if (btn.dataset.tab === 'analytics') {
+      renderAnalyticsTab();
+      clearInterval(_refreshTimer);
+      _refreshTimer = setInterval(renderAnalyticsTab, 60000);
+    }
   });
+});
+
+// Pause refresh when page hidden
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearInterval(_refreshTimer);
 });
 
 /* ═══════════════════════════════════════════════════
@@ -1396,7 +1497,8 @@ const WEATHER_DATA = [
 ];
 
 /* ═══════════════════════════════════════════════════
-   KPI POPULATION
+   KPI POPULATION (fallback static)
+   Will be overridden by WebSocket when connected.
 ═══════════════════════════════════════════════════ */
 function populateKPIs() {
   const avgC  = (HOURLY.congestion.reduce((a,b)=>a+b,0) / 24).toFixed(3);
@@ -1538,6 +1640,7 @@ function localPredict(p) {
       { factor: 'hourly weight',    direction: p.hour_multiplier > 1.0 ? 'increasing congestion' : 'reducing congestion', impact: 0.04 },
     ],
     plain_english: `Congestion is primarily driven by average speed (${p.weather === 'sandstorm' ? 'reduced by sandstorm' : 'normal conditions'}), followed by vehicle count of ${p.vehicle_count}.`,
+    confidence: { confidence_level: 'Medium' }
   };
 }
 
@@ -1563,6 +1666,19 @@ function renderResult(data, zone) {
   badge.style.border     = `1px solid ${color}40`;
 
   el('r-zone-label').textContent = `${zone} · Hour ${String(data.hour).padStart(2,'0')}:00 · ${data.weather}`;
+
+  // Confidence badge
+  if (data.confidence) {
+    const conf = data.confidence;
+    const confColor = {High: 'var(--jade)', Medium: 'var(--amber)', Low: 'var(--rose)'}[conf.confidence_level] || 'var(--text-muted)';
+    const confEl = el('r-confidence-badge');
+    if (confEl) {
+      confEl.textContent = `${conf.confidence_level} Confidence`;
+      confEl.style.color = confColor;
+      confEl.style.background = `${confColor}18`;
+      confEl.style.border = `1px solid ${confColor}40`;
+    }
+  }
 
   // Emissions
   if (data.emissions) {
@@ -2092,13 +2208,378 @@ function renderForecastChart(currentScore, forecasts) {
 }
 
 /* ═══════════════════════════════════════════════════
+   WEBSOCKET LIVE FEED (replaces KPI static data)
+═══════════════════════════════════════════════════ */
+let ws = null;
+
+function connectWebSocket(city) {
+  const url = `ws://127.0.0.1:8000/ws/live/${city}?api_key=${API_KEY}`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setWSStatus(true);
+    document.getElementById('ws-updated-tag').textContent = 'Connected';
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.error) return;
+      updateKPIsFromWebSocket(data.zones || []);
+      updateLiveZoneTable(data.zones || []);
+      document.getElementById('ws-updated-tag').textContent =
+        `Updated ${new Date().toLocaleTimeString()}`;
+    } catch (e) { /* ignore */ }
+  };
+
+  ws.onclose = () => {
+    setWSStatus(false);
+    document.getElementById('ws-updated-tag').textContent = 'Disconnected, reconnecting…';
+    setTimeout(() => connectWebSocket(city), 5000);
+  };
+
+  ws.onerror = () => {
+    ws.close();
+  };
+}
+
+function setWSStatus(connected) {
+  const pill = document.getElementById('ws-status-pill');
+  const text = document.getElementById('ws-status-text');
+  if (!pill || !text) return;
+  pill.style.background    = connected ? 'var(--jade-soft)' : 'var(--rose-soft)';
+  pill.style.borderColor   = connected ? 'rgba(90,175,138,0.2)' : 'rgba(224,112,112,0.2)';
+  const dot = pill.querySelector('.status-dot');
+  if (dot) dot.style.background = connected ? 'var(--jade)' : 'var(--rose)';
+  text.textContent = connected ? 'WS: LIVE' : 'WS: OFF';
+}
+
+function updateKPIsFromWebSocket(zones) {
+  if (!zones.length) return;
+  const avgC   = (zones.reduce((s, z) => s + z.congestion_score, 0) / zones.length).toFixed(3);
+  const peakZ  = zones.reduce((a, b) => a.congestion_score > b.congestion_score ? a : b);
+  const anomC  = zones.filter(z => z.anomaly_flag).length;
+  document.getElementById('kpi-avg').textContent       = avgC;
+  document.getElementById('kpi-zone').textContent      = peakZ.zone;
+  document.getElementById('kpi-anomalies').textContent = anomC;
+  if (anomC > 0) {
+    const banner = document.getElementById('alert-banner');
+    const zonesList = zones.filter(z => z.anomaly_flag).map(z => z.zone).join(', ');
+    document.getElementById('alert-text').textContent =
+      `Anomalous traffic in ${zonesList} — review Zone Analysis tab`;
+    banner.style.display = 'flex';
+  }
+}
+
+function updateLiveZoneTable(zones) {
+  const wrap = document.getElementById('live-zone-table-wrap');
+  if (!zones.length) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div>Waiting for data…</div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr>
+        <th>Zone</th><th>Score</th><th>Level</th>
+        <th>Risk</th><th>Anomaly</th><th>Vehicles</th><th>Speed</th><th>Weather</th>
+      </tr></thead>
+      <tbody>
+        ${zones.map(z => `
+        <tr>
+          <td style="color:var(--text-primary);font-weight:500">${z.zone}</td>
+          <td style="font-family:var(--font-mono)">${z.congestion_score.toFixed(4)}</td>
+          <td style="color:${LEVEL_COLORS[z.congestion_level] || '#8b9ab0'}">${z.congestion_level}</td>
+          <td style="color:${z.risk_score > 0.5 ? 'var(--rose)' : 'var(--jade)'}">${z.risk_level}</td>
+          <td style="color:${z.anomaly_flag ? 'var(--rose)' : 'var(--jade)'}">${z.anomaly_flag ? '⚠ YES' : 'NO'}</td>
+          <td>${z.vehicle_count}</td>
+          <td>${z.avg_speed} km/h</td>
+          <td>${z.weather}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+/* ═══════════════════════════════════════════════════
+   OPERATIONS TAB
+═══════════════════════════════════════════════════ */
+async function renderOperationsTab() {
+  await Promise.allSettled([loadVSL(), loadVMS(), loadParking(), loadDRT()]);
+}
+
+async function loadVSL() {
+  const wrap = document.getElementById('vsl-wrap');
+  const tag  = document.getElementById('vsl-tag');
+  try {
+    const data = await apiGet('/vsl/active-limits?city=Riyadh');
+    tag.textContent = `${data.current_weather.toUpperCase()} · ${data.visibility_m}m visibility`;
+    wrap.innerHTML = data.zones.map(z => `
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  padding:0.75rem 0;border-bottom:1px solid var(--border)">
+        <span style="font-family:var(--font-mono);color:var(--text-secondary)">${z.zone}</span>
+        <span style="font-family:var(--font-display);font-size:1.6rem;
+                     color:${z.enforcement_recommended ? 'var(--rose)' : 'var(--jade)'};
+                     letter-spacing:-0.02em">
+          ${z.recommended_speed_kmph} <span style="font-size:0.7rem;color:var(--text-muted)">km/h</span>
+        </span>
+        <span style="font-size:0.72rem;font-family:var(--font-mono);
+                     color:var(--text-muted);max-width:200px;text-align:right">
+          ${z.reduction_reason}
+        </span>
+      </div>`).join('');
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>VSL data unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+async function loadVMS() {
+  const wrap = document.getElementById('vms-wrap');
+  const tag  = document.getElementById('vms-tag');
+  try {
+    const data = await apiGet('/vms/active-boards?city=Riyadh');
+    tag.textContent = data.all_zones_low ? 'ALL CLEAR' : `${data.total_boards} ACTIVE`;
+    if (data.all_zones_low) {
+      wrap.innerHTML = `<div class="empty-state" style="padding:1.5rem">
+        <div style="color:var(--jade);font-size:0.82rem;font-family:var(--font-mono)">
+          ✓ All zones Low — no active VMS messages required
+        </div></div>`;
+      return;
+    }
+    wrap.innerHTML = data.boards.map(b => `
+      <div style="display:flex;gap:1.5rem;align-items:flex-start;
+                  padding:0.75rem 0;border-bottom:1px solid var(--border)">
+        <span style="font-family:var(--font-mono);font-size:0.82rem;
+                     color:${LEVEL_COLORS[b.congestion_level]};
+                     min-width:60px">${b.zone}</span>
+        <div style="background:var(--bg-input);border:1px solid var(--border);
+                    border-radius:6px;padding:0.5rem 0.75rem;
+                    font-family:var(--font-mono);font-size:0.78rem;
+                    color:var(--amber);letter-spacing:0.06em;line-height:1.8">
+          ${b.vms.lines.filter(l=>l).join('<br>')}
+        </div>
+        <span class="severity-badge ${b.congestion_level === 'Critical' ? 'sev-critical' :
+                   b.congestion_level === 'High' ? 'sev-anomalous' : 'sev-elevated'}">
+          ${b.congestion_level}
+        </span>
+      </div>`).join('');
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>VMS data unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+async function loadParking() {
+  const wrap = document.getElementById('parking-wrap');
+  const tag  = document.getElementById('parking-tag');
+  try {
+    const data = await apiGet('/parking/occupancy-forecast?city=Riyadh');
+    tag.textContent = `${data.garages.length} GARAGES`;
+    wrap.innerHTML = `
+      <table class="data-table">
+        <thead><tr>
+          <th>Garage</th><th>Zone</th><th>Current Fill</th>
+          <th>+1h</th><th>+2h</th><th>+3h</th><th>Status</th>
+        </tr></thead>
+        <tbody>
+        ${data.garages.map(g => {
+          const fillColor = g.current_fill_rate > 0.9 ? 'var(--rose)'
+                          : g.current_fill_rate > 0.8 ? 'var(--high)' : 'var(--jade)';
+          return `<tr>
+            <td style="color:var(--text-primary)">${g.garage_id}</td>
+            <td>${g.zone}</td>
+            <td style="color:${fillColor};font-family:var(--font-mono)">
+              ${(g.current_fill_rate * 100).toFixed(0)}%
+            </td>
+            <td style="font-family:var(--font-mono)">${(g.forecast_1h * 100).toFixed(0)}%</td>
+            <td style="font-family:var(--font-mono)">${(g.forecast_2h * 100).toFixed(0)}%</td>
+            <td style="font-family:var(--font-mono)">${(g.forecast_3h * 100).toFixed(0)}%</td>
+            <td><span class="severity-badge ${g.status === 'Critical' ? 'sev-critical' :
+                       g.status === 'Warning' ? 'sev-elevated' : 'sev-normal'}">
+              ${g.status}
+            </span></td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>Parking data unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+async function loadDRT() {
+  const wrap = document.getElementById('drt-wrap');
+  const tag  = document.getElementById('drt-tag');
+  try {
+    const data = await apiGet('/transit/drt-status?city=Riyadh');
+    tag.textContent = `${data.available_shuttles} SHUTTLES AVAILABLE`;
+    wrap.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);
+                  gap:1rem;padding:0.75rem 0;border-bottom:1px solid var(--border);
+                  margin-bottom:1rem">
+        <div><div class="kpi-label">Available Shuttles</div>
+          <div style="font-family:var(--font-display);font-size:1.8rem;
+                      color:var(--jade);letter-spacing:-0.02em">
+            ${data.available_shuttles}
+          </div></div>
+        <div><div class="kpi-label">Capacity / Shuttle</div>
+          <div style="font-family:var(--font-display);font-size:1.8rem;
+                      color:var(--amber);letter-spacing:-0.02em">
+            ${data.shuttle_capacity}
+          </div></div>
+        <div><div class="kpi-label">Eligible Zones</div>
+          <div style="font-family:var(--font-mono);font-size:0.85rem;
+                      color:var(--text-secondary);padding-top:0.4rem">
+            ${data.eligible_zones.join(', ')}
+          </div></div>
+      </div>
+      <div class="kpi-label" style="margin-bottom:0.75rem">Queue Status by Zone</div>
+      ${Object.entries(data.queue_status).map(([zone, s]) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:0.4rem 0;font-family:var(--font-mono);font-size:0.78rem">
+          <span style="color:var(--text-secondary)">${zone}</span>
+          <span style="color:var(--text-muted)">${s.queue_length} in queue</span>
+          <span style="color:${s.estimated_wait_mins > 10 ? 'var(--rose)' : 'var(--jade)'}">
+            ~${s.estimated_wait_mins} min wait
+          </span>
+        </div>`).join('')}`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>DRT data unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+/* ═══════════════════════════════════════════════════
+   ANALYTICS TAB
+═══════════════════════════════════════════════════ */
+let chartEndpoints;
+
+async function renderAnalyticsTab() {
+  await Promise.allSettled([loadQuota(), loadUsage(), loadSLA(), loadTelemetry()]);
+}
+
+async function loadQuota() {
+  const wrap = document.getElementById('quota-wrap');
+  const tag  = document.getElementById('quota-tag');
+  try {
+    const data = await apiGet('/analytics/quota');
+    const pct  = data.pct_used;
+    const barColor = pct >= 90 ? 'var(--rose)' : pct >= 80 ? 'var(--high)' : 'var(--jade)';
+    tag.textContent = data.quota_exceeded ? 'EXCEEDED' : data.quota_warning ? 'WARNING' : 'OK';
+    wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;
+                  margin-bottom:0.5rem;font-family:var(--font-mono);font-size:0.78rem">
+        <span style="color:var(--text-secondary)">${data.calls_today.toLocaleString()} calls today</span>
+        <span style="color:var(--text-muted)">${data.daily_limit.toLocaleString()} limit</span>
+      </div>
+      <div style="height:12px;background:var(--border);border-radius:6px;overflow:hidden">
+        <div style="height:100%;width:${Math.min(pct,100)}%;
+                    background:${barColor};border-radius:6px;
+                    transition:width 0.6s cubic-bezier(0.4,0,0.2,1)"></div>
+      </div>
+      <div style="font-size:0.72rem;font-family:var(--font-mono);
+                  color:var(--text-muted);margin-top:0.5rem">
+        ${pct.toFixed(1)}% used · Date: ${data.date}
+      </div>`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>
+      Quota data unavailable (admin key required)</div>`;
+    tag.textContent = 'NO ACCESS';
+  }
+}
+
+async function loadUsage() {
+  try {
+    const data = await apiGet('/analytics/usage?days=7');
+    if (chartEndpoints) chartEndpoints.destroy();
+    const endpoints = Object.entries(data.calls_by_endpoint)
+      .sort((a,b) => b[1]-a[1]).slice(0,6);
+    chartEndpoints = new Chart(document.getElementById('chart-endpoints'), {
+      type: 'bar',
+      data: {
+        labels: endpoints.map(([k]) => k.replace('/','').substring(0,18)),
+        datasets: [{
+          data: endpoints.map(([,v]) => v),
+          backgroundColor: 'rgba(212,175,100,0.5)',
+          borderColor: 'rgba(212,175,100,0.8)',
+          borderWidth: 1,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: chartGrid(), ticks: { ...chartTick(), maxRotation: 35 } },
+          y: { grid: chartGrid(), ticks: chartTick() }
+        }
+      }
+    });
+  } catch(e) { /* admin-only, silent fail */ }
+}
+
+async function loadSLA() {
+  const wrap = document.getElementById('sla-wrap');
+  try {
+    const data = await apiGet('/sla/current');
+    const slaColor = data.met_all_slas ? 'var(--jade)' : 'var(--rose)';
+    wrap.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+        ${[
+          ['Uptime',    `${data.uptime_pct ?? '—'}%`,      data.sla_uptime_met],
+          ['Avg Response', `${data.avg_response_ms ?? '—'} ms`, data.sla_response_met],
+          ['p95 Response', `${data.p95_response_ms ?? '—'} ms`, data.sla_response_met],
+          ['Requests',  `${data.total_requests ?? 0}`,      true],
+        ].map(([label, val, ok]) => `
+          <div style="background:var(--bg-input);border:1px solid var(--border);
+                      border-radius:8px;padding:0.75rem">
+            <div class="kpi-label">${label}</div>
+            <div style="font-family:var(--font-display);font-size:1.4rem;
+                        color:${ok ? 'var(--jade)' : 'var(--rose)'};
+                        letter-spacing:-0.02em">${val}</div>
+          </div>`).join('')}
+      </div>
+      <div style="font-size:0.72rem;font-family:var(--font-mono);
+                  color:${slaColor};margin-top:0.75rem;text-align:right">
+        ${data.met_all_slas ? '✓ All SLA targets met' : '⚠ SLA breach detected'}
+      </div>`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>SLA data unavailable</div>`;
+  }
+}
+
+async function loadTelemetry() {
+  const wrap = document.getElementById('telemetry-wrap');
+  const tag  = document.getElementById('telemetry-tag');
+  try {
+    const data = await apiGet('/telemetry/status');
+    tag.textContent = data.worker_active ? 'WORKER ACTIVE' : 'WORKER STOPPED';
+    wrap.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem">
+        ${[
+          ['Queue Depth',    data.queue_depth,        data.queue_depth > 100 ? 'var(--rose)' : 'var(--jade)'],
+          ['Processed Today',data.processed_today,    'var(--amber)'],
+          ['Batch Size',     data.batch_size,         'var(--text-secondary)'],
+          ['Flush Interval', `${data.flush_interval_s}s`, 'var(--text-secondary)'],
+        ].map(([label, val, color]) => `
+          <div>
+            <div class="kpi-label">${label}</div>
+            <div style="font-family:var(--font-display);font-size:1.5rem;
+                        color:${color};letter-spacing:-0.02em">${val}</div>
+          </div>`).join('')}
+      </div>`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>Telemetry unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+/* ═══════════════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════════════ */
 populateKPIs();
 loadTollPricing();
-
-// Init first visible tab's charts
-// (patterns tab loads on click, no upfront work needed)
+connectWebSocket('Riyadh');
 
 // Self-ping — keeps Render free tier alive (every 14 min)
 setInterval(() => fetch('/health').catch(()=>{}), 14 * 60 * 1000);
