@@ -72,7 +72,7 @@ def test_incident_detected_on_sudden_speed_collapse(tmp_path, monkeypatch):
         "src.model.INCIDENTS_LOG_PATH", str(tmp_path / "incidents.csv")
     )
     df = _make_zone_df(base_speed=70.0, recent_speed=28.0)
-    result = detect_incidents(df, zone="Zone_1", city="Riyadh", log=False)
+    result = detect_incidents(df, zone="Zone_1", city="Riyadh", window_minutes=2, log=False)
 
     assert result["incident_detected"] is True, (
         f"Expected incident_detected=True, got False. speed_drop_pct={result['speed_drop_pct']}"
@@ -134,7 +134,7 @@ def test_incident_clearance_time_critical_exceeds_minor():
 def test_incident_severity_order():
     """Critical speed drop (85%) must produce Critical severity."""
     df = _make_zone_df(base_speed=70.0, recent_speed=10.5)  # 85% drop
-    result = detect_incidents(df, zone="Zone_1", log=False)
+    result = detect_incidents(df, zone="Zone_1", window_minutes=2, log=False)
     assert result["severity"] == "Critical", (
         f"Expected Critical severity, got {result['severity']}"
     )
@@ -270,18 +270,12 @@ def test_incidents_history_filters_by_zone(tmp_path, monkeypatch):
 
 
 def test_incident_log_created_on_detection(tmp_path, monkeypatch):
-    """
-    When detect_incidents() fires and log=True, incidents_log.csv must exist
-    and contain a row with the correct zone, city, and severity.
-    """
     import src.model as model_module
-
     log_file = str(tmp_path / "incidents_log.csv")
     monkeypatch.setattr(model_module, "INCIDENTS_LOG_PATH", log_file)
 
-    # Trigger a clear incident (60% speed drop)
     df = _make_zone_df(base_speed=70.0, recent_speed=28.0)
-    result = detect_incidents(df, zone="Zone_1", city="Riyadh", log=True)
+    result = detect_incidents(df, zone="Zone_1", city="Riyadh", window_minutes=2, log=True)
 
     assert result["incident_detected"] is True
     assert os.path.exists(log_file), "incidents_log.csv was not created"
