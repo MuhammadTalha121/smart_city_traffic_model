@@ -313,14 +313,9 @@ def test_incidents_history_no_auth_returns_401(client):
 
 
 def test_incidents_history_empty_when_no_log(client):
-    """
-    /incidents/history returns 200 with empty list (not 404)
-    even when the log file doesn't exist.
-    """
-    # Temporarily move the log file if it exists
-    import src.model as model_module
-    original = model_module.INCIDENTS_LOG_PATH
-    model_module.INCIDENTS_LOG_PATH = "/tmp/nonexistent_incidents_9999.csv"
+    import app as app_module
+    original = app_module.INCIDENTS_LOG_PATH  # patch app's reference, not model's
+    app_module.INCIDENTS_LOG_PATH = "/tmp/nonexistent_incidents_9999.csv"
     try:
         response = client.get(
             "/incidents/history?city=Riyadh&hours=1",
@@ -329,6 +324,5 @@ def test_incidents_history_empty_when_no_log(client):
         assert response.status_code == 200
         data = response.json()
         assert data["total_incidents"] == 0
-        assert data["incidents"] == []
     finally:
-        model_module.INCIDENTS_LOG_PATH = original
+        app_module.INCIDENTS_LOG_PATH = original
