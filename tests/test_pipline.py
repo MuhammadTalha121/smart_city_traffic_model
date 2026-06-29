@@ -266,3 +266,96 @@ def test_incident_alert_included_in_webhook_payload():
         assert len(payload["incident_alerts"]) == 1
         assert payload["incident_alerts"][0]["severity"] == "Major"
         assert len(payload["congestion_alerts"]) == 0
+
+
+
+
+
+
+
+# =====  Calibration Trigger Tests =====
+
+import json
+
+def test_pipeline_triggers_calibration_when_score_below_threshold(tmp_path, monkeypatch):
+    """calibration_triggered=True when calibration_score < threshold and retrain fires."""
+    staging, live, changelog = _patch_paths(monkeypatch, tmp_path)
+
+    # Write a calibration_factors.json with low score
+    cal_path = tmp_path / "calibration_factors.json"
+    cal_data = {
+        "factors": {"Zone_1": {"8": 1.10}},
+        "computed_at": "2026-01-01T00:00:00",
+        "zones": 1,
+        "total_entries": 1,
+        "metrics": {
+            "mae": 10.0, "mape": 5.0, "r2": 0.5,
+            "calibration_score": 0.05,   # below CALIBRATION_DRIFT_THRESHOLD=0.15
+            "coverage_pct": 100.0, "matched_rows": 1,
+        },
+        "city": "Riyadh",
+    }
+    cal_path.write_text(json.dumps(cal_data))
+    monkeypatch.setattr(pipeline_module, "MODEL_CHANGELOG_PATH", str(tmp_path / "MODEL_CHANGELOG.md"))
+
+    import src.config as cfg_module
+    original_path = cfg_module.CALIBRATION_FACTORS_PATH
+    monkeypatch.setattr(cfg_module, "CALIBRATION_FACTORS_PATH", str(cal_path))
+
+    # Force retrain to trigger: monkeypatch should_retrain to always return True
+    monkeypatch.setattr(pipeline_module, "should_retrain", lambda score, threshold=1.3: True)
+    # Also monkeypatch compute_drift_score so no CSV read needed
+    monkeypatch.setattr(pipeline_module, "compute_drift_score", lambda log_path="predictions_log.csv": 1.5)
+
+    result = pipeline_module.run_pipeline(city="Riyadh")
+    assert result["calibration_triggered"] is True
+
+
+def test_pipeline_skips_calibration_when_no_real_data_present(tmp_path, monkeypatch):
+    """calibration_triggered=False and no exception when calibration_factors.json is absent."""
+    staging, live, changelog = _patch_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline_module, "MODEL_CHANGELOG_PATH", str(tmp_path / "MODEL_CHANGELOG.md"))
+
+    import src.config as cfg_module
+    absent_path = str(tmp_path / "calibration_factors_absent.json")  # does not exist
+    monkeypatch.setattr(cfg_module, "CALIBRATION_FACTORS_PATH", absent_path)
+
+    # Don't trigger retrain — just check that the field is present and False
+    monkeypatch.setattr(pipeline_module, "should_retrain", lambda score, threshold=1.3: False)
+    monkeypatch.setattr(pipeline_module, "compute_drift_score", lambda log_path="predictions_log.csv": 1.0)
+
+    result = pipeline_module.run_pipeline(city="Riyadh")
+    assert result["calibration_triggered"] is False
+    assert "calibration_triggered" in result
+
+
+def test_calibration_trigger_logged_in_model_changelog(tmp_path, monkeypatch):
+    """MODEL_CHANGELOG.md contains a calibration note after a triggered run."""
+    staging, live, changelog = _patch_paths(monkeypatch, tmp_path)
+
+    cal_path = tmp_path / "calibration_factors.json"
+    cal_data = {
+        "factors": {},
+        "computed_at": "2026-01-01T00:00:00",
+        "zones": 0,
+        "total_entries": 0,
+        "metrics": {
+            "mae": 20.0, "mape": 10.0, "r2": 0.3,
+            "calibration_score": 0.08,
+            "coverage_pct": 0.0, "matched_rows": 0,
+        },
+        "city": "Riyadh",
+    }
+    cal_path.write_text(json.dumps(cal_data))
+
+    import src.config as cfg_module
+    monkeypatch.setattr(cfg_module, "CALIBRATION_FACTORS_PATH", str(cal_path))
+    monkeypatch.setattr(pipeline_module, "MODEL_CHANGELOG_PATH", changelog)
+    monkeypatch.setattr(pipeline_module, "should_retrain", lambda score, threshold=1.3: True)
+    monkeypatch.setattr(pipeline_module, "compute_drift_score", lambda log_path="predictions_log.csv": 1.5)
+
+    pipeline_module.run_pipeline(city="Riyadh")
+
+    assert os.path.exists(changelog)
+    content = open(changelog, encoding="utf-8").read()
+    assert "calibration" in content.lower()
