@@ -746,3 +746,11 @@ INCIDENT_SEVERITY_LEVELS: Dict[str, float] = {
     "Major":    0.60,   # speed drop 60–80 %
     "Critical": 0.80,   # near-zero speed + volume collapse
 }
+
+
+
+
+
+# ==== Synthetic-to-Real Calibration  ====
+CALIBRATION_DRIFT_THRESHOLD: float = 0.15   
+CALIBRATION_FACTORS_PATH: str = "calibration_factors.json"
