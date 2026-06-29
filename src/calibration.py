@@ -139,9 +139,10 @@ def save_calibration_factors(factors: Dict[str, Any], filepath: str = CALIBRATIO
         json.dump(factors, f, indent=2)
 
 
-def load_calibration_factors(filepath: str = CALIBRATION_FACTORS_PATH) -> Optional[Dict[str, Any]]:
-    """Load calibration factors. Returns None if missing, empty, or corrupt —
-    never crashes the caller on a malformed/partially-synced file."""
+def load_calibration_factors(filepath: str = None) -> Optional[dict]:
+    if filepath is None:
+        from src.config import CALIBRATION_FACTORS_PATH
+        filepath = CALIBRATION_FACTORS_PATH
     if not os.path.exists(filepath):
         return None
     try:
