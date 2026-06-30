@@ -95,7 +95,7 @@ def retrain_model(city: str = "Riyadh", run_hpo: bool = False, apply_calibration
     If run_hpo is True, run Optuna to find best hyperparameters before training.
     """
     from sklearn.metrics import r2_score
-    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, add_cross_zone_lag_features
     from src.model import prepare_features, train_xgboost, optimize_hyperparameters
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -104,6 +104,7 @@ def retrain_model(city: str = "Riyadh", run_hpo: bool = False, apply_calibration
     df = generate_traffic_data(city=city)
     df = apply_hourly_patterns(df, city=city)
     df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
 
     # PROMPT 095: apply calibration factors to training data before feature prep
     if apply_calibration:
@@ -178,7 +179,7 @@ def evaluate_staged_model(city: str = "Riyadh") -> dict:
     -------
     dict with staged_mae, live_mae, regression, recommendation, reason.
     """
-    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, add_cross_zone_lag_features
 
     if not os.path.exists(MODEL_STAGING_PATH):
         return {
@@ -191,6 +192,7 @@ def evaluate_staged_model(city: str = "Riyadh") -> dict:
     df = generate_traffic_data(city=city)
     df = apply_hourly_patterns(df, city=city)
     df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
     X, y, _ = prepare_features(df)
     _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
