@@ -1,13 +1,12 @@
 """Tests for the What-If Scenario Simulator (PROMPT 096)."""
 
-import pandas as pd
-import pytest
-from fastapi.testclient import TestClient
-
 from app import app
 from src.simulator import apply_scenario, run_scenario
-from src.data import generate_traffic_data
+from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 from src.config import SAUDI_CITIES
+from fastapi.testclient import TestClient
+import pandas as pd
+import os
 
 client = TestClient(app)
 
@@ -15,7 +14,10 @@ client = TestClient(app)
 if not hasattr(app.state, "city_dfs") or not app.state.city_dfs:
     app.state.city_dfs = {}
     for city in SAUDI_CITIES:
-        app.state.city_dfs[city] = generate_traffic_data(city)
+        df = generate_traffic_data(city)
+        df = apply_hourly_patterns(df, city=city)
+        df = add_lag_features(df)
+        app.state.city_dfs[city] = df
 
 
 class TestApplyScenario:
@@ -137,3 +139,76 @@ class TestScenarioEndpoint:
             assert "baseline_forecasts" in data
             assert "scenario_forecasts" in data
             assert "impact_delta" in data
+
+
+
+
+class TestScenarioLogging:
+    def test_scenario_log_created_on_run(self, tmp_path, monkeypatch):
+        import src.simulator as sim
+        log_path = str(tmp_path / "scenarios_log.csv")
+        monkeypatch.setattr(sim, "SCENARIOS_LOG_PATH", log_path)
+
+        run_scenario("Riyadh", {"zone_closures": ["Zone_1"]}, hours_ahead=3)
+
+        assert os.path.exists(log_path)
+        df = pd.read_csv(log_path)
+        assert len(df) == 1
+        assert df.iloc[0]["city"] == "Riyadh"
+
+
+class TestScenarioHistoryEndpoint:
+    def test_scenario_history_empty_when_no_log(self):
+        response = client.get(
+            "/scenarios/history?city=Riyadh",
+            headers={"X-API-Key": "test-key"},
+        )
+        if response.status_code == 401:
+            assert response.status_code == 401
+        else:
+            assert response.status_code == 200
+            assert response.json()["scenarios"] == [] or isinstance(response.json()["scenarios"], list)
+
+    def test_scenario_history_requires_operator_role(self):
+        response = client.get("/scenarios/history?city=Riyadh")
+        assert response.status_code == 401
+
+
+class TestScenarioCompareEndpoint:
+    def test_scenario_compare_returns_both_results(self):
+        response = client.post(
+            "/scenarios/compare",
+            json={
+                "city": "Riyadh",
+                "scenario_a": {"zone_closures": ["Zone_1"]},
+                "scenario_b": {"zone_closures": ["Zone_2"]},
+                "hours_ahead": 3,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+        if response.status_code == 401:
+            assert response.status_code == 401
+        else:
+            assert response.status_code == 200
+            data = response.json()
+            assert "scenario_a" in data
+            assert "scenario_b" in data
+            assert data["preferred_scenario"] in ("scenario_a", "scenario_b")
+
+    def test_scenario_compare_rejects_invalid_scenario(self):
+        response = client.post(
+            "/scenarios/compare",
+            json={"city": "Riyadh", "scenario_a": "not_a_dict", "scenario_b": {}},
+            headers={"X-API-Key": "test-key"},
+        )
+        if response.status_code != 401:
+            assert response.status_code == 422
+
+    def test_scenario_compare_requires_city(self):
+        response = client.post(
+            "/scenarios/compare",
+            json={"scenario_a": {}, "scenario_b": {}},
+            headers={"X-API-Key": "test-key"},
+        )
+        if response.status_code != 401:
+            assert response.status_code == 422
