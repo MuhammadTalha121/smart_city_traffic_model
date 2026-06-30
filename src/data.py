@@ -655,4 +655,65 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
+def add_cross_zone_lag_features(df: pd.DataFrame, lag_hours: list = [1, 2]) -> pd.DataFrame:
+    """
+    Adds generic adjacent-zone lag features per ZONE_ADJACENCY:
+      adjacent_congestion_lag_{h}h    — mean congestion_score of this row's
+                                         adjacent zones, h hours ago
+      adjacent_vehicle_count_lag_{h}h — mean vehicle_count of adjacent
+                                         zones, h hours ago
+
+    Generic (not neighbor-name-specific) because ZONE_ADJACENCY has
+    asymmetric degree — a literal per-neighbor column name would be
+    meaningless/sparse for zones that don't share that neighbor.
+
+    Must be called AFTER add_lag_features().
+
+    Missing values (series start, or a zone absent from ZONE_ADJACENCY)
+    are filled with the row's own current value.
+    """
+    from src.config import ZONE_ADJACENCY
+
+    df = df.copy().sort_values(['timestamp', 'zone']).reset_index(drop=True)
+
+    pivot_cong = df.pivot_table(index='timestamp', columns='zone',
+                                 values='congestion_score', aggfunc='first')
+    pivot_vol  = df.pivot_table(index='timestamp', columns='zone',
+                                 values='vehicle_count', aggfunc='first')
+
+    # Precompute neighbor lists once (avoid dict lookup per row)
+    neighbor_map = {
+        zone: [n for n in ZONE_ADJACENCY.get(zone, []) if n in pivot_cong.columns]
+        for zone in df['zone'].unique()
+    }
+
+    for h in lag_hours:
+        cong_lag = pivot_cong.shift(h)
+        vol_lag  = pivot_vol.shift(h)
+        cong_col = f'adjacent_congestion_lag_{h}h'
+        vol_col  = f'adjacent_vehicle_count_lag_{h}h'
+
+        # Vectorized: compute mean-of-neighbors per zone, then map back via merge
+        cong_means = {}
+        vol_means  = {}
+        for zone, neighbors in neighbor_map.items():
+            if not neighbors:
+                cong_means[zone] = pd.Series(dtype=float)
+                vol_means[zone]  = pd.Series(dtype=float)
+                continue
+            cong_means[zone] = cong_lag[neighbors].mean(axis=1)
+            vol_means[zone]  = vol_lag[neighbors].mean(axis=1)
+
+        df[cong_col] = df.apply(
+            lambda r: cong_means[r['zone']].get(r['timestamp'], np.nan), axis=1
+        )
+        df[vol_col] = df.apply(
+            lambda r: vol_means[r['zone']].get(r['timestamp'], np.nan), axis=1
+        )
+
+        df[cong_col] = df[cong_col].fillna(df['congestion_score'])
+        df[vol_col]  = df[vol_col].fillna(df['vehicle_count'])
+
+    return df
+
 
