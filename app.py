@@ -1,5 +1,6 @@
 import os
 import csv
+import json
 from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -1163,6 +1164,104 @@ async def scenarios_run(
         raise HTTPException(status_code=500, detail=str(e))
 
     return result
+
+
+
+
+
+@app.get("/scenarios/history", tags=["scenarios"])
+@limiter.limit("20/minute")
+def scenarios_history(
+    request: Request,
+    city: str = "Riyadh",
+    limit: int = 20,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Recent scenario runs from scenarios_log.csv, newest first."""
+    from src.simulator import SCENARIOS_LOG_PATH
+
+    if not os.path.exists(SCENARIOS_LOG_PATH):
+        return {"city": city, "count": 0, "scenarios": []}
+
+    log_df = pd.read_csv(SCENARIOS_LOG_PATH)
+    if "city" in log_df.columns:
+        log_df = log_df[log_df["city"] == city]
+    if "timestamp" in log_df.columns:
+        log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
+        log_df = log_df.sort_values("timestamp", ascending=False)
+
+    log_df = log_df.head(limit)
+
+    records = log_df.to_dict(orient="records")
+    for r in records:
+        if hasattr(r.get("timestamp"), "isoformat"):
+            r["timestamp"] = r["timestamp"].isoformat()
+        if isinstance(r.get("scenario_summary"), str):
+            try:
+                r["scenario_summary"] = json.loads(r["scenario_summary"])
+            except (ValueError, TypeError):
+                pass
+
+    return {"city": city, "count": len(records), "scenarios": records}
+
+
+@app.post("/scenarios/compare", tags=["scenarios"])
+@limiter.limit("10/minute")
+def scenarios_compare(
+    request: Request,
+    body: dict = Body(...),
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Run two scenarios and recommend the less damaging one."""
+    city        = body.get("city")
+    scenario_a  = body.get("scenario_a")
+    scenario_b  = body.get("scenario_b")
+    hours_ahead = body.get("hours_ahead", 3)
+
+    if not city or city not in app.state.city_dfs:
+        raise HTTPException(status_code=422, detail="Valid city is required")
+    if not isinstance(scenario_a, dict) or not isinstance(scenario_b, dict):
+        raise HTTPException(status_code=422, detail="scenario_a and scenario_b must be objects")
+
+    result_a = run_scenario(city, scenario_a, hours_ahead)
+    result_b = run_scenario(city, scenario_b, hours_ahead)
+
+    delta_a = result_a["impact_delta"].get(result_a["worst_impact_zone"], 0.0)
+    delta_b = result_b["impact_delta"].get(result_b["worst_impact_zone"], 0.0)
+
+    closures_a = len(scenario_a.get("zone_closures", []))
+    closures_b = len(scenario_b.get("zone_closures", []))
+
+    if abs(delta_a - delta_b) <= 0.05:
+        if closures_a != closures_b:
+            preferred = "scenario_a" if closures_a < closures_b else "scenario_b"
+            reason = f"Deltas within 0.05 of each other — preferred fewer zone closures ({min(closures_a, closures_b)})."
+        else:
+            preferred = "scenario_a"
+            reason = "Deltas and closure counts equivalent — defaulted to scenario_a."
+    elif delta_a < delta_b:
+        preferred = "scenario_a"
+        reason = f"Lower maximum delta ({delta_a:.2f} vs {delta_b:.2f}) — less severe worst-case impact."
+    else:
+        preferred = "scenario_b"
+        reason = f"Lower maximum delta ({delta_b:.2f} vs {delta_a:.2f}) — less severe worst-case impact."
+
+    return {
+        "city": city,
+        "hours_ahead": hours_ahead,
+        "scenario_a": {
+            "worst_impact_zone": result_a["worst_impact_zone"],
+            "max_delta": delta_a,
+            "recommendation": result_a["recommendation"],
+        },
+        "scenario_b": {
+            "worst_impact_zone": result_b["worst_impact_zone"],
+            "max_delta": delta_b,
+            "recommendation": result_b["recommendation"],
+        },
+        "preferred_scenario": preferred,
+        "reason": reason,
+    }
 
 
 
