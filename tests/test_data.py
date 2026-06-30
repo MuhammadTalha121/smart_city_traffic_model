@@ -111,3 +111,77 @@ def test_all_five_cultural_calibrations_still_pass_after_full_chain(capsys):
     captured = capsys.readouterr()
     # The output should contain the final summary line.
     assert "5 / 5 checks passed" in captured.out, "Cultural calibrations are not all passing"
+
+
+
+
+def test_cross_zone_columns_use_only_adjacent_zones():
+    from src.data import (generate_traffic_data, apply_hourly_patterns,
+                           add_lag_features, add_cross_zone_lag_features)
+    from src.config import ZONE_ADJACENCY
+
+    df = generate_traffic_data(city='Riyadh', n_days=10)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df, lag_hours=[1])
+
+    sample_ts = df['timestamp'].iloc[5]
+    zone1_row = df[(df['zone'] == 'Zone_1') & (df['timestamp'] == sample_ts)]
+    if zone1_row.empty:
+        return
+
+    neighbors = ZONE_ADJACENCY['Zone_1']
+    expected_cong = df[
+        (df['zone'].isin(neighbors)) & (df['timestamp'] == sample_ts - pd.Timedelta(hours=1))
+    ]['congestion_score'].mean()
+    actual = zone1_row['adjacent_congestion_lag_1h'].iloc[0]
+    if pd.notna(expected_cong):
+        assert abs(actual - expected_cong) < 0.01
+
+
+def test_cross_zone_features_have_no_nulls():
+    from src.data import (generate_traffic_data, apply_hourly_patterns,
+                           add_lag_features, add_cross_zone_lag_features)
+
+    df = generate_traffic_data(city='Riyadh', n_days=10)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
+
+    cols = ['adjacent_congestion_lag_1h', 'adjacent_vehicle_count_lag_1h',
+            'adjacent_congestion_lag_2h', 'adjacent_vehicle_count_lag_2h']
+    assert df[cols].isnull().sum().sum() == 0
+
+
+def test_prepare_features_includes_cross_zone_lags_when_present():
+    from src.data import (generate_traffic_data, apply_hourly_patterns,
+                           add_lag_features, add_cross_zone_lag_features)
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city='Riyadh', n_days=10)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
+
+    X, y, cols = prepare_features(df)
+    assert 'adjacent_congestion_lag_1h' in cols
+    assert 'adjacent_vehicle_count_lag_1h' in cols
+
+
+def test_prepare_features_backward_compatible_without_cross_zone_lags():
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.model import prepare_features
+
+    df = generate_traffic_data(city='Riyadh', n_days=10)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = add_lag_features(df)
+
+    X, y, cols = prepare_features(df)
+    assert 'adjacent_congestion_lag_1h' not in cols
+    assert len(X) == len(y)
+
+
+def test_validate_data_unaffected_by_cross_zone_lags():
+    from src.data import validate_data
+    report = validate_data(city='Riyadh')
+    assert (report['Status'] == 'FAIL').sum() == 0
