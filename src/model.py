@@ -27,7 +27,9 @@ FEATURE_COLS = [
     'road_type', 'rush_hour', 'is_weekend', 'is_late_night',
     'hour_multiplier', 'zone', 'day_of_week',
     'vehicle_count_lag_1h', 'vehicle_count_lag_2h',
-    'congestion_lag_1h', 'rolling_mean_3h', 'rolling_std_3h'
+    'congestion_lag_1h', 'rolling_mean_3h', 'rolling_std_3h',
+    'adjacent_congestion_lag_1h', 'adjacent_vehicle_count_lag_1h',
+    'adjacent_congestion_lag_2h', 'adjacent_vehicle_count_lag_2h',
 ]
 
 WEATHER_ENCODING  = {'clear': 0, 'dust': 1, 'fog': 2, 'humid': 3, 'rain': 4, 'sandstorm': 5}
@@ -65,11 +67,12 @@ def generate_data(city: str = 'Riyadh') -> pd.DataFrame:
     and lag columns), such as src/federated.py, don't have to repeat the
     three-step pipeline.
     """
-    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, add_cross_zone_lag_features
 
     df = generate_traffic_data(city=city)
     df = apply_hourly_patterns(df, city=city)
     df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
     return df
 
 
