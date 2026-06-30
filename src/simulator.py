@@ -1,5 +1,11 @@
 """What-If Scenario Simulator for traffic impact analysis."""
 
+
+import json
+import os
+import uuid
+from datetime import datetime
+
 import pandas as pd
 
 from src.config import (
@@ -8,6 +14,28 @@ from src.config import (
     SCENARIO_SPEED_CLIP_MIN,
     SCENARIO_SPEED_CLIP_MAX,
 )
+
+SCENARIOS_LOG_PATH = "scenarios_log.csv"
+
+
+def _log_scenario(city: str, scenario: dict, hours_ahead: int, result: dict) -> None:
+    """Append-only log of scenario runs to scenarios_log.csv. Never raises."""
+    try:
+        row = {
+            "timestamp": datetime.now().isoformat(),
+            "session_id": str(uuid.uuid4()),
+            "city": city,
+            "scenario_summary": json.dumps(scenario)[:2000],
+            "worst_impact_zone": result.get("worst_impact_zone", ""),
+            "max_delta": result.get("impact_delta", {}).get(result.get("worst_impact_zone", ""), 0.0),
+            "hours_ahead": hours_ahead,
+            "recommendation": result.get("recommendation", ""),
+        }
+        log_df = pd.DataFrame([row])
+        write_header = not os.path.exists(SCENARIOS_LOG_PATH)
+        log_df.to_csv(SCENARIOS_LOG_PATH, mode="a", header=write_header, index=False)
+    except Exception:
+        pass
 
 
 def apply_scenario(df: pd.DataFrame, scenario: dict) -> pd.DataFrame:
@@ -117,6 +145,14 @@ def run_scenario(city: str, scenario: dict, hours_ahead: int = 3) -> dict:
         )
     else:
         recommendation = "Minimal net impact across all zones. No immediate action required."
+
+    
+
+    _log_scenario(city, scenario, hours_ahead, {
+        "worst_impact_zone": worst_impact_zone,
+        "impact_delta": impact_delta,
+        "recommendation": recommendation,
+    })
 
     return {
         "baseline_forecasts": baseline_forecasts,
