@@ -66,7 +66,8 @@ from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPE
 from src.drt import DRTAllocator
 
 from src.data import (generate_traffic_data, apply_hourly_patterns, add_lag_features,
-                       get_active_events, apply_event_multipliers, detect_lineage_faults)
+                       get_active_events, apply_event_multipliers, detect_lineage_faults,
+                       add_cross_zone_lag_features)
 from src.model import (
     train_xgboost, prepare_features, predict_single, congestion_level,
     detect_anomalies, forecast_congestion, explain_prediction,
@@ -320,6 +321,8 @@ async def lifespan(app: FastAPI):
         df = apply_hourly_patterns(df, city=city)
         df = apply_event_multipliers(df, city=city)
         df = add_lag_features(df)
+        df = add_cross_zone_lag_features(df)
+
         city_dfs[city] = df
 
     # Train on Riyadh as primary model
@@ -930,6 +933,25 @@ def predict(
     result["hajj_mode"]  = p["hajj_mode"]
     result["school_holiday_mode"] = p["school_holiday"]
 
+    from src.config import ZONE_ADJACENCY
+    _city_df   = app.state.city_dfs.get(p["city"], app.state.df)
+    _neighbors = [n for n in ZONE_ADJACENCY.get(p["zone"], []) if n in _city_df["zone"].unique()]
+
+    if _neighbors:
+        _neighbor_latest = (
+            _city_df[_city_df["zone"].isin(_neighbors)]
+            .sort_values("timestamp")
+            .groupby("zone")
+            .last()
+        )
+        _adj_cong = float(_neighbor_latest["congestion_score"].mean())
+        _adj_vol  = float(_neighbor_latest["vehicle_count"].mean())
+    else:
+        # No adjacency data available — neutral fallback, same convention
+        # as add_cross_zone_lag_features()'s fillna (own value, not 0).
+        _adj_cong = result["congestion_score"]
+        _adj_vol  = p["vehicle_count"]
+
     row = {
         "vehicle_count"        : p["vehicle_count"],
         "avg_speed"            : p["avg_speed"],
@@ -948,6 +970,10 @@ def predict(
         "congestion_lag_1h"    : 0.0,
         "rolling_mean_3h"      : p["vehicle_count"],
         "rolling_std_3h"       : 0.0,
+        "adjacent_congestion_lag_1h"    : _adj_cong,
+        "adjacent_vehicle_count_lag_1h" : _adj_vol,
+        "adjacent_congestion_lag_2h"    : _adj_cong,
+        "adjacent_vehicle_count_lag_2h" : _adj_vol,
     }
 
     X_row       = pd.DataFrame([row])[app.state.feature_cols]
