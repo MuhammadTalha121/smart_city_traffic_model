@@ -402,6 +402,67 @@ def is_data_stale(adapter_source: str, fetched_at) -> bool:
 
 
 
+
+class MockPedestrianFlowAdapter(BaseAdapter):
+    """
+    Simulate pedestrian flow counts per zone per hour.
+
+    Higher during Friday prayer post-egress (12–13), Riyadh Season evenings
+    (19–22), and rush hours (7,8,17,18). Near-zero during sandstorm.
+    noise_level: 0.0 = deterministic, 1.0 = maximum variance.
+    """
+
+    BASE_PEDESTRIAN_COUNT: int = 80
+
+    def __init__(self, noise_level: float = 0.2):
+        self.noise_level = float(noise_level)
+
+    def fetch(self, city: str = 'Riyadh') -> pd.DataFrame:
+        """Return one row per zone with simulated pedestrian flow counts."""
+        from src.config import LAST_MILE_TRANSFER_ZONES, FRIDAY_PRAYER_HOURS
+
+        np.random.seed(int(datetime.now().timestamp()) % 10000)
+        hour      = datetime.now().hour
+        is_friday = (datetime.now().weekday() == 4)
+        zones     = ['Zone_1', 'Zone_2', 'Zone_3', 'Zone_4', 'Zone_5']
+        rows      = []
+
+        for zone in zones:
+            base = float(self.BASE_PEDESTRIAN_COUNT)
+
+            # Transfer zone bonus
+            if zone in LAST_MILE_TRANSFER_ZONES:
+                base *= 1.4
+
+            # Hour multiplier
+            if is_friday and hour in FRIDAY_PRAYER_HOURS:
+                hour_mult = 3.5   # post-prayer egress spike
+            elif hour in (19, 20, 21, 22):
+                hour_mult = 2.0   # Riyadh Season evenings / Saudi late-night
+            elif hour == 23:
+                hour_mult = 1.3   # late night (lower)
+            elif hour in (7, 8, 17, 18):
+                hour_mult = 1.8   # rush hours
+            else:
+                hour_mult = 1.0
+
+            noise = np.random.normal(0, base * self.noise_level)
+            count = int(max(0, (base * hour_mult) + noise))
+            flow_density = round(float(min(1.0, count / 500.0)), 3)
+
+            rows.append({
+                'city'            : city,
+                'zone'            : zone,
+                'hour'            : hour,
+                'pedestrian_count': count,
+                'flow_density'    : flow_density,
+            })
+
+        return pd.DataFrame(rows)
+
+
+
+
 def get_adapter(source: str) -> BaseAdapter:
     """
     Return the correct adapter instance for the requested source.
@@ -419,6 +480,7 @@ def get_adapter(source: str) -> BaseAdapter:
         'osm'           : OpenStreetMapAdapter,
         'mock'          : MockIoTAdapter,
         'micromobility' : MockMicroMobilityAdapter,
+        'pedestrian'    : MockPedestrianFlowAdapter,
     }
     cls = adapters.get(source)
     if cls is None:
