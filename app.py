@@ -23,6 +23,9 @@ from src.config import CALIBRATION_FACTORS_PATH
 
 from src.simulator import apply_scenario, run_scenario
 
+from src.gtfs_rt_export import generate_gtfs_rt_feed
+
+
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
 from src.reporter import generate_weekly_report
@@ -84,7 +87,7 @@ from src.model import (
     validate_vms_message, detect_incidents,
         estimate_incident_clearance_time,
         INCIDENTS_LOG_PATH,
-        _SEVERITY_ORDER,
+        _SEVERITY_ORDER,  compute_multimodal_index,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -1049,10 +1052,35 @@ def predict(
         road_type     = p["road_type"],
         hour          = p["hour"],
     )
-    
+
+    # ── Multi-modal mobility index (PROMPT 101) ─────────────────────────
+    try:
+        mm_df    = get_adapter("micromobility").fetch(p["city"])
+        mm_row   = mm_df[mm_df["zone"] == p["zone"]]
+        scooters = int(mm_row["active_scooters"].values[0]) if not mm_row.empty else 0
+        bikes    = int(mm_row["active_bikes"].values[0])    if not mm_row.empty else 0
+    except Exception:
+        scooters, bikes = 0, 0
+
+    last_mile_idx = compute_last_mile_index(
+        p["vehicle_count"], scooters, bikes, result["congestion_level"], p["zone"]
+    )
+    drt_available = p["zone"] in DRT_ELIGIBLE_ZONES
+
+    multimodal = compute_multimodal_index(
+        zone                      = p["zone"],
+        vehicle_congestion_score  = result["congestion_score"],
+        last_mile_index           = last_mile_idx,
+        drt_available             = drt_available,
+        pedestrian_risk_score     = pedestrian_risk["pedestrian_risk_score"],
+    )
+    result["mobility_index"] = multimodal
+    result["mobility_score"] = multimodal["mobility_score"]
+    # ── end multi-modal index ───────────────────────────────────────────
 
     log_prediction(result, explanation, interval_width=prediction_interval["confidence_width"],
                    data_source=app.state.data_source)
+    
     if _ids_result["risk_level"] == "Suspicious":
         result["ids_warning"] = {
             "flags":      _ids_result["flags"],
@@ -2436,6 +2464,26 @@ def export_siri(
 
 
 
+@app.get("/export/gtfs-rt", tags=["export"])
+@limiter.limit("20/minute")
+def export_gtfs_rt(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_api_key),
+):
+    """
+    GTFS-RT shaped export — VehiclePositions (from DRT) + TripUpdates
+    (from +1h congestion forecast). Not GTFS-RT compliant; see gapNote
+    in the response (JSON, not protobuf; no GTFS Static companion feed).
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+    return generate_gtfs_rt_feed(city)
+
+
+
+
+
 @app.get("/mobility/last-mile", tags=["mobility"])
 def last_mile_efficiency(
     city: str  = "Riyadh",
@@ -2503,6 +2551,110 @@ def last_mile_efficiency(
         },
     }
 
+
+
+@app.get("/mobility/multimodal-status", tags=["mobility"])
+@limiter.limit("20/minute")
+def multimodal_status(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    """
+    Return the multi-modal mobility index for every zone in a city.
+
+    Combines current vehicle congestion, last-mile micro-mobility
+    availability, DRT service eligibility, and pedestrian safety into a
+    single mobility_score per zone (see compute_multimodal_index()).
+    Zones sorted worst-first (lowest mobility_score first) so operators
+    see the most mobility-constrained zones immediately.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    _assert_city_permitted(auth, city)
+
+    df     = app.state.city_dfs.get(city, app.state.df)
+    latest = df.sort_values("timestamp").groupby("zone").last().reset_index()
+
+    try:
+        mm_df = get_adapter("micromobility").fetch(city)
+    except Exception:
+        mm_df = pd.DataFrame(columns=["zone", "active_scooters", "active_bikes"])
+
+    results = []
+    for _, row in latest.iterrows():
+        zone  = str(row["zone"])
+        vc    = float(row.get("vehicle_count", 100.0))
+        score = float(row.get("congestion_score", 0.0))
+        level = congestion_level(score)
+
+        mm_row   = mm_df[mm_df["zone"] == zone] if "zone" in mm_df.columns else mm_df.iloc[0:0]
+        scooters = int(mm_row["active_scooters"].values[0]) if not mm_row.empty else 0
+        bikes    = int(mm_row["active_bikes"].values[0])    if not mm_row.empty else 0
+        last_mile_idx = compute_last_mile_index(vc, scooters, bikes, level, zone)
+
+        drt_available = zone in DRT_ELIGIBLE_ZONES
+
+        ped_risk = compute_pedestrian_risk(
+            vehicle_count = vc,
+            avg_speed     = float(row.get("avg_speed", 60.0)),
+            hour          = int(row.get("hour", 12)),
+            weather       = str(row.get("weather", "clear")),
+            road_type     = str(row.get("road_type", "arterial")),
+        )["pedestrian_risk_score"]
+
+        multimodal = compute_multimodal_index(
+            zone                     = zone,
+            vehicle_congestion_score = score,
+            last_mile_index          = last_mile_idx,
+            drt_available            = drt_available,
+            pedestrian_risk_score    = ped_risk,
+        )
+        results.append(multimodal)
+
+    results.sort(key=lambda x: x["mobility_score"])
+
+    return {
+        "city"   : city,
+        "zones"  : results,
+        "summary": {
+            "avg_mobility_score": round(
+                sum(r["mobility_score"] for r in results) / max(len(results), 1), 4
+            ),
+            "crisis_zones": [r["zone"] for r in results if r["mobility_level"] == "Crisis"],
+        },
+    }
+
+
+
+
+
+@app.get("/mobility/pedestrian-flow", tags=["mobility"])
+@limiter.limit("20/minute")
+def pedestrian_flow(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    """
+    Return current pedestrian flow estimates for all zones in a city.
+
+    Uses MockPedestrianFlowAdapter to simulate flow counts calibrated to
+    Saudi behavioral patterns: prayer-time egress spikes, Riyadh Season
+    evening peaks, and near-zero flow during sandstorms.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    _assert_city_permitted(auth, city)
+
+    adapter = get_adapter("pedestrian")
+    flow_df = adapter.fetch(city)
+
+    results = flow_df.to_dict(orient="records")
+
+    return {
+        "city" : city,
+        "hour" : datetime.now().hour,
+        "zones": results,
+    }
 
 
 
