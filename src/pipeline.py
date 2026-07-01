@@ -581,6 +581,9 @@ def log_alert(alerts: list, log_path: str = 'alerts_log.csv') -> None:
     """
     if not alerts:
         return
+    
+    from src.training import training_log_path
+    log_path = training_log_path(log_path)
 
     rows = []
     for alert in alerts:
