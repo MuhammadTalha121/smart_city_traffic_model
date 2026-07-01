@@ -265,6 +265,25 @@ FREE_FLOW_SPEED_KMPH: Dict[str, int] = {
 
 MICROMOBILITY_CAPACITY_SHRINKAGE: float = 0.95
 LAST_MILE_TRANSFER_ZONES: List[str]     = ['Zone_1', 'Zone_2', 'Zone_3']
+
+
+
+MULTIMODAL_INDEX_WEIGHTS: Dict[str, float] = {
+    'vehicle'   : 0.35,
+    'last_mile' : 0.30,
+    'drt'       : 0.25,
+    'pedestrian': 0.10,
+}
+MULTIMODAL_LEVEL_THRESHOLDS: Dict[str, float] = {
+    'Good'    : 0.70,
+    'Adequate': 0.50,
+    'Stressed': 0.30,
+    # below Stressed → Crisis
+}
+
+
+
+
 SCOOTER_VELOCITY_THRESHOLD_KMPH: float  = 20.0
 BIKE_VELOCITY_THRESHOLD_KMPH: float     = 25.0
 GREEN_INITIATIVE_CO2_THRESHOLD_KG: float = 500.0
