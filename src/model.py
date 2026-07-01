@@ -1195,6 +1195,106 @@ def compute_last_mile_index(
 
 
 
+
+def compute_multimodal_index(
+    zone: str,
+    vehicle_congestion_score: float,
+    last_mile_index: float,
+    drt_available: bool,
+    pedestrian_risk_score: float,
+) -> Dict:
+    """
+    Combine vehicle congestion, micro-mobility (last-mile), DRT availability,
+    and pedestrian safety into a single mobility quality score.
+
+    Four components, each rescaled so 1.0 = best possible mobility:
+      vehicle_component    = 1 - vehicle_congestion_score   (weight 0.35)
+      last_mile_component  = last_mile_index                (weight 0.30)
+      drt_component        = 1.0 if drt_available else 0.0  (weight 0.25)
+      pedestrian_component = 1 - pedestrian_risk_score       (weight 0.10)
+
+    mobility_score = weighted sum, clipped to [0, 1].
+
+    mobility_level thresholds (MULTIMODAL_LEVEL_THRESHOLDS):
+      Good      >= 0.70
+      Adequate  >= 0.50
+      Stressed  >= 0.30
+      Crisis    <  0.30
+
+    bottleneck is whichever component contributes least to the total
+    (weight * component_value) — the single factor dragging the score
+    down the most. A component with zero weight can never be reported
+    as the bottleneck even if its raw value is poor, since it isn't what
+    is dragging the *score* down.
+
+    alternatives lists viable modal options given current conditions:
+    DRT if available, micro-mobility if last_mile_component >= 0.3,
+    walking if pedestrian_component >= 0.5 (i.e. risk < 0.5).
+
+    Returns
+    -------
+    dict with zone, mobility_score, mobility_level, bottleneck,
+    bottleneck_reason, alternatives, components.
+    """
+    from src.config import MULTIMODAL_INDEX_WEIGHTS, MULTIMODAL_LEVEL_THRESHOLDS
+
+    w = MULTIMODAL_INDEX_WEIGHTS
+
+    vehicle_component    = float(np.clip(1.0 - vehicle_congestion_score, 0.0, 1.0))
+    last_mile_component  = float(np.clip(last_mile_index, 0.0, 1.0))
+    drt_component        = 1.0 if drt_available else 0.0
+    pedestrian_component = float(np.clip(1.0 - pedestrian_risk_score, 0.0, 1.0))
+
+    contributions = {
+        'vehicle_congestion': vehicle_component    * w['vehicle'],
+        'last_mile_options' : last_mile_component  * w['last_mile'],
+        'drt_availability'  : drt_component         * w['drt'],
+        'pedestrian_safety' : pedestrian_component * w['pedestrian'],
+    }
+
+    mobility_score = float(np.clip(sum(contributions.values()), 0.0, 1.0))
+
+    if   mobility_score >= MULTIMODAL_LEVEL_THRESHOLDS['Good']:     level = 'Good'
+    elif mobility_score >= MULTIMODAL_LEVEL_THRESHOLDS['Adequate']: level = 'Adequate'
+    elif mobility_score >= MULTIMODAL_LEVEL_THRESHOLDS['Stressed']: level = 'Stressed'
+    else:                                                           level = 'Crisis'
+
+    bottleneck = min(contributions, key=contributions.get)
+    bottleneck_labels = {
+        'vehicle_congestion': 'Vehicle congestion is the primary constraint',
+        'last_mile_options' : 'Limited micro-mobility (scooter/bike) options',
+        'drt_availability'  : 'No demand-responsive transit currently available',
+        'pedestrian_safety' : 'Elevated pedestrian safety risk',
+    }
+
+    alternatives = []
+    if drt_available:
+        alternatives.append('DRT shuttle')
+    if last_mile_component >= 0.3:
+        alternatives.append('Micro-mobility (scooter/bike)')
+    if pedestrian_component >= 0.5:
+        alternatives.append('Walking')
+
+    return {
+        'zone'             : zone,
+        'mobility_score'   : round(mobility_score, 4),
+        'mobility_level'   : level,
+        'bottleneck'       : bottleneck,
+        'bottleneck_reason': bottleneck_labels[bottleneck],
+        'alternatives'     : alternatives,
+        'components': {
+            'vehicle_congestion_score': round(vehicle_congestion_score, 4),
+            'last_mile_index'         : round(last_mile_component, 4),
+            'drt_available'           : drt_available,
+            'pedestrian_risk_score'   : round(pedestrian_risk_score, 4),
+        },
+    }
+
+
+
+
+
+
 def compute_pavement_wear_index(
     vehicle_count:      float,
     congestion_score:   float,
