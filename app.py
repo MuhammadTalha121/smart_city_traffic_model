@@ -8,6 +8,10 @@ from typing import Dict, List, Tuple, Optional
 import pandas as pd
 
 
+from src.training import start_session, end_session
+
+
+
 
 from fastapi import UploadFile, File, Form, Body
 import tempfile
@@ -129,7 +133,8 @@ QUOTA_EXEMPT_ENDPOINTS = ["/health", "/sla/current"]
 
 def _write_usage_log(log_data: dict) -> None:
     """Append a single usage log row to usage_log.csv."""
-    log_path = "usage_log.csv"
+    from src.training import training_log_path
+    log_path = training_log_path("usage_log.csv")
     row = pd.DataFrame([log_data])
     write_header = not os.path.exists(log_path)
     row.to_csv(log_path, mode="a", header=write_header, index=False)
@@ -341,6 +346,8 @@ async def lifespan(app: FastAPI):
     app.state.data_source_fetched_at = datetime.now()
     app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     app.state.last_drt_allocation = {}
+    app.state.training_session = None
+
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
 
@@ -2967,7 +2974,8 @@ _IDS_FIELDS  = ["timestamp", "zone", "hour", "risk_level", "flags",
 
 def _log_ids_event(ids_result: dict, request) -> None:
     """Append one IDS event row to ids_log.csv."""
-    path    = _Path(IDS_LOG_PATH)
+    from src.training import training_log_path
+    path    = _Path(training_log_path(IDS_LOG_PATH))
     is_new  = not path.exists()
     with open(path, "a", newline="") as f:
         writer = _csv.DictWriter(f, fieldnames=_IDS_FIELDS)
@@ -3440,6 +3448,83 @@ def rotate_api_key(
 
 
 
+
+# ===== Operator Training Mode =====
+
+@app.post("/training/start", tags=["training"])
+def training_start(auth: Dict = Depends(require_admin)):
+    """
+    Begin an operator training session. Clears any stale *_training.csv
+    files, then redirects all audit-trail writes (predictions, alerts,
+    incidents, usage, IDS, scenario logs) to *_training.csv sibling files
+    until /training/end is called — production logs are never touched
+    during an active session. Admin only.
+    """
+    session = start_session()
+    app.state.training_session = session
+    return {
+        "status"    : "training_started",
+        "session_id": session["session_id"],
+        "started_at": session["started_at"],
+    }
+
+
+@app.post("/training/end", tags=["training"])
+def training_end(auth: Dict = Depends(require_admin)):
+    """
+    End the active training session. Disables training mode (subsequent
+    writes return to production logs) and returns a summary of actions
+    taken during the session — a row count per training log file. Admin only.
+    """
+    session = getattr(app.state, "training_session", None)
+    summary = end_session(session)
+    app.state.training_session = None
+    return summary
+
+
+
+
+@app.post("/training/replay", tags=["training"])
+@limiter.limit("20/minute")
+def training_replay(
+    request: Request,
+    body: dict = Body(...),
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Replay a historical incident as a training scenario.
+
+    Only allowed when training mode is active (403 otherwise).
+    Body: { "incident_id": int, "speed_multiplier": float (default 1.0) }
+    Returns frames and incident metadata.
+
+    Rate limit: 20 req/min. Role: OPERATOR or ADMIN.
+    """
+    from src.training import is_training_mode
+    if not is_training_mode():
+        raise HTTPException(
+            status_code=403,
+            detail="Training mode is not active. Start a training session first."
+        )
+
+    incident_id = body.get("incident_id")
+    if incident_id is None:
+        raise HTTPException(status_code=422, detail="Missing 'incident_id'.")
+    if not isinstance(incident_id, int):
+        raise HTTPException(status_code=422, detail="'incident_id' must be an integer.")
+
+    speed_multiplier = body.get("speed_multiplier", 1.0)
+    if not isinstance(speed_multiplier, (int, float)) or speed_multiplier <= 0:
+        raise HTTPException(status_code=422, detail="'speed_multiplier' must be a positive number.")
+
+    try:
+        from src.simulator import replay_incident
+        result = replay_incident(incident_id, speed_multiplier)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Replay failed: {str(e)}")
 
 
 
