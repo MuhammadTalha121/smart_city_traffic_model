@@ -6,7 +6,11 @@ import os
 import uuid
 from datetime import datetime
 
+
+
 import pandas as pd
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
 
 from src.config import (
     WEATHER_SPEED_IMPACT,
@@ -31,9 +35,11 @@ def _log_scenario(city: str, scenario: dict, hours_ahead: int, result: dict) -> 
             "hours_ahead": hours_ahead,
             "recommendation": result.get("recommendation", ""),
         }
+        from src.training import training_log_path
+        log_path = training_log_path(SCENARIOS_LOG_PATH)
         log_df = pd.DataFrame([row])
-        write_header = not os.path.exists(SCENARIOS_LOG_PATH)
-        log_df.to_csv(SCENARIOS_LOG_PATH, mode="a", header=write_header, index=False)
+        write_header = not os.path.exists(log_path)
+        log_df.to_csv(log_path, mode="a", header=write_header, index=False)
     except Exception:
         pass
 
@@ -160,4 +166,136 @@ def run_scenario(city: str, scenario: dict, hours_ahead: int = 3) -> dict:
         "impact_delta": impact_delta,
         "worst_impact_zone": worst_impact_zone,
         "recommendation": recommendation,
+    }
+
+
+
+
+
+
+INCIDENTS_LOG_PATH = "incidents_log.csv"
+PREDICTIONS_LOG_PATH = "predictions_log.csv"
+
+def replay_incident(incident_id: int, speed_multiplier: float = 1.0) -> Dict[str, Any]:
+    """
+    Replay a historical incident as a training scenario.
+
+    Parameters
+    ----------
+    incident_id : int
+        0‑based row index in incidents_log.csv (after header).
+    speed_multiplier : float
+        Playback speed multiplier (client‑side, returned for reference).
+
+    Returns
+    -------
+    dict
+        {
+            "incident": {timestamp, city, zone, severity, clearance_mins},
+            "frames": [ {timestamp, zone, hour, vehicle_count, avg_speed,
+                         congestion_score, congestion_level}, ... ],
+            "speed_multiplier": float,
+            "total_frames": int
+        }
+
+    Raises
+    ------
+    ValueError
+        If incident_id is out of range or required files are missing.
+    """
+    # 1. Read incidents log
+    if not os.path.exists(INCIDENTS_LOG_PATH):
+        raise ValueError("incidents_log.csv not found – no incidents to replay.")
+
+    inc_df = pd.read_csv(INCIDENTS_LOG_PATH)
+    if incident_id < 0 or incident_id >= len(inc_df):
+        raise ValueError(f"incident_id {incident_id} out of range (0..{len(inc_df)-1})")
+
+    inc_row = inc_df.iloc[incident_id]
+    city = inc_row["city"]
+    zone = inc_row["zone"]
+    severity = inc_row["severity"]
+    clearance_mins = float(inc_row["clearance_mins"])
+    inc_timestamp_str = inc_row["timestamp"]
+    inc_timestamp = pd.to_datetime(inc_timestamp_str)
+
+    # 2. Load predictions log
+    if not os.path.exists(PREDICTIONS_LOG_PATH):
+        raise ValueError("predictions_log.csv not found – cannot reconstruct zone states.")
+
+    pred_df = pd.read_csv(PREDICTIONS_LOG_PATH)
+    # Ensure timestamp column is datetime
+    pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], errors="coerce")
+    pred_df = pred_df.dropna(subset=["timestamp"])
+
+    # 3. Filter predictions for same city and zone, within time window
+    # Window: 30 min before incident to 15 min after clearance
+    start_time = inc_timestamp - timedelta(minutes=30)
+    end_time = inc_timestamp + timedelta(minutes=clearance_mins + 15)
+
+    mask = (
+        (pred_df["city"] == city) &
+        (pred_df["zone"] == zone) &
+        (pred_df["timestamp"] >= start_time) &
+        (pred_df["timestamp"] <= end_time)
+    )
+    filtered = pred_df[mask].copy()
+    filtered = filtered.sort_values("timestamp")
+
+    if filtered.empty:
+        # Fallback: if no predictions in window, return a single frame using the incident row itself
+        # We'll construct a minimal frame from the incident data (but we lack vehicle_count/avg_speed)
+        # So we'll raise an error or return a placeholder.
+        raise ValueError("No prediction records found for the incident time window.")
+
+    # 4. Build frames
+    frames = []
+    # We need vehicle_count and avg_speed – get from app.state.city_dfs if available
+    city_df = None
+    try:
+        # Avoid circular import by importing app inside function
+        from app import app
+        if hasattr(app.state, "city_dfs") and city in app.state.city_dfs:
+            city_df = app.state.city_dfs[city]
+    except Exception:
+        pass
+
+    for _, row in filtered.iterrows():
+        ts = row["timestamp"]
+        hour = int(row.get("hour", ts.hour))
+        congestion_score = float(row["congestion_score"])
+        congestion_level = str(row["congestion_level"])
+
+        # Attempt to get vehicle_count and avg_speed from city_df for that zone and hour
+        vehicle_count = None
+        avg_speed = None
+        if city_df is not None:
+            zone_rows = city_df[(city_df["zone"] == zone) & (city_df["hour"] == hour)]
+            if not zone_rows.empty:
+                # Use the first matching row (should be one per hour)
+                vehicle_count = float(zone_rows.iloc[0]["vehicle_count"])
+                avg_speed = float(zone_rows.iloc[0]["avg_speed"])
+
+        frames.append({
+            "timestamp": ts.isoformat(),
+            "zone": zone,
+            "hour": hour,
+            "vehicle_count": vehicle_count,
+            "avg_speed": avg_speed,
+            "congestion_score": congestion_score,
+            "congestion_level": congestion_level,
+        })
+
+    # 5. Prepare result
+    return {
+        "incident": {
+            "timestamp": inc_timestamp.isoformat(),
+            "city": city,
+            "zone": zone,
+            "severity": severity,
+            "clearance_mins": clearance_mins,
+        },
+        "frames": frames,
+        "speed_multiplier": speed_multiplier,
+        "total_frames": len(frames),
     }
