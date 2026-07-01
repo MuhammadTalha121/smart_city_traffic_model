@@ -868,6 +868,7 @@
   <button class="tab-btn" data-tab="insights"><span class="tab-icon">🤖</span>Model Insights</button>
   <button class="tab-btn" data-tab="forecast"><span class="tab-icon">🔮</span>Forecasting</button>
   <button class="tab-btn" data-tab="analytics"><span class="tab-icon">📊</span>Analytics</button>
+  <button class="tab-btn" data-tab="training"><span class="tab-icon">🎓</span>Training</button>
 </nav>
 
 <!-- Main -->
@@ -1349,6 +1350,86 @@
       </div>
     </div>
   </div>
+
+  <div class="tab-panel" id="tab-training">
+    <div class="section-label">Operator Training Mode</div>
+
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Session Control</span>
+        <span class="card-tag" id="training-status-tag">INACTIVE</span>
+      </div>
+      <div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:1rem">
+        <button class="predict-btn" style="width:auto;padding:0.6rem 1.25rem" onclick="startTraining()">Start Session</button>
+        <button class="predict-btn" style="width:auto;padding:0.6rem 1.25rem;background:linear-gradient(135deg,#e07070,#c45a5a)" onclick="endTraining()">End Session</button>
+        <span id="training-timer" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-muted)"></span>
+      </div>
+      <div id="training-summary-wrap"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Scenario Selector</span>
+        <span class="card-tag">PROMPT 096</span>
+      </div>
+      <select class="field-select" id="training-scenario" style="max-width:320px;margin-bottom:0.75rem">
+        <option value="zone_closure">Zone Closure — Zone_1</option>
+        <option value="sandstorm">Sandstorm Event Override</option>
+        <option value="demand_surge">Demand Surge — Zone_2 (2x)</option>
+      </select>
+      <button class="predict-btn" style="width:auto;padding:0.6rem 1.25rem" onclick="runTrainingScenario()">Run Scenario</button>
+      <div id="training-scenario-result" style="margin-top:1rem;font-family:var(--font-mono);font-size:0.8rem;color:var(--text-secondary)"></div>
+    </div>
+
+    <!-- Replay Historical Incident -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Replay Historical Incident</span>
+        <span class="card-tag" id="replay-status-tag">READY</span>
+      </div>
+
+    <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-bottom:0.75rem">
+      <label style="font-size:0.7rem;font-family:var(--font-mono);color:var(--text-muted)">Select Incident</label>
+      <select class="field-select" id="replay-incident" style="flex:1;min-width:200px">
+        <option value="">— Loading incidents —</option>
+      </select>
+      <div style="display:flex;gap:0.5rem">
+        <button class="predict-btn" style="width:auto;padding:0.4rem 1rem" data-speed="0.5">0.5×</button>
+        <button class="predict-btn" style="width:auto;padding:0.4rem 1rem" data-speed="1" disabled>1×</button>
+        <button class="predict-btn" style="width:auto;padding:0.4rem 1rem" data-speed="2">2×</button>
+      </div>
+      <button class="predict-btn" id="replay-play-btn" style="width:auto;padding:0.4rem 1.25rem">▶ Play</button>
+      <span id="replay-timer" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-muted)">—</span>
+    </div>
+
+    <div id="replay-frame-display" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-md);padding:1rem;min-height:80px">
+      <div class="empty-state"><div class="empty-icon">🎞</div>Select an incident and press Play</div>
+    </div>
+
+    <div style="margin-top:0.75rem">
+      <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+        <div id="replay-progress" style="height:100%;width:0%;background:var(--amber);transition:width 0.15s linear"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:0.65rem;font-family:var(--font-mono);color:var(--text-muted);margin-top:0.25rem">
+        <span id="replay-frame-index">0 / 0</span>
+        <span id="replay-timestamp">—</span>
+      </div>
+    </div>
+  </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">Response Checklist</span></div>
+      <div style="font-size:0.82rem;line-height:2;color:var(--text-secondary)">
+        <label style="display:block"><input type="checkbox"> Confirm incident/scenario via /incidents/active or /scenarios/run</label>
+        <label style="display:block"><input type="checkbox"> Notify affected zone operators</label>
+        <label style="display:block"><input type="checkbox"> Activate alternate routing / VMS messaging</label>
+        <label style="display:block"><input type="checkbox"> Log intervention outcome</label>
+        <label style="display:block"><input type="checkbox"> End session and review summary</label>
+      </div>
+    </div>
+  </div>
+
+
 
 </main>
 
@@ -2583,6 +2664,247 @@ connectWebSocket('Riyadh');
 
 // Self-ping — keeps Render free tier alive (every 14 min)
 setInterval(() => fetch('/health').catch(()=>{}), 14 * 60 * 1000);
+
+
+let _trainingStartedAt = null;
+let _trainingTimerInterval = null;
+
+async function startTraining() {
+  try {
+    await apiPost('/training/start', {});
+    document.getElementById('training-status-tag').textContent = 'ACTIVE';
+    document.getElementById('training-summary-wrap').innerHTML = '';
+    _trainingStartedAt = new Date();
+    clearInterval(_trainingTimerInterval);
+    _trainingTimerInterval = setInterval(() => {
+      const secs = Math.floor((new Date() - _trainingStartedAt) / 1000);
+      document.getElementById('training-timer').textContent =
+        `Session running — ${String(Math.floor(secs/60)).padStart(2,'0')}:${String(secs%60).padStart(2,'0')}`;
+    }, 1000);
+  } catch(e) {
+    alert('Failed to start training session (admin key required).');
+  }
+}
+
+async function endTraining() {
+  try {
+    const data = await apiPost('/training/end', {});
+    document.getElementById('training-status-tag').textContent = 'INACTIVE';
+    clearInterval(_trainingTimerInterval);
+    document.getElementById('training-timer').textContent = '';
+    const rows = Object.entries(data.actions_by_log || {})
+      .map(([k,v]) => `<div style="display:flex;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--text-secondary)">${k}</span><span style="color:var(--amber)">${v}</span></div>`).join('');
+    document.getElementById('training-summary-wrap').innerHTML = `
+      <div class="result-item-label">Session Summary — ${data.total_actions} total action(s)</div>
+      ${rows}`;
+  } catch(e) {
+    alert('Failed to end training session (admin key required).');
+  }
+}
+
+async function runTrainingScenario() {
+  const choice = document.getElementById('training-scenario').value;
+  const scenarios = {
+    zone_closure:  { zone_closures: ['Zone_1'] },
+    sandstorm:     { event_override: 'sandstorm' },
+    demand_surge:  { demand_shifts: { 'Zone_2': 2.0 } },
+  };
+  try {
+    const data = await apiPost('/scenarios/run', {
+      city: 'Riyadh', scenario: scenarios[choice], hours_ahead: 3
+    });
+    document.getElementById('training-scenario-result').textContent =
+      `Worst impact: ${data.worst_impact_zone} — ${data.recommendation}`;
+  } catch(e) {
+    document.getElementById('training-scenario-result').textContent = 'Scenario run failed.';
+  }
+}
+
+
+
+// ── Replay Historical Incident ──────────────────────────
+
+let replayFrames = [];
+let replayIndex = 0;
+let replayTimer = null;
+let replaySpeed = 1;
+let replayPlaying = false;
+
+async function loadIncidentList() {
+  const select = document.getElementById('replay-incident');
+  try {
+    const data = await apiGet('/incidents/history?city=Riyadh&hours=168'); // last 7 days
+    if (!data.incidents || data.incidents.length === 0) {
+      select.innerHTML = '<option value="">No incidents found</option>';
+      return;
+    }
+    let html = '';
+    data.incidents.forEach((inc, idx) => {
+      const label = `${inc.timestamp} · ${inc.zone} · ${inc.severity}`;
+      html += `<option value="${idx}">${label}</option>`;
+    });
+    select.innerHTML = html;
+    document.getElementById('replay-status-tag').textContent = `${data.incidents.length} incidents`;
+  } catch(e) {
+    select.innerHTML = '<option value="">Failed to load incidents</option>';
+    console.error('loadIncidentList error:', e);
+  }
+}
+
+function updateReplayFrameDisplay(frame) {
+  const div = document.getElementById('replay-frame-display');
+  if (!frame) {
+    div.innerHTML = `<div class="empty-state"><div class="empty-icon">🎞</div>End of replay</div>`;
+    return;
+  }
+  const levelColor = LEVEL_COLORS[frame.congestion_level] || '#8b9ab0';
+  div.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(120px,1fr));gap:0.75rem;font-family:var(--font-mono);font-size:0.78rem">
+      <div><span style="color:var(--text-muted)">Time</span><br><span style="color:var(--text-primary)">${new Date(frame.timestamp).toLocaleTimeString()}</span></div>
+      <div><span style="color:var(--text-muted)">Zone</span><br><span style="color:var(--text-primary)">${frame.zone}</span></div>
+      <div><span style="color:var(--text-muted)">Congestion</span><br><span style="color:${levelColor}">${frame.congestion_score.toFixed(4)} (${frame.congestion_level})</span></div>
+      <div><span style="color:var(--text-muted)">Vehicles</span><br><span style="color:var(--text-primary)">${frame.vehicle_count !== null ? frame.vehicle_count : 'N/A'}</span></div>
+      <div><span style="color:var(--text-muted)">Speed</span><br><span style="color:var(--text-primary)">${frame.avg_speed !== null ? frame.avg_speed + ' km/h' : 'N/A'}</span></div>
+    </div>
+  `;
+  // Update progress and index
+  document.getElementById('replay-frame-index').textContent = `${replayIndex + 1} / ${replayFrames.length}`;
+  const pct = replayFrames.length > 0 ? ((replayIndex + 1) / replayFrames.length * 100) : 0;
+  document.getElementById('replay-progress').style.width = pct + '%';
+  document.getElementById('replay-timestamp').textContent = frame.timestamp ? new Date(frame.timestamp).toLocaleString() : '';
+}
+
+function startReplay() {
+  if (replayPlaying) return;
+  const select = document.getElementById('replay-incident');
+  const incidentIdx = parseInt(select.value);
+  if (isNaN(incidentIdx)) {
+    alert('Please select an incident.');
+    return;
+  }
+
+  const speed = replaySpeed;
+  const payload = { incident_id: incidentIdx, speed_multiplier: speed };
+
+  document.getElementById('replay-play-btn').textContent = '… Loading';
+  document.getElementById('replay-play-btn').disabled = true;
+
+  apiPost('/training/replay', payload)
+    .then(data => {
+      replayFrames = data.frames || [];
+      replayIndex = 0;
+      if (replayFrames.length === 0) {
+        document.getElementById('replay-frame-display').innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>No frames for this incident</div>`;
+        document.getElementById('replay-status-tag').textContent = 'EMPTY';
+        document.getElementById('replay-play-btn').textContent = '▶ Play';
+        document.getElementById('replay-play-btn').disabled = false;
+        return;
+      }
+      // Update incident metadata if needed
+      document.getElementById('replay-status-tag').textContent =
+        `${data.incident.severity} · ${data.incident.zone} · ${data.total_frames} frames`;
+      // Start playing
+      replayPlaying = true;
+      document.getElementById('replay-play-btn').textContent = '⏸ Pause';
+      document.getElementById('replay-play-btn').disabled = false;
+      // Display first frame
+      updateReplayFrameDisplay(replayFrames[0]);
+      // Start interval
+      const baseInterval = 1000; // 1 second per frame at 1x
+      const intervalMs = Math.max(100, baseInterval / speed);
+      clearInterval(replayTimer);
+      replayTimer = setInterval(() => {
+        replayIndex++;
+        if (replayIndex >= replayFrames.length) {
+          clearInterval(replayTimer);
+          replayPlaying = false;
+          document.getElementById('replay-play-btn').textContent = '▶ Play';
+          document.getElementById('replay-timer').textContent = 'Complete';
+          return;
+        }
+        updateReplayFrameDisplay(replayFrames[replayIndex]);
+      }, intervalMs);
+    })
+    .catch(err => {
+      alert('Replay failed: ' + err.message);
+      document.getElementById('replay-play-btn').textContent = '▶ Play';
+      document.getElementById('replay-play-btn').disabled = false;
+    });
+}
+
+function toggleReplay() {
+  if (replayPlaying) {
+    // Pause
+    clearInterval(replayTimer);
+    replayPlaying = false;
+    document.getElementById('replay-play-btn').textContent = '▶ Play';
+    document.getElementById('replay-timer').textContent = 'Paused';
+  } else {
+    // Play (resume from current index)
+    if (replayFrames.length === 0 || replayIndex >= replayFrames.length) {
+      // Start fresh
+      startReplay();
+      return;
+    }
+    // Resume
+    replayPlaying = true;
+    document.getElementById('replay-play-btn').textContent = '⏸ Pause';
+    const intervalMs = Math.max(100, 1000 / replaySpeed);
+    clearInterval(replayTimer);
+    replayTimer = setInterval(() => {
+      replayIndex++;
+      if (replayIndex >= replayFrames.length) {
+        clearInterval(replayTimer);
+        replayPlaying = false;
+        document.getElementById('replay-play-btn').textContent = '▶ Play';
+        document.getElementById('replay-timer').textContent = 'Complete';
+        return;
+      }
+      updateReplayFrameDisplay(replayFrames[replayIndex]);
+    }, intervalMs);
+  }
+}
+
+// Speed button handlers
+document.querySelectorAll('#replay-speed-buttons button').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const speed = parseFloat(this.dataset.speed);
+    replaySpeed = speed;
+    document.querySelectorAll('#replay-speed-buttons button').forEach(b => b.disabled = false);
+    this.disabled = true;
+    // If playing, restart interval with new speed
+    if (replayPlaying) {
+      clearInterval(replayTimer);
+      const intervalMs = Math.max(100, 1000 / replaySpeed);
+      replayTimer = setInterval(() => {
+        replayIndex++;
+        if (replayIndex >= replayFrames.length) {
+          clearInterval(replayTimer);
+          replayPlaying = false;
+          document.getElementById('replay-play-btn').textContent = '▶ Play';
+          document.getElementById('replay-timer').textContent = 'Complete';
+          return;
+        }
+        updateReplayFrameDisplay(replayFrames[replayIndex]);
+      }, intervalMs);
+    }
+  });
+});
+
+// Play/Pause button
+document.getElementById('replay-play-btn').addEventListener('click', toggleReplay);
+
+// Load incidents on training tab activation
+document.querySelector('[data-tab="training"]').addEventListener('click', function() {
+  // Load incidents only if not already loaded
+  const select = document.getElementById('replay-incident');
+  if (!select.options.length || select.options[0].value === '') {
+    loadIncidentList();
+  }
+});
+
+
 
 // Helpers
 function id(s) { return document.getElementById(s); }
