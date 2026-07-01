@@ -775,3 +775,12 @@ INCIDENT_SEVERITY_LEVELS: Dict[str, float] = {
 # ==== Synthetic-to-Real Calibration  ====
 CALIBRATION_DRIFT_THRESHOLD: float = 0.15   
 CALIBRATION_FACTORS_PATH: str = "calibration_factors.json"
+
+
+# ==== Operator Training Mode  ====
+# When True, all write-side audit logs (predictions, alerts, incidents,
+# usage, IDS, scenarios) redirect to *_training.csv sibling files instead
+# of production logs. Mutated at runtime via src.training.set_training_mode()
+# — never import this name directly (`from src.config import TRAINING_MODE`)
+# or you'll freeze a stale copy; always go through src.training.
+TRAINING_MODE: bool = False
