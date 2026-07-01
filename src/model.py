@@ -785,6 +785,10 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
     import os
     from datetime import datetime
 
+    from src.training import training_log_path
+
+    log_path = training_log_path(log_path)
+
     row = {
         'timestamp'       : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'city'            : prediction.get('city'),
@@ -3258,7 +3262,8 @@ _SEVERITY_ORDER = {"Minor": 1, "Moderate": 2, "Major": 3, "Critical": 4}
 
 def _log_incident(record: dict) -> None:
     """Append one incident row to incidents_log.csv (append-only)."""
-    path = _incident_Path(INCIDENTS_LOG_PATH)
+    from src.training import training_log_path
+    path = _incident_Path(training_log_path(INCIDENTS_LOG_PATH))
     is_new = not path.exists()
     with open(path, "a", newline="", encoding="utf-8") as f:
         writer = _incident_csv.DictWriter(f, fieldnames=_INCIDENTS_FIELDS)
