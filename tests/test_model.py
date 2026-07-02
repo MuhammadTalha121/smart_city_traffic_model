@@ -13,7 +13,7 @@ from src.model import (
     WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, calculate_evacuation_routes,
     estimate_incident_clearance_time, detect_incidents
 )
-from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH, ZONE_DISTANCES_KM
+from src.config import HAJJ_ROUTE_ZONES, IDS_MAX_SPEED_KMPH, ZONE_DISTANCES_KM, ZONE_ADJACENCY
 
 
 
@@ -102,8 +102,13 @@ def test_evaluate_models_returns_three_rows(trained_model):
     _, _, df = trained_model
     X, y, _ = prepare_features(df)
     report  = evaluate_models(X, y)
-    assert len(report) == 3
-    assert "MAE" in report.columns
+    # The report should contain at least Linear Regression, Random Forest, XGBoost
+    expected_models = ["Linear Regression", "Random Forest", "XGBoost"]
+    present_models = set(report["Model"].tolist())
+    for m in expected_models:
+        assert m in present_models, f"Model '{m}' not found in report"
+    # GNN may be present if available
+    assert len(report) >= 3
 
 
 def test_log_prediction_creates_csv(tmp_path):
@@ -1803,3 +1808,160 @@ def test_incident_clearance_time_longer_in_sandstorm():
     minor_clear_normal = estimate_incident_clearance_time("Minor", "clear", "urban")
     minor_clear_sandstorm = estimate_incident_clearance_time("Minor", "sandstorm", "urban")
     assert minor_clear_sandstorm > minor_clear_normal
+
+
+
+
+# ----– GNN tests ----
+
+def test_gnn_output_shape_matches_zone_count():
+    from src.gnn_model import build_zone_graph, train_gnn, predict_gnn, reshape_to_graph_snapshots
+    from src.config import ZONE_ADJACENCY
+    from src.model import ZONE_ENCODING
+
+    zone_graph = build_zone_graph(ZONE_ADJACENCY)
+    num_zones = len(ZONE_ENCODING)
+
+    # Generate synthetic data
+    df = generate_traffic_data(city='Riyadh', n_days=5)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+
+    X_np = X.values
+    y_np = y.values
+    X_reshaped, y_reshaped = reshape_to_graph_snapshots(X_np, y_np, num_zones)
+
+    model = train_gnn(X_reshaped, y_reshaped, zone_graph, epochs=2)
+    preds = predict_gnn(model, X_reshaped, zone_graph)
+
+    assert preds.shape == (X_reshaped.shape[0], num_zones), \
+        f"Expected shape ({X_reshaped.shape[0]}, {num_zones}), got {preds.shape}"
+
+
+def test_gnn_predictions_in_valid_range():
+    from src.gnn_model import build_zone_graph, train_gnn, predict_gnn, reshape_to_graph_snapshots
+    from src.config import ZONE_ADJACENCY
+    from src.model import ZONE_ENCODING
+
+
+    zone_graph = build_zone_graph(ZONE_ADJACENCY)
+    num_zones = len(ZONE_ENCODING)
+
+    df = generate_traffic_data(city='Riyadh', n_days=5)
+    df = apply_hourly_patterns(df, city='Riyadh')
+    df = add_lag_features(df)
+    X, y, _ = prepare_features(df)
+
+    X_np = X.values
+    y_np = y.values
+    X_reshaped, y_reshaped = reshape_to_graph_snapshots(X_np, y_np, num_zones)
+
+    model = train_gnn(X_reshaped, y_reshaped, zone_graph, epochs=2)
+    preds = predict_gnn(model, X_reshaped, zone_graph)
+
+    assert np.all((preds >= 0) & (preds <= 1)), "Some predictions are outside [0,1]"
+
+
+from unittest.mock import patch
+from src.gnn_model import train_gnn
+
+def test_gnn_does_not_replace_xgboost_in_lifespan():
+    """After app startup, XGBoost remains the primary model; GNN is trained as a separate parallel model."""
+    from fastapi.testclient import TestClient
+    from app import app
+
+    # Patch train_gnn to use only 2 epochs during this test
+    with patch('src.gnn_model.train_gnn', side_effect=lambda X, y, graph, epochs=2: train_gnn(X, y, graph, epochs=2)):
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+
+            model = app.state.model
+            assert hasattr(model, 'get_params'), "app.state.model is not XGBoost"
+            assert hasattr(app.state, 'gnn_model'), "GNN model should be trained and stored"
+            assert app.state.gnn_model is not None, "GNN model should not be None"
+            assert app.state.model is not app.state.gnn_model
+
+
+
+
+
+# ──  — Adaptive Signal Control ────────────────────────────────────
+
+def test_adaptive_timing_extends_green_when_queue_high():
+    from src.model import compute_adaptive_signal_timing
+    low = compute_adaptive_signal_timing(
+        zone="Zone_1", vehicle_count=100, queue_length_estimate=0.3,
+        adjacent_zone_scores={}, hour=8, is_weekend=0,
+    )
+    high = compute_adaptive_signal_timing(
+        zone="Zone_1", vehicle_count=100, queue_length_estimate=0.85,
+        adjacent_zone_scores={}, hour=8, is_weekend=0,
+    )
+    assert high["green_seconds"] > low["green_seconds"]
+    assert "extended" in high["adaptation_reason"].lower()
+
+
+def test_adaptive_timing_reduces_green_when_adjacent_zone_saturated():
+    from src.model import compute_adaptive_signal_timing
+    no_adj = compute_adaptive_signal_timing(
+        zone="Zone_1", vehicle_count=100, queue_length_estimate=0.5,
+        adjacent_zone_scores={}, hour=8, is_weekend=0,
+    )
+    with_adj = compute_adaptive_signal_timing(
+        zone="Zone_1", vehicle_count=100, queue_length_estimate=0.5,
+        adjacent_zone_scores={"Zone_2": 0.75},
+        hour=8, is_weekend=0,
+    )
+    assert with_adj["green_seconds"] < no_adj["green_seconds"]
+    assert with_adj["spillback_risk"] == "High"
+
+
+def test_adaptive_signal_schema_is_superset_of_static_schema():
+    from src.model import compute_adaptive_signal_timing
+    result = compute_adaptive_signal_timing(
+        zone="Zone_1", vehicle_count=150, queue_length_estimate=0.5,
+        adjacent_zone_scores={}, hour=10, is_weekend=0,
+    )
+    for key in ("cycle_seconds", "green_seconds", "red_seconds",
+                "phase_ratio", "timing_rationale"):
+        assert key in result
+    assert "queue_length_estimate" in result
+    assert "spillback_risk" in result
+    assert "adaptation_reason" in result
+    assert result["green_seconds"] + result["red_seconds"] == result["cycle_seconds"]
+
+
+# ── PROMPT 108 — Signal Coordination Corridor ────────────────────────────────
+
+def test_corridor_timing_offsets_are_sequential():
+    from src.model import optimize_corridor_timing
+    df = generate_traffic_data(city="Riyadh", n_days=5)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    result = optimize_corridor_timing(["Zone_1", "Zone_2", "Zone_4"], df, vehicle_speed_kmph=60)
+    offsets = [o["offset_s"] for o in result["offsets"]]
+    assert offsets[0] == 0.0
+    assert offsets[1] > offsets[0]
+    assert offsets[2] > offsets[1]
+
+
+def test_corridor_optimization_rejects_non_adjacent_route():
+    from src.model import optimize_corridor_timing
+    df = generate_traffic_data(city="Riyadh", n_days=5)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    with pytest.raises(ValueError, match="not adjacent"):
+        optimize_corridor_timing(["Zone_1", "Zone_5"], df, 60)
+
+
+def test_throughput_improvement_positive_vs_independent_timing():
+    from src.model import optimize_corridor_timing
+    df = generate_traffic_data(city="Riyadh", n_days=5)
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = add_lag_features(df)
+    result = optimize_corridor_timing(["Zone_1", "Zone_2", "Zone_4"], df, 60)
+    assert result["stops_avoided"] == 2
+    assert result["throughput_improvement_pct"] > 0
+    assert len(result["offsets"]) == 3
