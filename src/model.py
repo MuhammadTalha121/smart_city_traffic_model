@@ -87,6 +87,8 @@ def generate_data(city: str = 'Riyadh') -> pd.DataFrame:
 
 def train_xgboost(X: pd.DataFrame, y: pd.Series) -> Tuple:
     """Train XGBoost regressor with early stopping."""
+    from sklearn.metrics import r2_score
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
@@ -103,6 +105,11 @@ def train_xgboost(X: pd.DataFrame, y: pd.Series) -> Tuple:
     )
 
     model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+
+    # Compute predictions and store R² as an attribute on the model
+    y_pred = model.predict(X_test)
+    model.r2 = r2_score(y_test, y_pred)
+
     return model, X_test, y_test
 
 
