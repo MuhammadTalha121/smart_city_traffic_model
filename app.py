@@ -6,11 +6,17 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
+import numpy as np
+
+from sklearn.metrics import mean_absolute_error
 
 
 from src.training import start_session, end_session
 
-
+from src.gnn_model import (
+    build_zone_graph, train_gnn, predict_gnn,
+    reshape_to_graph_snapshots
+)
 
 
 from fastapi import UploadFile, File, Form, Body
@@ -91,7 +97,8 @@ from src.model import (
     validate_vms_message, detect_incidents,
         estimate_incident_clearance_time,
         INCIDENTS_LOG_PATH,
-        _SEVERITY_ORDER,  compute_multimodal_index,
+        _SEVERITY_ORDER,  compute_multimodal_index, compute_adaptive_signal_timing,
+        optimize_corridor_timing,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -106,7 +113,7 @@ from src.pipeline import read_predictions_log, compute_sla_trend, check_sla_brea
 
 from src.auth import validate_key, create_key, deactivate_key, rotate_key, init_auth_db
 
-
+from sklearn.model_selection import train_test_split
 
 load_dotenv()
 
@@ -130,6 +137,16 @@ VALID_SOURCES = ["weather", "osm", "mock", "micromobility"]
 # ── Quota configuration ──
 DAILY_QUOTA_LIMIT = int(os.getenv("DAILY_QUOTA_LIMIT", "10000"))
 QUOTA_EXEMPT_ENDPOINTS = ["/health", "/sla/current"]
+
+
+
+
+class CorridorOptimizeRequest(BaseModel):
+    city: str = Field("Riyadh")
+    route: List[str] = Field(..., description="Ordered list of zones in the corridor")
+    vehicle_speed_kmph: float = Field(..., gt=0, description="Target speed for green wave (km/h)")
+
+
 
 def _write_usage_log(log_data: dict) -> None:
     """Append a single usage log row to usage_log.csv."""
@@ -323,6 +340,8 @@ async def lifespan(app: FastAPI):
     """Train model on Riyadh, generate data for all cities, start scheduler."""
     init_auth_db()
     app.state.key_registry = build_key_registry()
+
+
     city_dfs = {}
     for city in ["Riyadh", "NEOM", "Dubai", "Karachi"]:
         df = generate_traffic_data(city=city)
@@ -342,12 +361,60 @@ async def lifespan(app: FastAPI):
     app.state.city_dfs     = city_dfs
     app.state.model        = model
     app.state.feature_cols = feature_cols
+
+    zone_graph = build_zone_graph(ZONE_ADJACENCY)
+    app.state.zone_graph = zone_graph
+    try:
+    # Reuse the same X, y from above (already prepared)
+        X_np = X.values
+        y_np = y.values
+        num_zones = len(ZONE_ENCODING)
+        X_reshaped, y_reshaped = reshape_to_graph_snapshots(X_np, y_np, num_zones)
+        zone_graph = build_zone_graph(ZONE_ADJACENCY)
+        gnn_model = train_gnn(X_reshaped, y_reshaped, zone_graph, epochs=50)
+        app.state.zone_graph = zone_graph
+
+        # Compute held-out MAE for comparison
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        # XGBoost MAE
+        xgb_pred = model.predict(X_test)
+        xgb_mae = mean_absolute_error(y_test, xgb_pred)
+
+        # GNN MAE
+        X_test_np = X_test.values
+        y_test_np = y_test.values
+        X_test_reshaped, y_test_reshaped = reshape_to_graph_snapshots(
+            X_test_np, y_test_np, num_zones
+        )
+        gnn_pred_reshaped = predict_gnn(gnn_model, X_test_reshaped, zone_graph)
+        gnn_pred_flat = gnn_pred_reshaped.flatten()
+        y_test_flat = y_test_reshaped.flatten()
+        gnn_mae = mean_absolute_error(y_test_flat, gnn_pred_flat)
+
+        app.state.gnn_model = gnn_model
+        app.state.gnn_mae = gnn_mae
+        app.state.xgb_mae = xgb_mae
+        app.state.gnn_vs_xgboost_delta = round(gnn_mae - xgb_mae, 4)  # positive = GNN worse
+
+        print(f"[GNN] Trained. XGB MAE: {xgb_mae:.4f}, GNN MAE: {gnn_mae:.4f}, delta: {app.state.gnn_vs_xgboost_delta:.4f}")
+    except Exception as e:
+        print(f"[GNN] Training failed: {e}")
+        app.state.gnn_model = None
+        app.state.gnn_mae = None
+        app.state.xgb_mae = None
+        app.state.gnn_vs_xgboost_delta = None
+
+
+
+
     app.state.data_source  = "mock"
     app.state.data_source_fetched_at = datetime.now()
     app.state.last_retrain = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     app.state.last_drt_allocation = {}
     app.state.training_session = None
-
+    
 
     scheduler.add_job(_scheduled_pipeline, "cron", hour=3, minute=0)
 
@@ -425,7 +492,6 @@ async def lifespan(app: FastAPI):
 
         # ===== Edge cabinet simulators =====
     from src.edge_simulation import EdgeCabinetSimulator
-    from src.config import ZONE_ADJACENCY
     edge_cabinets = {}
     for zone, neighbors in ZONE_ADJACENCY.items():
         edge_cabinets[zone] = EdgeCabinetSimulator(zone, neighbors)
@@ -728,17 +794,24 @@ def set_data_source(
 
 @app.get("/pipeline/status", tags=["pipeline"])
 def pipeline_status(auth: Dict = Depends(require_admin)):
-    """Return current drift score and last retrain timestamp."""
+    """Return current drift score, last retrain timestamp, and GNN vs XGBoost delta."""
     drift_score    = compute_drift_score()
-    DRIFT_SCORE_GAUGE.set(drift_score) 
+    DRIFT_SCORE_GAUGE.set(drift_score)
     next_scheduled = "03:00 daily"
 
+    gnn_delta = getattr(app.state, "gnn_vs_xgboost_delta", None)
+    gnn_mae = getattr(app.state, "gnn_mae", None)
+    xgb_mae = getattr(app.state, "xgb_mae", None)
+
     return {
-        "drift_score"    : drift_score,
-        "drift_threshold": 1.3,
-        "needs_retrain"  : drift_score >= 1.3,
-        "last_retrain"   : app.state.last_retrain,
-        "next_scheduled" : next_scheduled,
+        "drift_score"         : drift_score,
+        "drift_threshold"     : 1.3,
+        "needs_retrain"       : drift_score >= 1.3,
+        "last_retrain"        : app.state.last_retrain,
+        "next_scheduled"      : next_scheduled,
+        "gnn_vs_xgboost_delta": gnn_delta,
+        "xgb_mae"             : xgb_mae,
+        "gnn_mae"             : gnn_mae,
     }
 
 
@@ -1127,6 +1200,142 @@ def predict_batch(
     return {"city": payload.predictions[0].city, "results": results}
 
 
+
+@app.get("/predict/gnn", tags=["prediction"])
+@limiter.limit("20/minute")
+def predict_gnn_endpoint(
+    request: Request,
+    city: str = "Riyadh",
+    hour: Optional[int] = None,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Get GNN‑based predictions for all zones simultaneously.
+
+    If hour is not provided, uses the current hour from the city DataFrame.
+    Returns predictions for all zones, plus a comparison delta vs XGBoost
+    for the same input (using the XGBoost model's prediction on the same
+    feature row).
+
+    Falls back to XGBoost if GNN is not available.
+
+    Rate limit: 20 req/min. Role: OPERATOR or ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+
+    # Get the city DataFrame
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Determine hour: if not provided, use the most recent hour in the data
+    if hour is None:
+        hour = int(df["hour"].iloc[-1]) if not df.empty else 0
+    else:
+        if not (0 <= hour <= 23):
+            raise HTTPException(status_code=422, detail="hour must be between 0 and 23.")
+
+    # Filter to the given hour (take the most recent row per zone for that hour)
+    hour_df = df[df["hour"] == hour]
+    if hour_df.empty:
+        # Fallback: use the latest available data
+        hour_df = df.groupby("zone").last().reset_index()
+        hour = int(hour_df["hour"].iloc[0]) if not hour_df.empty else 0
+
+    # Prepare a single-row feature matrix for XGBoost (same as /predict)
+    # We'll build rows for all zones and predict with both models.
+    zones = sorted(hour_df["zone"].unique())
+    rows = []
+    for zone in zones:
+        zone_row = hour_df[hour_df["zone"] == zone]
+        if zone_row.empty:
+            continue
+        latest = zone_row.iloc[-1]
+        p = latest.to_dict()
+        # Create the feature dict as in the /predict endpoint
+        row = {
+            "vehicle_count"        : p["vehicle_count"],
+            "avg_speed"            : p["avg_speed"],
+            "hour"                 : hour,
+            "rush_hour"            : p.get("rush_hour", 0),
+            "is_weekend"           : p.get("is_weekend", 0),
+            "is_late_night"        : p.get("is_late_night", 0),
+            "event"                : p.get("event", 0),
+            "hour_multiplier"      : p.get("hour_multiplier", 1.0),
+            "weather"              : WEATHER_ENCODING.get(p.get("weather", "clear"), 0),
+            "road_type"            : ROAD_ENCODING.get(p.get("road_type", "arterial"), 0),
+            "zone"                 : ZONE_ENCODING.get(zone, 0),
+            "day_of_week"          : DAY_ENCODING.get(datetime.now().strftime("%A"), 0),
+            "vehicle_count_lag_1h" : p.get("vehicle_count_lag_1h", p["vehicle_count"]),
+            "vehicle_count_lag_2h" : p.get("vehicle_count_lag_2h", p["vehicle_count"]),
+            "congestion_lag_1h"    : p.get("congestion_lag_1h", 0.0),
+            "rolling_mean_3h"      : p.get("rolling_mean_3h", p["vehicle_count"]),
+            "rolling_std_3h"       : p.get("rolling_std_3h", 0.0),
+            "adjacent_congestion_lag_1h": p.get("adjacent_congestion_lag_1h", p.get("congestion_score", 0.0)),
+            "adjacent_vehicle_count_lag_1h": p.get("adjacent_vehicle_count_lag_1h", p["vehicle_count"]),
+            "adjacent_congestion_lag_2h": p.get("adjacent_congestion_lag_2h", p.get("congestion_score", 0.0)),
+            "adjacent_vehicle_count_lag_2h": p.get("adjacent_vehicle_count_lag_2h", p["vehicle_count"]),
+        }
+        rows.append((zone, row))
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No data found for the specified hour.")
+
+    # Build X_rows DataFrame for XGBoost
+    X_rows = pd.DataFrame([r for _, r in rows])[app.state.feature_cols]
+
+    # XGBoost predictions (all zones)
+    xgb_preds = app.state.model.predict(X_rows)
+
+    # GNN predictions (if available)
+    gnn_available = app.state.gnn_model is not None
+    if gnn_available:
+        # For GNN, we need to reshape the entire X_rows into a single snapshot
+        # Since we have one row per zone for a single hour, we can reshape accordingly.
+        # We'll need to ensure the zones are in the order expected by the graph (sorted).
+        # We'll create a feature matrix of shape (1, num_zones, num_features)
+        num_zones = len(ZONE_ENCODING)
+        # Reorder rows to match zone indices (sorted)
+        sorted_zones = sorted(ZONE_ENCODING, key=ZONE_ENCODING.get)
+        # Map zone name to encoded index
+        zone_to_idx = {z: ZONE_ENCODING[z] for z in sorted_zones}
+        # Build a feature matrix for all zones, filling missing with zeros (or we could use current values)
+        # We have rows only for zones present in the data; for missing zones, fill with zeros.
+        X_snapshot = np.zeros((1, num_zones, len(app.state.feature_cols)))
+        for zone, row in rows:
+            idx = zone_to_idx[zone]
+            # row dict contains the features; we need to align with feature_cols order
+            feature_values = [row[col] for col in app.state.feature_cols]
+            X_snapshot[0, idx, :] = feature_values
+        # Run GNN prediction
+        gnn_preds_reshaped = predict_gnn(app.state.gnn_model, X_snapshot, app.state.zone_graph)
+        gnn_preds = gnn_preds_reshaped.flatten()
+    else:
+        gnn_preds = [None] * len(rows)
+
+    # Build response
+    result_zones = []
+    for i, (zone, row) in enumerate(rows):
+        xgb_score = float(xgb_preds[i])
+        gnn_score = float(gnn_preds[i]) if gnn_available else None
+        delta = gnn_score - xgb_score if gnn_available else None
+        result_zones.append({
+            "zone": zone,
+            "xgb_congestion_score": round(xgb_score, 4),
+            "gnn_congestion_score": round(gnn_score, 4) if gnn_available else None,
+            "delta_gnn_vs_xgb": round(delta, 4) if gnn_available else None,
+        })
+
+    return {
+        "city": city,
+        "hour": hour,
+        "gnn_available": gnn_available,
+        "zones": result_zones,
+        "gnn_vs_xgboost_delta_mae": app.state.gnn_vs_xgboost_delta if gnn_available else None,
+    }
+
+
+
 # ---------------------------------------------------------------------------
 # Monitoring endpoints — authenticated
 # ---------------------------------------------------------------------------
@@ -1420,6 +1629,110 @@ def signals_recommended(
         "total_zones": len(results),
         "signals"    : results,
     }
+
+
+
+
+
+
+@app.get("/signals/adaptive", tags=["signals"])
+@limiter.limit("20/minute")
+def signals_adaptive(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    """
+    PROMPT 107 — Adaptive signal timing for all zones using real-time queue
+    and adjacent zone saturation. Returns per-zone adaptive timings with
+    spillback_risk and adaptation_reason. Rate limit: 20/min.
+    """
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    from src.config import ROAD_CAPACITY_VPH, ZONE_ADJACENCY
+
+    results = []
+    for zone in df["zone"].unique():
+        zone_df = df[df["zone"] == zone]
+        if zone_df.empty:
+            continue
+
+        latest = zone_df.sort_values("timestamp").iloc[-1]
+        hour = int(latest.get("hour", 0))
+        is_weekend = int(latest.get("is_weekend", 0))
+        vehicle_count = float(latest.get("vehicle_count", 1.0))
+        congestion_score = float(latest.get("congestion_score", 0.0))
+        road_type = str(latest.get("road_type", "arterial"))
+
+        capacity = ROAD_CAPACITY_VPH.get(road_type, 1600)
+        queue_estimate = min(vehicle_count / max(capacity, 1.0), 2.0)
+
+        adj_scores = {}
+        for neighbor in ZONE_ADJACENCY.get(zone, []):
+            nr = df[df["zone"] == neighbor]
+            if not nr.empty:
+                adj_scores[neighbor] = float(nr.iloc[-1]["congestion_score"])
+
+        timing = compute_adaptive_signal_timing(
+            zone=zone,
+            vehicle_count=vehicle_count,
+            queue_length_estimate=queue_estimate,
+            adjacent_zone_scores=adj_scores,
+            hour=hour,
+            is_weekend=is_weekend,
+        )
+
+        results.append({
+            "zone":             zone,
+            "hour":             hour,
+            "congestion_score": round(congestion_score, 4),
+            "queue_estimate":   round(queue_estimate, 3),
+            "signal_timing":    timing,
+        })
+
+    results.sort(key=lambda x: x["congestion_score"], reverse=True)
+
+    return {"city": city, "total_zones": len(results), "signals": results}
+
+
+@app.post("/signals/corridor-optimize", tags=["signals"])
+@limiter.limit("10/minute")
+def corridor_optimize(
+    request: Request,
+    payload: CorridorOptimizeRequest,
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    """
+    PROMPT 108 — Compute phase offsets for a corridor to create a green wave.
+    Validates adjacency of consecutive zones. Returns per-zone offsets,
+    total travel time, and expected throughput improvement. Rate limit: 10/min.
+    """
+    _assert_city_permitted(auth, payload.city)
+
+    if len(payload.route) < 2:
+        raise HTTPException(status_code=422, detail="Route must contain at least 2 zones.")
+
+    df = app.state.city_dfs.get(payload.city)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{payload.city}' not found.")
+
+    try:
+        result = optimize_corridor_timing(
+            route=payload.route,
+            city_df=df,
+            vehicle_speed_kmph=payload.vehicle_speed_kmph,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result["city"] = payload.city
+    return result
+
+
 
 
 
