@@ -784,3 +784,12 @@ CALIBRATION_FACTORS_PATH: str = "calibration_factors.json"
 # — never import this name directly (`from src.config import TRAINING_MODE`)
 # or you'll freeze a stale copy; always go through src.training.
 TRAINING_MODE: bool = False
+
+
+
+
+# ── Adaptive Signal Control ──────────────
+ADAPTIVE_QUEUE_THRESHOLD: float = 0.60
+ADAPTIVE_MAX_GREEN_EXTENSION_S: int = 15
+ADAPTIVE_SPILLBACK_REDUCTION_FACTOR: float = 0.20
+ADAPTIVE_MIN_GREEN_S: int = 10
