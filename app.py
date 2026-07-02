@@ -3274,6 +3274,41 @@ def federated_aggregate(payload: dict, api_key: str = Depends(role_required(['OP
 
 
 
+@app.post("/federated/distribute", tags=["federated"])
+def federated_distribute(
+    city_list: list = Body(...),
+    auth: Dict = Depends(role_required(['ADMIN'])),
+):
+    """
+    Distribute the last aggregated model to the specified cities.
+
+    Requires that a prior aggregation has been stored in app.state.pending_aggregation.
+    Each city's model goes through the staging gate before promotion.
+    Returns per‑city results.
+    """
+    pending = getattr(app.state, 'pending_aggregation', None)
+    if pending is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No pending aggregation found. Run /federated/aggregate first."
+        )
+
+    aggregated_params = pending.get('aggregated_params')
+    if not aggregated_params:
+        raise HTTPException(
+            status_code=400,
+            detail="Pending aggregation does not contain aggregated_params."
+        )
+
+    from src.federated import distribute_aggregated_model
+    result = distribute_aggregated_model(aggregated_params, city_list)
+
+    return {
+        "status": "distribution_complete",
+        "cities": result,
+    }
+
+
 
 
 import csv as _csv
