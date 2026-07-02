@@ -18,6 +18,15 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
                         INCIDENT_PERSISTENCE_MINUTES)
 from datetime import datetime
 
+# ---- GNN integration  ----
+try:
+    from src.gnn_model import train_gnn, predict_gnn, reshape_to_graph_snapshots, build_zone_graph
+    from src.config import ZONE_ADJACENCY
+    GNN_AVAILABLE = True
+    _ZONE_GRAPH = build_zone_graph(ZONE_ADJACENCY)
+except ImportError:
+    GNN_AVAILABLE = False
+    _ZONE_GRAPH = None
 
 
 effective_capacity = ZONE_ROAD_CAPACITY_VPH * EVACUATION_CAPACITY_MARGIN
@@ -98,7 +107,7 @@ def train_xgboost(X: pd.DataFrame, y: pd.Series) -> Tuple:
 
 
 def evaluate_models(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
-    """Train and compare Linear Regression, Random Forest, and XGBoost."""
+    """Train and compare Linear Regression, Random Forest, XGBoost, and optionally GNN."""
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
@@ -122,6 +131,44 @@ def evaluate_models(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
             'RMSE' : round(np.sqrt(mean_squared_error(y_test, y_pred)), 4),
             'R²'   : round(r2_score(y_test, y_pred), 4)
         })
+
+    # ---- GNN (if available) ----
+    if GNN_AVAILABLE:
+        try:
+            # Convert to numpy for reshaping
+            X_train_np = X_train.values if hasattr(X_train, 'values') else np.array(X_train)
+            y_train_np = y_train.values if hasattr(y_train, 'values') else np.array(y_train)
+            X_test_np  = X_test.values if hasattr(X_test, 'values') else np.array(X_test)
+            y_test_np  = y_test.values if hasattr(y_test, 'values') else np.array(y_test)
+
+            num_zones = len(ZONE_ENCODING)
+            X_train_reshaped, y_train_reshaped = reshape_to_graph_snapshots(
+                X_train_np, y_train_np, num_zones
+            )
+            X_test_reshaped, y_test_reshaped = reshape_to_graph_snapshots(
+                X_test_np, y_test_np, num_zones
+            )
+
+            gnn_model = train_gnn(X_train_reshaped, y_train_reshaped, _ZONE_GRAPH, epochs=50)
+            preds_reshaped = predict_gnn(gnn_model, X_test_reshaped, _ZONE_GRAPH)
+            y_pred_gnn = preds_reshaped.flatten()
+            y_test_flat = y_test_reshaped.flatten()
+
+            results.append({
+                'Model': 'GNN (GCN)',
+                'MAE'  : round(mean_absolute_error(y_test_flat, y_pred_gnn), 4),
+                'RMSE' : round(np.sqrt(mean_squared_error(y_test_flat, y_pred_gnn)), 4),
+                'R²'   : round(r2_score(y_test_flat, y_pred_gnn), 4)
+            })
+        except Exception as e:
+            print(f"GNN training failed: {e}")
+            results.append({
+                'Model': 'GNN (GCN)',
+                'MAE'  : None,
+                'RMSE' : None,
+                'R²'   : None
+            })
+    # -----------------------------------
 
     return pd.DataFrame(results).sort_values('R²', ascending=False).reset_index(drop=True)
 
@@ -683,6 +730,189 @@ def compute_signal_timing(
         'phase_ratio'     : round(phase_ratio, 2),
         'timing_rationale': rationale,
     }
+
+
+
+def compute_adaptive_signal_timing(
+    zone: str,
+    vehicle_count: float,
+    queue_length_estimate: float,
+    adjacent_zone_scores: Dict[str, float],
+    hour: int,
+    is_weekend: int,
+) -> Dict:
+    """
+    PROMPT 107 — Adjusts cycle time dynamically based on:
+    - Local queue length (proxy: vehicle_count / road_capacity)
+    - Adjacent zone saturation (spill-back risk)
+    - Time-of-day base (from compute_signal_timing())
+
+    Returns same schema as compute_signal_timing() plus:
+      queue_length_estimate, spillback_risk, adaptation_reason.
+    """
+    from src.config import (
+        ADAPTIVE_QUEUE_THRESHOLD,
+        ADAPTIVE_MAX_GREEN_EXTENSION_S,
+        ADAPTIVE_SPILLBACK_REDUCTION_FACTOR,
+        ADAPTIVE_MIN_GREEN_S,
+        CONGESTION_THRESHOLDS,
+    )
+
+    base = compute_signal_timing(
+        congestion_score=min(queue_length_estimate, 1.0),
+        vehicle_count=vehicle_count,
+        hour=hour,
+        is_weekend=is_weekend,
+    )
+
+    cycle = base["cycle_seconds"]
+    green = base["green_seconds"]
+
+    # --- Queue extension ---
+    extra_green = 0
+    if queue_length_estimate > ADAPTIVE_QUEUE_THRESHOLD:
+        extra_green = int(
+            (queue_length_estimate - ADAPTIVE_QUEUE_THRESHOLD)
+            * ADAPTIVE_MAX_GREEN_EXTENSION_S * 2
+        )
+        extra_green = min(extra_green, ADAPTIVE_MAX_GREEN_EXTENSION_S)
+
+    # --- Spill-back reduction ---
+    max_adj = max(adjacent_zone_scores.values()) if adjacent_zone_scores else 0.0
+    if max_adj >= CONGESTION_THRESHOLDS["High"]:
+        reduction = int(green * ADAPTIVE_SPILLBACK_REDUCTION_FACTOR)
+        green = max(ADAPTIVE_MIN_GREEN_S, green - reduction)
+        spillback_risk = "High"
+        reason = (
+            f"Neighbour congestion high ({max_adj:.2f}) — "
+            f"green reduced to {green}s to prevent spill-back"
+        )
+    elif max_adj >= CONGESTION_THRESHOLDS["Moderate"]:
+        spillback_risk = "Medium"
+        reason = f"Neighbour congestion moderate ({max_adj:.2f}) — no adjustment"
+    else:
+        spillback_risk = "Low"
+        reason = base["timing_rationale"]
+
+    # --- Apply extension (after reduction, respecting min red) ---
+    green = min(green + extra_green, cycle - ADAPTIVE_MIN_GREEN_S)
+    red = cycle - green
+
+    if extra_green > 0:
+        reason = (
+            f"Queue ratio {queue_length_estimate:.2f} > {ADAPTIVE_QUEUE_THRESHOLD} "
+            f"— green extended by {extra_green}s"
+        )
+
+    return {
+        "cycle_seconds":          cycle,
+        "green_seconds":          green,
+        "red_seconds":            red,
+        "phase_ratio":            round(green / cycle, 2),
+        "timing_rationale":       reason,
+        "queue_length_estimate":  round(queue_length_estimate, 3),
+        "spillback_risk":         spillback_risk,
+        "adaptation_reason":      reason,
+    }
+
+
+def optimize_corridor_timing(
+    route: List[str],
+    city_df: pd.DataFrame,
+    vehicle_speed_kmph: float,
+) -> Dict:
+    """
+    PROMPT 108 — Compute phase offsets for a corridor to minimise stops.
+
+    Parameters
+    ----------
+    route               : Ordered list of zones (each consecutive pair must be adjacent).
+    city_df             : Full city DataFrame for current timings.
+    vehicle_speed_kmph  : Target travel speed for the green wave (km/h).
+
+    Returns
+    -------
+    dict with route, offsets (list of per-zone dicts), total_travel_time_s,
+    stops_avoided, throughput_improvement_pct.
+    """
+    from src.config import ZONE_DISTANCES_KM, ZONE_ADJACENCY, ROAD_CAPACITY_VPH
+
+    if len(route) < 2:
+        raise ValueError("Route must contain at least 2 zones.")
+
+    for i in range(len(route) - 1):
+        src, dst = route[i], route[i + 1]
+        if dst not in ZONE_ADJACENCY.get(src, []):
+            raise ValueError(f"Zones {src} and {dst} are not adjacent.")
+
+    offsets = []
+    cumulative_travel_s = 0.0
+
+    for i, zone in enumerate(route):
+        zone_rows = city_df[city_df["zone"] == zone]
+
+        if zone_rows.empty:
+            timing = compute_signal_timing(
+                congestion_score=0.3, vehicle_count=100, hour=8, is_weekend=0
+            )
+        else:
+            latest = zone_rows.iloc[-1]
+            road_type = str(latest.get("road_type", "arterial"))
+            capacity = ROAD_CAPACITY_VPH.get(road_type, 1600)
+            vc = float(latest.get("vehicle_count", 1.0))
+            queue_est = min(vc / max(capacity, 1.0), 2.0)
+
+            adj_scores = {}
+            for n in ZONE_ADJACENCY.get(zone, []):
+                nr = city_df[city_df["zone"] == n]
+                if not nr.empty:
+                    adj_scores[n] = float(nr.iloc[-1]["congestion_score"])
+
+            timing = compute_adaptive_signal_timing(
+                zone=zone,
+                vehicle_count=vc,
+                queue_length_estimate=queue_est,
+                adjacent_zone_scores=adj_scores,
+                hour=int(latest.get("hour", 8)),
+                is_weekend=int(latest.get("is_weekend", 0)),
+            )
+
+        if i > 0:
+            prev_zone = route[i - 1]
+            key = tuple(sorted([prev_zone, zone]))
+            dist_km = ZONE_DISTANCES_KM.get(key, 5.0)
+            travel_s = (dist_km / vehicle_speed_kmph) * 3600
+            cumulative_travel_s += travel_s
+
+        cycle = timing["cycle_seconds"]
+        offset_s = cumulative_travel_s
+        green_start = offset_s % cycle
+        green_end = (green_start + timing["green_seconds"]) % cycle
+
+        offsets.append({
+            "zone":         zone,
+            "offset_s":     round(offset_s, 1),
+            "green_start_s": round(green_start, 1),
+            "green_end_s":  round(green_end, 1),
+            "cycle_s":      cycle,
+            "green_s":      timing["green_seconds"],
+        })
+
+    stops_avoided = len(route) - 1
+    estimated_stop_delay = stops_avoided * 30
+    improvement_pct = round(
+        (estimated_stop_delay / (cumulative_travel_s + estimated_stop_delay)) * 100, 1
+    ) if (cumulative_travel_s + estimated_stop_delay) > 0 else 0.0
+
+    return {
+        "route":                    route,
+        "offsets":                  offsets,
+        "total_travel_time_s":      round(cumulative_travel_s, 1),
+        "stops_avoided":            stops_avoided,
+        "throughput_improvement_pct": improvement_pct,
+    }
+
+
 
 
 def get_intervention(zone: str, hour: int, congestion_level_str: str) -> Dict:
