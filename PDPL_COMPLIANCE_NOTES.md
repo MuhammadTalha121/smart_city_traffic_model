@@ -1,0 +1,3 @@
+## Federated Differential Privacy 
+
+To mitigate weight‑inversion attacks, the system applies Laplace noise to shared parameters when `FEDERATED_DP_ENABLED` is set to `True`. The noise scale is `1 / FEDERATED_DP_EPSILON`, with a default epsilon of 1.0 (moderate privacy, some accuracy loss). This is an additional safeguard, not a formal DP proof. The implementation is symmetric and preserves the sign of parameters. Cities can verify if DP was applied via the `dp_applied` flag.
