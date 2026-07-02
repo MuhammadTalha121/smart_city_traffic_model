@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 import time
 from fastapi.responses import Response
-
+import numpy as np
 
 
 if not os.environ.get("API_KEY"):
@@ -1844,3 +1844,101 @@ def test_sla_report_endpoint_includes_trend_and_breach_fields(client):
     assert "trend" in data
     assert "breach_alerts" in data
     assert "trend" in data["trend"]
+
+
+
+def test_gnn_predict_endpoint_returns_all_zones(client):
+    """GET /predict/gnn must return predictions for all 5 zones."""
+    response = client.get(
+        "/predict/gnn?city=Riyadh&hour=8",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "zones" in data
+    zones = data["zones"]
+    assert len(zones) == 5  # 5 zones
+    for z in zones:
+        assert "zone" in z
+        assert "xgb_congestion_score" in z
+        # gnn_score may be None if GNN not available, but we can check
+    assert "gnn_available" in data
+
+
+def test_gnn_xgboost_delta_in_pipeline_status(client):
+    """/pipeline/status must include gnn_vs_xgboost_delta."""
+    response = client.get(
+        "/pipeline/status",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "gnn_vs_xgboost_delta" in data
+    # The value may be None if GNN training failed, but the key must exist
+
+
+def test_gnn_endpoint_falls_back_gracefully_if_model_not_trained(client, monkeypatch):
+    """If GNN model is not available, the endpoint should still return XGBoost predictions
+       with gnn_available=False."""
+    # Simulate missing GNN model by temporarily setting it to None
+    from app import app
+    original_gnn = app.state.gnn_model
+    app.state.gnn_model = None
+    try:
+        response = client.get(
+            "/predict/gnn?city=Riyadh&hour=8",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["gnn_available"] is False
+        for z in data["zones"]:
+            assert z["gnn_congestion_score"] is None
+            assert z["delta_gnn_vs_xgb"] is None
+    finally:
+        app.state.gnn_model = original_gnn
+
+
+
+
+def test_signals_adaptive_returns_valid_structure(client):
+    response = client.get(
+        "/signals/adaptive?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "signals" in data
+    assert "total_zones" in data
+    for signal in data["signals"]:
+        assert "zone" in signal
+        assert "signal_timing" in signal
+        t = signal["signal_timing"]
+        assert "queue_length_estimate" in t
+        assert "spillback_risk" in t
+        assert "adaptation_reason" in t
+        assert t["spillback_risk"] in ("Low", "Medium", "High")
+
+
+def test_corridor_optimize_requires_adjacent_route(client):
+    response = client.post(
+        "/signals/corridor-optimize",
+        json={"city": "Riyadh", "route": ["Zone_1", "Zone_5"], "vehicle_speed_kmph": 60},
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 400
+    assert "not adjacent" in response.text
+
+
+def test_corridor_optimize_returns_offsets(client):
+    response = client.post(
+        "/signals/corridor-optimize",
+        json={"city": "Riyadh", "route": ["Zone_1", "Zone_2", "Zone_4"], "vehicle_speed_kmph": 60},
+        headers={"X-API-Key": TEST_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "offsets" in data
+    assert len(data["offsets"]) == 3
+    assert data["stops_avoided"] == 2
+    assert data["throughput_improvement_pct"] > 0
