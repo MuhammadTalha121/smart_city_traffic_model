@@ -798,3 +798,20 @@ ADAPTIVE_MIN_GREEN_S: int = 10
 
 FEDERATED_DP_EPSILON: float = 1.0
 FEDERATED_DP_ENABLED: bool = False
+
+import os
+
+
+# ── Real Sensor Adapter ──────────────
+REAL_SENSOR_ENDPOINTS: Dict[str, str] = {
+    "Riyadh": os.getenv("RIYADH_SENSOR_ENDPOINT", ""),
+    "NEOM":   os.getenv("NEOM_SENSOR_ENDPOINT", ""),
+}
+
+
+MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
+    'weather': 1800,
+    'osm'    : 3600,
+    'mock'   : None,
+    'real'   : 60,   # real sensor data must be refreshed every minute
+}
