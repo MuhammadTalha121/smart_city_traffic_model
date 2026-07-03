@@ -131,7 +131,7 @@ limiter        = Limiter(key_func=get_remote_address)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 scheduler      = BackgroundScheduler()
 
-VALID_SOURCES = ["weather", "osm", "mock", "micromobility"]
+VALID_SOURCES = ["weather", "osm", "mock", "micromobility", 'pedestrian','real']
 
 
 # ── Quota configuration ──
@@ -3778,6 +3778,40 @@ def admin_list_keys(
     return {"keys": list_registry_keys()}
 
 
+
+
+
+from src.sensor_registry import validate_sensor_payload, register_sensor, list_registered_sensors
+
+class SensorRegistrationRequest(BaseModel):
+    sensor_id: str = Field(..., description="Unique sensor identifier")
+    zone: str = Field(..., description="Zone where sensor is installed")
+    vendor: str = Field(..., description="Sensor manufacturer/vendor")
+    schema_version: str = Field("1.0", description="Schema version this sensor uses")
+
+
+@app.post("/sensors/register", tags=["sensors"])
+def sensor_register(
+    payload: SensorRegistrationRequest,
+    auth: Dict = Depends(require_admin),
+):
+    """Register a new sensor in the registry. Admin only."""
+    result = register_sensor(
+        sensor_id=payload.sensor_id,
+        zone=payload.zone,
+        vendor=payload.vendor,
+        schema_version=payload.schema_version,
+    )
+    return {"status": "registered", **result}
+
+
+@app.get("/sensors/registry", tags=["sensors"])
+def sensor_registry(
+    auth: Dict = Depends(require_admin),
+):
+    """List all registered sensors. Admin only."""
+    sensors = list_registered_sensors()
+    return {"total": len(sensors), "sensors": sensors}
 
 
 
