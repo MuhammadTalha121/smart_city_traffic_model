@@ -481,8 +481,86 @@ def get_adapter(source: str) -> BaseAdapter:
         'mock'          : MockIoTAdapter,
         'micromobility' : MockMicroMobilityAdapter,
         'pedestrian'    : MockPedestrianFlowAdapter,
+        'real'          : RealSensorAdapter,
     }
     cls = adapters.get(source)
     if cls is None:
         raise ValueError(f"Unknown source '{source}'. Choose from: {list(adapters.keys())}")
     return cls()
+
+
+
+
+
+
+import requests
+import pandas as pd
+from datetime import datetime
+from src.sensor_registry import validate_sensor_payload
+from src.config import REAL_SENSOR_ENDPOINTS
+
+
+class RealSensorAdapter(BaseAdapter):
+    """
+    Ingests live sensor data from HTTP endpoints that conform to SENSOR_SCHEMA_V1.
+    Falls back to MockIoTAdapter if the real endpoint is unreachable.
+    Validates each payload via validate_sensor_payload() before returning.
+    """
+
+    def fetch(self, city: str = 'Riyadh') -> pd.DataFrame:
+        endpoint = REAL_SENSOR_ENDPOINTS.get(city)
+        if not endpoint:
+            print(f"[RealSensorAdapter] No endpoint configured for {city}. Falling back to mock.")
+            return MockIoTAdapter().fetch(city)
+
+        try:
+            response = requests.get(endpoint, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            # Expect either a list of readings or an object with a "readings" key
+            if isinstance(data, dict):
+                readings = data.get("readings", [])
+            elif isinstance(data, list):
+                readings = data
+            else:
+                raise ValueError("Unexpected response format – expected list or object with 'readings'")
+
+            validated_rows = []
+            for reading in readings:
+                result = validate_sensor_payload(reading)
+                if result["valid"]:
+                    # Map to system's expected column names
+                    row = {
+                        "city": city,
+                        "timestamp": reading["timestamp"],
+                        "zone": reading["zone_id"],
+                        "vehicle_count": reading["vehicle_count"],
+                        "avg_speed": reading["avg_speed"],
+                        "weather": reading.get("weather", "clear"),
+                        "road_type": reading.get("road_type", "arterial"),
+                        "hour": datetime.fromisoformat(reading["timestamp"].replace("Z", "+00:00")).hour,
+                        "is_weekend": 0,  # will be set later if needed
+                        "rush_hour": 0,
+                        "is_late_night": 0,
+                        "event": 0,
+                        "hour_multiplier": 1.0,
+                        "fetched_at": datetime.now(),
+                        "source": "real",
+                    }
+                    validated_rows.append(row)
+                else:
+                    print(f"[RealSensorAdapter] Invalid sensor reading: {result['errors']} – skipping")
+
+            if not validated_rows:
+                print(f"[RealSensorAdapter] No valid readings for {city}. Falling back to mock.")
+                return MockIoTAdapter().fetch(city)
+
+            # Build DataFrame; missing columns will be filled later by apply_hourly_patterns
+            df = pd.DataFrame(validated_rows)
+            # Add a timestamp column for sorting
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            return df
+
+        except Exception as e:
+            print(f"[RealSensorAdapter] Error fetching from {endpoint}: {e}. Falling back to mock.")
+            return MockIoTAdapter().fetch(city)
