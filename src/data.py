@@ -6,7 +6,7 @@ from src.config import (
     CITY_PROFILES, HOURLY_MULTIPLIERS, WEATHER_SPEED_IMPACT,
     FRIDAY_PRAYER_HOURS, SAUDI_CITIES,
     HAJJ_INBOUND, HAJJ_PEAK, HAJJ_OUTBOUND, HAJJ_ROUTE_ZONES,
-    RECURRING_EVENTS, 
+    RECURRING_EVENTS, RAMADAN_IFTAR_HOUR, RAMADAN_PROGRESSION_FACTOR,
 )
 from typing import List, Dict, Optional, Tuple
 
@@ -245,11 +245,18 @@ def apply_hajj_crowd_gradient(df: pd.DataFrame, phase: str) -> pd.DataFrame:
 
 
 
+def get_ramadan_week(check_date, ramadan_start_date) -> int:
+    days_since_start = (check_date - ramadan_start_date).days
+    week = (days_since_start // 7) + 1
+    return min(max(week, 1), 4)
+
+
 
 def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
                            ramadan: bool = False,
                            hajj: bool = False,
-                           school_holiday: bool = False) -> pd.DataFrame:
+                           school_holiday: bool = False,
+                           ramadan_start_date: pd.Timestamp = None) -> pd.DataFrame:
     """
     Apply city-specific hourly traffic multipliers and Saudi behavioral patterns.
 
@@ -280,6 +287,19 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
     multipliers           = HOURLY_MULTIPLIERS[schedule_key]
     df['hour_multiplier'] = df['hour'].map(multipliers)
     df['vehicle_count']   = (df['vehicle_count'] * df['hour_multiplier']).clip(0, 500)
+
+    if ramadan and not hajj:
+        start = ramadan_start_date if ramadan_start_date is not None else df['timestamp'].min()
+        iftar_mask = df['hour'] == RAMADAN_IFTAR_HOUR
+        if iftar_mask.any():
+            weeks = df.loc[iftar_mask, 'timestamp'].apply(
+                lambda ts: get_ramadan_week(ts, start)
+            )
+            progression = 1 + (weeks - 1) * RAMADAN_PROGRESSION_FACTOR
+            df.loc[iftar_mask, 'vehicle_count'] = (
+                df.loc[iftar_mask, 'vehicle_count'] * progression
+            ).clip(0, 500)
+
 
     # --- Hajj phase overlays ---
     if hajj:
