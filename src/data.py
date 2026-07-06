@@ -192,6 +192,60 @@ def _resolve_hajj_multiplier(hour: int, phase_dict: dict) -> float:
     return phase_dict[lower]
 
 
+
+
+def apply_hajj_crowd_gradient(df: pd.DataFrame, phase: str) -> pd.DataFrame:
+    """
+    PROMPT 115 — Applies zone-specific Hajj crowd density gradient with
+    temporal wave delay on top of the base hourly pattern already applied
+    by apply_hourly_patterns().
+
+    Replaces the uniform 1.8x HAJJ_ROUTE_ZONES multiplier with a gradient
+    that is stronger near pilgrimage routes and weaker in outer zones.
+    The wave delay shifts which hour's multiplier is applied per zone,
+    modelling the crowd surge propagating outward over time.
+    """
+    from src.config import (
+        HAJJ_CROWD_DENSITY_GRADIENT, HAJJ_CROWD_WAVE_DELAY_HOURS,
+        HAJJ_INBOUND, HAJJ_PEAK, HAJJ_OUTBOUND,
+    )
+
+    PHASE_MAPS = {
+        'inbound' : HAJJ_INBOUND,
+        'peak'    : HAJJ_PEAK,
+        'outbound': HAJJ_OUTBOUND,
+    }
+    phase_map = PHASE_MAPS.get(phase, HAJJ_PEAK)
+    gradient  = HAJJ_CROWD_DENSITY_GRADIENT.get(phase, HAJJ_CROWD_DENSITY_GRADIENT['peak'])
+
+    df = df.copy()
+
+    for zone, delay in HAJJ_CROWD_WAVE_DELAY_HOURS.items():
+        mask = df['zone'] == zone
+
+        # Effective hour: use what Zone_1 was experiencing `delay` hours ago
+        effective_hours = (df.loc[mask, 'hour'] - delay) % 24
+
+        # Look up base multiplier at the effective hour (nearest anchor)
+        anchors = sorted(phase_map.keys())
+
+        def _mult(h):
+            lower = max((a for a in anchors if a <= h), default=anchors[0])
+            return phase_map[lower]
+
+        base_mults = effective_hours.map(_mult)
+
+        zone_gradient = gradient.get(zone, 1.0)
+
+        df.loc[mask, 'vehicle_count'] = (
+            df.loc[mask, 'vehicle_count'] * base_mults.values * zone_gradient
+        ).clip(0, 500)
+
+    return df
+
+
+
+
 def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
                            ramadan: bool = False,
                            hajj: bool = False,
@@ -259,11 +313,15 @@ def apply_hourly_patterns(df: pd.DataFrame, city: str = 'Riyadh',
         hajj_multipliers  = df.apply(_hajj_mult, axis=1)
         df['vehicle_count'] = (df['vehicle_count'] * hajj_multipliers).clip(0, 500)
 
-        # Extra 1.8x for pilgrimage route zones
-        route_mask = df['zone'].isin(HAJJ_ROUTE_ZONES)
-        df.loc[route_mask, 'vehicle_count'] = (
-            df.loc[route_mask, 'vehicle_count'] * 1.8
-        ).clip(0, 500)
+        # PROMPT 115: replace uniform 1.8x with zone-specific gradient + wave delay
+        # Phase is derived from hajj_phase column already set on the row
+        for _phase in ('inbound', 'peak', 'outbound'):
+            _phase_mask = df['hajj_phase'] == _phase
+            if not _phase_mask.any():
+                continue
+            df.loc[_phase_mask] = apply_hajj_crowd_gradient(
+                df.loc[_phase_mask].copy(), _phase
+            )
     else:
         df['hajj_phase'] = 'none'
 
