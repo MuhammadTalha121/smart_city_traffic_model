@@ -361,6 +361,9 @@ async def lifespan(app: FastAPI):
     app.state.city_dfs     = city_dfs
     app.state.model        = model
     app.state.feature_cols = feature_cols
+    app.state.digital_twins = {}
+    app.state.last_drt_allocation = {}
+    app.state.training_session = None
 
     zone_graph = build_zone_graph(ZONE_ADJACENCY)
     app.state.zone_graph = zone_graph
@@ -4788,6 +4791,85 @@ def incidents_history(
 
 
 
+from src.digital_twin import DigitalTwinState, create_twin
+
+# ---- Digital Twin Management ----
+MAX_TWINS_PER_CITY = 10
+
+@app.post("/twin/create", tags=["twin"])
+@limiter.limit("10/minute")
+def twin_create(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Create a named twin snapshot from the current city state.
+    Returns twin_id and metadata.
+    Limit: 10 twins per city (oldest evicted).
+    Role: OPERATOR or ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    twin_id, twin = create_twin(city, app.state)
+    return {
+        "twin_id": twin_id,
+        "city": twin.city,
+        "timestamp": twin.timestamp,
+        "zone_count": twin.to_dict()["zone_count"],
+    }
+
+
+@app.get("/twin/list", tags=["twin"])
+@limiter.limit("20/minute")
+def twin_list(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    List all digital twins for a city (metadata only).
+    Role: OPERATOR or ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+
+    twins = getattr(app.state, "digital_twins", {})
+    city_twins = {tid: twin for tid, twin in twins.items() if twin.city == city}
+
+    return {
+        "city": city,
+        "total": len(city_twins),
+        "twins": [
+            {
+                "twin_id": tid,
+                "created_at": twin.timestamp,
+                "zone_count": twin.to_dict()["zone_count"],
+                "row_count": twin.to_dict()["row_count"],
+                "avg_congestion": twin.to_dict()["summary"]["avg_congestion"],
+            }
+            for tid, twin in city_twins.items()
+        ]
+    }
+
+
+@app.delete("/twin/{twin_id}", tags=["twin"])
+def twin_delete(
+    twin_id: str,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Delete a digital twin by its ID.
+    Role: OPERATOR or ADMIN.
+    """
+    twins = getattr(app.state, "digital_twins", {})
+    if twin_id not in twins:
+        raise HTTPException(status_code=404, detail=f"Twin '{twin_id}' not found.")
+
+    del twins[twin_id]
+    return {"status": "deleted", "twin_id": twin_id}
 
 
 
