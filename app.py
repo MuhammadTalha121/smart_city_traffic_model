@@ -4874,6 +4874,73 @@ def twin_delete(
 
 
 
+from src.digital_twin import run_what_if_on_twin, compare_twins
+
+class WhatIfRequest(BaseModel):
+    scenario: dict = Field(..., description="Scenario dict with zone_closures, speed_reductions, demand_shifts, event_override")
+    hours_ahead: int = Field(3, ge=1, le=6, description="Forecast horizon in hours")
+
+
+@app.post("/twin/{twin_id}/what-if", tags=["twin"])
+@limiter.limit("10/minute")
+def twin_what_if(
+    request: Request,
+    twin_id: str,
+    payload: WhatIfRequest,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    twins = getattr(app.state, "digital_twins", {})
+    if twin_id not in twins:
+        raise HTTPException(status_code=404, detail=f"Twin '{twin_id}' not found.")
+    twin = twins[twin_id]
+    _assert_city_permitted(auth, twin.city)
+
+    try:
+        result = run_what_if_on_twin(twin, payload.scenario, payload.hours_ahead, app_state=app.state)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"What-if failed: {str(e)}")
+    
+
+class CompareTwinsRequest(BaseModel):
+    twin_a_id: str = Field(..., description="First twin ID")
+    twin_b_id: str = Field(..., description="Second twin ID")
+
+
+@app.post("/twin/compare", tags=["twin"])
+@limiter.limit("10/minute")
+def twin_compare(
+    request: Request,
+    payload: CompareTwinsRequest,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Compare two digital twins (same city) and return per‑zone congestion deltas.
+    Role: OPERATOR or ADMIN.
+    """
+    twins = getattr(app.state, "digital_twins", {})
+    if payload.twin_a_id not in twins:
+        raise HTTPException(status_code=404, detail=f"Twin '{payload.twin_a_id}' not found.")
+    if payload.twin_b_id not in twins:
+        raise HTTPException(status_code=404, detail=f"Twin '{payload.twin_b_id}' not found.")
+
+    twin_a = twins[payload.twin_a_id]
+    twin_b = twins[payload.twin_b_id]
+
+    # Check city scope
+    if twin_a.city != twin_b.city:
+        raise HTTPException(status_code=400, detail="Twins must be from the same city.")
+
+    _assert_city_permitted(auth, twin_a.city)
+
+    try:
+        result = compare_twins(twin_a, twin_b)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
+
 
 
 
