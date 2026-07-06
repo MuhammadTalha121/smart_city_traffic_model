@@ -64,6 +64,11 @@ HOURLY_MULTIPLIERS: Dict[str, Dict[int, float]] = {
     }
 }
 
+
+RAMADAN_IFTAR_HOUR = 18
+RAMADAN_PROGRESSION_FACTOR = 0.015
+
+
 WEATHER_SPEED_IMPACT: Dict[str, float] = {
     'sandstorm': 0.60,
     'fog'      : 0.70,
@@ -680,11 +685,7 @@ CONFIDENCE_WIDTH_THRESHOLDS: Dict[str, float] = {
 # exceeded. 'mock' is intentionally None — synthetic/deterministic mock
 # data is generated fresh on every call and has no real-world staleness
 # concept, since there is no external feed that can go down.
-MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
-    'weather': 1800,   # 30 min — Open-Meteo current conditions
-    'osm'    : 3600,   # 60 min — road network changes slowly
-    'mock'   : None,   # no staleness concept for synthetic data
-}
+
 
 
 
@@ -827,4 +828,14 @@ MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
     'osm'    : 3600,
     'mock'   : None,
     'real'   : 60,   # real sensor data must be refreshed every minute
+}
+
+
+
+MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
+    'weather'         : 1800,
+    'weather_nowcast' : 900,   # 15 min — forecasts are time-sensitive
+    'osm'             : 3600,
+    'mock'            : None,
+    'real'            : 60,
 }
