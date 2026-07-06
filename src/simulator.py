@@ -87,6 +87,17 @@ def apply_scenario(df: pd.DataFrame, scenario: dict) -> pd.DataFrame:
                 lower=SCENARIO_SPEED_CLIP_MIN, upper=SCENARIO_SPEED_CLIP_MAX
             )
 
+    # --- Recompute congestion_score based on modified vehicle_count and avg_speed ---
+    max_vehicles = result["vehicle_count"].max()
+    max_speed = result["avg_speed"].max()
+    if max_vehicles > 0 and max_speed > 0:
+        result["congestion_score"] = (
+            (result["vehicle_count"] / max_vehicles) *
+            (1 - result["avg_speed"] / max_speed)
+        ).clip(0, 1)
+    else:
+        result["congestion_score"] = 0.0
+
     return result
 
 
