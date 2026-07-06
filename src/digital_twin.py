@@ -84,3 +84,117 @@ def create_twin(city: str, app_state) -> DigitalTwinState:
     twin_id = str(uuid.uuid4())
     app_state.digital_twins[twin_id] = twin
     return twin_id, twin
+
+
+import uuid
+
+def run_what_if_on_twin(twin: DigitalTwinState, scenario: dict, hours_ahead: int = 3, app_state=None) -> dict:
+    """
+    Apply scenario to a twin, run forecasts, and store the modified twin.
+    Returns comparison dict including the modified twin's ID.
+    """
+    from src.model import forecast_congestion
+
+    # Apply scenario to create a new twin
+    modified_twin = twin.apply_intervention(scenario)
+
+    # Store the modified twin if app_state is provided
+    modified_twin_id = None
+    if app_state is not None:
+        if not hasattr(app_state, "digital_twins"):
+            app_state.digital_twins = {}
+        # Generate a new ID
+        new_id = str(uuid.uuid4())
+        app_state.digital_twins[new_id] = modified_twin
+        modified_twin_id = new_id
+
+    # Get zones
+    zones = twin.snapshot_df["zone"].unique().tolist() if "zone" in twin.snapshot_df.columns else []
+
+    baseline_forecasts = {}
+    scenario_forecasts = {}
+    impact_delta = {}
+
+    for zone in zones:
+        baseline_df = twin.snapshot_df[twin.snapshot_df["zone"] == zone]
+        scenario_df = modified_twin.snapshot_df[modified_twin.snapshot_df["zone"] == zone]
+
+        if baseline_df.empty or scenario_df.empty:
+            continue
+
+        hours_list = list(range(1, hours_ahead + 1))
+        b_pred = forecast_congestion(baseline_df, zone, hours_list)
+        s_pred = forecast_congestion(scenario_df, zone, hours_list)
+
+        b_scores = [p["predicted_score"] for p in b_pred]
+        s_scores = [p["predicted_score"] for p in s_pred]
+
+        baseline_forecasts[zone] = b_scores
+        scenario_forecasts[zone] = s_scores
+
+        avg_delta = sum(s_scores) / len(s_scores) - sum(b_scores) / len(b_scores) if b_scores and s_scores else 0.0
+        impact_delta[zone] = round(avg_delta, 4)
+
+    worst_impact_zone = max(impact_delta, key=impact_delta.get) if impact_delta else ""
+    max_delta = impact_delta.get(worst_impact_zone, 0.0)
+
+    if max_delta > 0.15:
+        recommendation = f"Critical impact in {worst_impact_zone}: congestion worsens by {max_delta:.2f}. Deploy diversion."
+    elif max_delta > 0.05:
+        recommendation = f"Moderate impact in {worst_impact_zone}: congestion worsens by {max_delta:.2f}. Monitor closely."
+    elif max_delta < -0.05:
+        recommendation = f"Positive impact in {worst_impact_zone}: congestion improves by {abs(max_delta):.2f}. Scenario beneficial."
+    else:
+        recommendation = "Minimal net impact across all zones. No immediate action required."
+
+    return {
+        "baseline_twin_id": getattr(twin, "twin_id", "unknown"),
+        "modified_twin_id": modified_twin_id,
+        "modified_twin_metadata": modified_twin.to_dict(),
+        "baseline_forecasts": baseline_forecasts,
+        "scenario_forecasts": scenario_forecasts,
+        "impact_delta": impact_delta,
+        "worst_impact_zone": worst_impact_zone,
+        "recommendation": recommendation,
+    }
+
+
+def compare_twins(twin_a: DigitalTwinState, twin_b: DigitalTwinState) -> dict:
+    """Compare two twins by their latest congestion score per zone."""
+    if twin_a.city != twin_b.city:
+        raise ValueError(f"Twins must be from the same city: {twin_a.city} vs {twin_b.city}")
+
+    zones = set(twin_a.snapshot_df["zone"].unique()) & set(twin_b.snapshot_df["zone"].unique())
+
+    if not zones:
+        return {"error": "No common zones found."}
+
+    delta = {}
+    for zone in zones:
+        a_df = twin_a.snapshot_df[twin_a.snapshot_df["zone"] == zone]
+        b_df = twin_b.snapshot_df[twin_b.snapshot_df["zone"] == zone]
+
+        if a_df.empty or b_df.empty:
+            continue
+
+        # Get the latest congestion score for each zone (most recent timestamp)
+        a_latest = a_df.sort_values("timestamp").iloc[-1] if "timestamp" in a_df.columns else a_df.iloc[-1]
+        b_latest = b_df.sort_values("timestamp").iloc[-1] if "timestamp" in b_df.columns else b_df.iloc[-1]
+
+        a_score = float(a_latest.get("congestion_score", 0.0))
+        b_score = float(b_latest.get("congestion_score", 0.0))
+
+        delta[zone] = round(b_score - a_score, 4)
+
+    worst_zone = max(delta, key=delta.get) if delta else ""
+    best_zone = min(delta, key=delta.get) if delta else ""
+
+    return {
+        "twin_a_id": getattr(twin_a, "twin_id", "unknown"),
+        "twin_b_id": getattr(twin_b, "twin_id", "unknown"),
+        "city": twin_a.city,
+        "delta_per_zone": delta,
+        "worst_affected_zone": worst_zone,
+        "best_affected_zone": best_zone,
+        "summary": f"{len(delta)} zones compared. Worst: {worst_zone} ({delta.get(worst_zone, 0):.2f}). Best: {best_zone} ({delta.get(best_zone, 0):.2f})."
+    }
