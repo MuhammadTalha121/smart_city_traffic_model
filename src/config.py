@@ -127,7 +127,20 @@ HAJJ_OUTBOUND: Dict[int, float] = {
 # Zones along pilgrimage routes — receive an additional 1.8x multiplier.
 HAJJ_ROUTE_ZONES: List[str] = ['Zone_1', 'Zone_3']
 
-# --- Intervention and demand-shifting constants (PROMPT 013) ---
+
+# ---Hajj Crowd Density Gradient ---
+HAJJ_CROWD_DENSITY_GRADIENT: Dict[str, Dict[str, float]] = {
+    'inbound' : {'Zone_1': 2.2, 'Zone_3': 2.0, 'Zone_2': 1.6, 'Zone_4': 1.3, 'Zone_5': 1.1},
+    'peak'    : {'Zone_1': 3.0, 'Zone_3': 2.8, 'Zone_2': 2.2, 'Zone_4': 1.8, 'Zone_5': 1.4},
+    'outbound': {'Zone_1': 2.5, 'Zone_3': 2.2, 'Zone_2': 1.8, 'Zone_4': 1.5, 'Zone_5': 1.2},
+}
+HAJJ_CROWD_WAVE_DELAY_HOURS: Dict[str, int] = {
+    'Zone_1': 0, 'Zone_2': 2, 'Zone_3': 1, 'Zone_4': 3, 'Zone_5': 4,
+}
+
+
+
+# --- Intervention and demand-shifting constants---
 
 METRO_STATIONS: Dict[str, str] = {
     'Zone_1': 'King Abdullah Financial District Station',
