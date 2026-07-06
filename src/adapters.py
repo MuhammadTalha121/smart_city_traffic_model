@@ -112,6 +112,77 @@ class WeatherAdapter(BaseAdapter):
             'visibility'  : 10000.0,
             'fetched_at'  : datetime.now(),
         }])
+    
+
+    def fetch_nowcast(self, city: str = 'Riyadh', hours_ahead: int = 3) -> pd.DataFrame:
+        """Return hourly sandstorm-risk forecast for the next `hours_ahead` hours."""
+        coords = CITY_COORDINATES.get(city, CITY_COORDINATES['Riyadh'])
+        params = {
+            'latitude'        : coords['lat'],
+            'longitude'       : coords['lon'],
+            'hourly'          : 'temperature_2m,wind_speed_10m,precipitation,visibility',
+            'timezone'        : 'Asia/Riyadh',
+            'wind_speed_unit' : 'kmh',
+            'forecast_days'   : 1,
+        }
+        try:
+            response = requests.get(self.BASE_URL, params=params, timeout=10)
+            response.raise_for_status()
+            hourly = response.json().get('hourly', {})
+            times  = hourly.get('time', [])
+
+            current_hour_str = datetime.now().strftime('%Y-%m-%dT%H:00')
+            start_idx = times.index(current_hour_str) if current_hour_str in times else 0
+
+            rows = []
+            for i in range(start_idx, min(start_idx + hours_ahead, len(times))):
+                visibility  = float(hourly['visibility'][i])
+                wind_speed  = float(hourly['wind_speed_10m'][i])
+                rows.append({
+                    'city'              : city,
+                    'forecast_time'     : times[i],
+                    'hours_ahead'       : i - start_idx,
+                    'source'            : 'open-meteo-nowcast',
+                    'temperature'       : float(hourly['temperature_2m'][i]),
+                    'wind_speed'        : wind_speed,
+                    'precipitation'     : float(hourly['precipitation'][i]),
+                    'visibility'        : visibility,
+                    'sandstorm_risk_pct': self._sandstorm_risk(visibility, wind_speed),
+                    'fetched_at'        : datetime.now(),
+                })
+
+            return pd.DataFrame(rows) if rows else self._fallback_nowcast(city)
+
+        except requests.RequestException as e:
+            print(f"WeatherAdapter: nowcast API call failed ({e}). Falling back to current conditions.")
+            return self._fallback_nowcast(city)
+
+    def _sandstorm_risk(self, visibility_m: float, wind_speed_kmh: float) -> float:
+        risk = 0
+        if visibility_m < 500:
+            risk += 60
+        if visibility_m < 1000:
+            risk += 20
+        if wind_speed_kmh > 40:
+            risk += 20
+        return min(risk, 100)
+
+    def _fallback_nowcast(self, city: str) -> pd.DataFrame:
+        """Fallback: use current conditions as the 0-hour forecast (safe default)."""
+        current = self.fetch(city).iloc[0]
+        risk = self._sandstorm_risk(current['visibility'], current['wind_speed'])
+        return pd.DataFrame([{
+            'city'              : city,
+            'forecast_time'     : datetime.now().strftime('%Y-%m-%dT%H:00'),
+            'hours_ahead'       : 0,
+            'source'            : 'fallback-current',
+            'temperature'       : current['temperature'],
+            'wind_speed'        : current['wind_speed'],
+            'precipitation'     : current['precipitation'],
+            'visibility'        : current['visibility'],
+            'sandstorm_risk_pct': risk,
+            'fetched_at'        : datetime.now(),
+        }])
 
 
 class OpenStreetMapAdapter(BaseAdapter):
