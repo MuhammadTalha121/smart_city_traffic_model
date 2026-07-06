@@ -1965,3 +1965,35 @@ def test_throughput_improvement_positive_vs_independent_timing():
     assert result["stops_avoided"] == 2
     assert result["throughput_improvement_pct"] > 0
     assert len(result["offsets"]) == 3
+
+
+
+
+
+# PROMPT 115 — Hajj Crowd Density Gradient tests
+
+def test_hajj_crowd_wave_reaches_zone_5_later_than_zone_1():
+    """Zone_5 should receive the peak multiplier at a later effective hour than Zone_1."""
+    from src.config import HAJJ_CROWD_WAVE_DELAY_HOURS
+    assert HAJJ_CROWD_WAVE_DELAY_HOURS['Zone_1'] < HAJJ_CROWD_WAVE_DELAY_HOURS['Zone_5']
+    # Wave delay increases with zone distance from pilgrimage route
+    assert HAJJ_CROWD_WAVE_DELAY_HOURS['Zone_5'] == 4
+
+
+def test_hajj_gradient_produces_higher_congestion_in_route_zones():
+    """Route zones (Zone_1, Zone_3) must have higher mean vehicle_count than Zone_5 during Hajj peak."""
+    df = generate_traffic_data(city='Riyadh', n_days=10)
+    df = apply_hourly_patterns(df, city='Riyadh', hajj=True)
+
+    peak_df = df[df['hajj_phase'] == 'peak']
+    zone1_mean = peak_df[peak_df['zone'] == 'Zone_1']['vehicle_count'].mean()
+    zone5_mean = peak_df[peak_df['zone'] == 'Zone_5']['vehicle_count'].mean()
+    assert zone1_mean > zone5_mean, (
+        f"Zone_1 ({zone1_mean:.1f}) should exceed Zone_5 ({zone5_mean:.1f}) during Hajj peak"
+    )
+
+
+def test_validate_data_still_passes_with_hajj_gradient():
+    from src.data import validate_data
+    report = validate_data(city='Riyadh')
+    assert (report['Status'] == 'FAIL').sum() == 0
