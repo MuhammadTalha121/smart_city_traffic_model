@@ -478,6 +478,58 @@ async def lifespan(app: FastAPI):
 
     scheduler.add_job(_scheduled_alerts, "interval", minutes=15)
     print("[Scheduler] Alert threshold monitoring scheduled every 15 minutes")
+
+    def _scheduled_nowcast_vsl_check():
+        now = datetime.now(timezone.utc)
+        for city in app.state.city_dfs.keys():
+            try:
+                nowcast_df = get_adapter("weather").fetch_nowcast(city)
+            except Exception as e:
+                print(f"[Nowcast] fetch failed for {city}: {e}")
+                continue
+            if nowcast_df.empty:
+                continue
+
+            peak = nowcast_df.loc[nowcast_df['sandstorm_risk_pct'].idxmax()]
+            risk = float(peak['sandstorm_risk_pct'])
+            if risk <= 60:
+                continue
+
+            key = f"nowcast_vsl:{city}"
+            last_sent = app.state._last_alert_sent.get(key)
+            if last_sent and (now - last_sent).total_seconds() <= 900:
+                continue
+            app.state._last_alert_sent[key] = now
+
+            df = app.state.city_dfs.get(city, app.state.df)
+            vsl_zones = []
+            for zone in VSL_HIGHWAY_ZONES:
+                zone_df   = df[df["zone"] == zone]
+                avg_speed = float(zone_df["avg_speed"].iloc[-1]) if not zone_df.empty else 65.0
+                vsl = compute_vsl_limit(
+                    weather="sandstorm",
+                    visibility_m=float(peak['visibility']),
+                    avg_speed_kmph=avg_speed,
+                )
+                vsl_zones.append({"zone": zone, **vsl})
+
+            payload = {
+                "timestamp"          : now.isoformat(),
+                "city"               : city,
+                "alert_type"         : "proactive_vsl",
+                "sandstorm_risk_pct" : risk,
+                "forecast_time"      : peak['forecast_time'],
+                "vsl_zones"          : vsl_zones,
+            }
+            log_alert([payload])
+            deliver_webhook_alert([payload], WEBHOOK_URL)
+            print(f"[Nowcast] {risk}% sandstorm risk for {city} "
+                f"({peak['hours_ahead']}h out) — proactive VSL triggered")
+            
+
+    scheduler.add_job(_scheduled_nowcast_vsl_check, "interval", minutes=15)
+    print("[Scheduler] Sandstorm nowcast VSL check scheduled every 15 minutes") 
+    
     scheduler.add_job(
     lambda: generate_weekly_report(city='Riyadh'),
     'cron', day_of_week='mon', hour=6, minute=0
@@ -1926,6 +1978,23 @@ def forecast(
     df        = city_df[city_df["zone"] == zone]
     forecasts = forecast_congestion(df, zone=zone, hours_ahead=[1, 2, 3])
     return {"city": city, "zone": zone, "forecasts": forecasts}
+
+
+@app.get("/weather/nowcast", tags=["weather"])
+def weather_nowcast(
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+):
+    _assert_city_permitted(auth, city)
+    nowcast_df = get_adapter("weather").fetch_nowcast(city)
+    max_risk = float(nowcast_df['sandstorm_risk_pct'].max()) if not nowcast_df.empty else 0.0
+    return {
+        "city"                  : city,
+        "max_sandstorm_risk_pct": max_risk,
+        "forecast"              : nowcast_df.to_dict(orient="records"),
+    }
+
+
 
 
 @app.get("/emergency/response-time", tags=["safety"])
