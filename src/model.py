@@ -1199,6 +1199,192 @@ def get_delivery_windows(city: str, zone: str, df: pd.DataFrame) -> Dict:
         'rationale'          : rationale,
     }
 
+
+
+def optimise_freight_schedule(
+    city: str,
+    origin_zone: str,
+    destination_zone: str,
+    vehicle_weight_tonnes: float,
+    preferred_date: Optional[str] = None,
+    horizon_hours: int = 48,
+) -> dict:
+    """
+    Recommend optimal departure windows for freight vehicles.
+
+    Returns top 3 windows over the next `horizon_hours` (default 48).
+    Avoids:
+      - Geofenced restriction hours for origin and destination
+      - Friday prayer window (12–13) for Saudi cities
+      - Predicted high congestion (score > 0.4)
+      - Active events with multiplier > 1.2 during that hour
+
+    Parameters
+    ----------
+    city : str
+    origin_zone : str
+    destination_zone : str
+    vehicle_weight_tonnes : float
+    preferred_date : optional ISO date string (YYYY-MM-DD) to start from
+    horizon_hours : int
+
+    Returns
+    -------
+    dict with keys: city, origin_zone, destination_zone, weight_tonnes, recommendations (list of dicts)
+    """
+    from src.config import GEOFENCED_RESTRICTED_ZONES, FRIDAY_PRAYER_HOURS, SAUDI_CITIES, CONGESTION_THRESHOLDS
+    from src.data import get_active_events
+    from src.model import forecast_congestion
+    from datetime import datetime, timedelta, date
+    import pandas as pd
+    from app import app
+
+    # Determine start time
+    if preferred_date:
+        start_date = date.fromisoformat(preferred_date)
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+    else:
+        start_datetime = datetime.now()
+
+    # Load city DataFrame
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        raise ValueError(f"City '{city}' not found in app state.")
+
+    # Get event data for the city on each day in horizon
+    # We'll check events per day
+    all_events = []
+    for h in range(horizon_hours):
+        dt = start_datetime + timedelta(hours=h)
+        # Get events for that day (cached per day)
+        day_events = get_active_events(city, dt.date())
+        all_events.append((dt, day_events))
+
+    # Restriction check function
+    def is_restricted(zone: str, hour: int, weight: float) -> bool:
+        restrictions = GEOFENCED_RESTRICTED_ZONES.get(zone)
+        if not restrictions:
+            return False
+        max_weight = restrictions['max_weight_tonnes']
+        restricted_hours = restrictions.get('restricted_hours', [])
+        if hour in restricted_hours and weight > max_weight:
+            return True
+        return False
+
+    # Check prayer window
+    def is_prayer_window(dt: datetime, city: str) -> bool:
+        if city not in SAUDI_CITIES:
+            return False
+        if dt.weekday() != 4:  # Friday is 4 in Python's weekday (Monday=0, Sunday=6)
+            return False
+        if dt.hour in FRIDAY_PRAYER_HOURS:
+            return True
+        return False
+
+    # Check high congestion
+    def is_high_congestion(df: pd.DataFrame, zone: str, dt: datetime) -> bool:
+        hour = dt.hour
+        # Use forecast_congestion for the given zone and hour ahead (0 hours = now)
+        # We need a way to get the forecast for the specific hour – forecast_congestion gives future hours
+        # We'll approximate: use the current congestion from the latest data for that zone and hour
+        zone_df = df[df["zone"] == zone]
+        if zone_df.empty:
+            return False
+        # Get the mean congestion for that zone and hour (average over days)
+        hour_mean = zone_df[zone_df["hour"] == hour]["congestion_score"].mean()
+        return hour_mean > 0.4
+
+    # Check event multiplier
+    def is_event_multiplier_high(dt: datetime, events: list) -> bool:
+        for ev in events:
+            peak_hours = ev.get('peak_hours', [])
+            if dt.hour in peak_hours and ev.get('multiplier', 1.0) > 1.2:
+                return True
+        return False
+
+    # Score each window
+    candidates = []
+    for idx, (dt, events) in enumerate(all_events):
+        hour = dt.hour
+        # Check restrictions for origin and destination
+        if is_restricted(origin_zone, hour, vehicle_weight_tonnes):
+            continue
+        if is_restricted(destination_zone, hour, vehicle_weight_tonnes):
+            continue
+        if is_prayer_window(dt, city):
+            continue
+        if is_event_multiplier_high(dt, events):
+            continue
+        # Check congestion for origin zone (the route will go through origin and destination, but we mainly care about origin departure)
+        # Actually we should check congestion on the route, but for simplicity check origin and destination.
+        if is_high_congestion(df, origin_zone, dt) or is_high_congestion(df, destination_zone, dt):
+            continue
+
+        # Score: lower congestion is better, but also earlier is better, and more buffer before next restriction.
+        origin_cong = df[(df["zone"] == origin_zone) & (df["hour"] == hour)]["congestion_score"].mean()
+        dest_cong = df[(df["zone"] == destination_zone) & (df["hour"] == hour)]["congestion_score"].mean()
+        avg_cong = (origin_cong + dest_cong) / 2
+        # Buffer: hours until next restricted hour for either zone (look ahead within the horizon)
+        buffer_hours = 0
+        for future_idx in range(idx + 1, len(all_events)):
+            future_dt, _ = all_events[future_idx]
+            future_hour = future_dt.hour
+            if is_restricted(origin_zone, future_hour, vehicle_weight_tonnes) or is_restricted(destination_zone, future_hour, vehicle_weight_tonnes):
+                buffer_hours = future_dt.hour - dt.hour
+                break
+        # If no restriction found, buffer = 24 (max)
+        if buffer_hours == 0:
+            buffer_hours = 24
+
+        # Score: lower congestion is better, higher buffer is better, earlier is better (lower index)
+        # Normalize: congestion weight 0.5, buffer weight 0.3, earliness weight 0.2
+        # Normalize congestion to 0-1 (inverse, lower is better)
+        norm_cong = 1 - min(avg_cong / 0.4, 1.0)  # if avg_cong > 0.4 we already excluded, so <0.4
+        norm_buffer = min(buffer_hours / 24, 1.0)  # 24 hours max
+        norm_earliness = 1 - (idx / horizon_hours)  # earlier hour has higher score
+
+        score = norm_cong * 0.5 + norm_buffer * 0.3 + norm_earliness * 0.2
+
+        candidates.append({
+            "hour": idx,
+            "datetime": dt.isoformat(),
+            "congestion_score": round(avg_cong, 3),
+            "buffer_hours": buffer_hours,
+            "score": round(score, 3),
+        })
+
+    # Sort by score descending
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    top = candidates[:3]
+
+    # Build reasoning for each
+    recommendations = []
+    for rank, cand in enumerate(top, 1):
+        dt = datetime.fromisoformat(cand["datetime"])
+        reason = f"Rank {rank}: Low congestion ({cand['congestion_score']:.2f}), {cand['buffer_hours']}h until next restriction"
+        recommendations.append({
+            "rank": rank,
+            "departure_window": f"{dt.strftime('%Y-%m-%d %H:00')} – {(dt + timedelta(hours=1)).strftime('%Y-%m-%d %H:00')}",
+            "reason": reason,
+            "congestion_score": cand["congestion_score"],
+            "buffer_hours": cand["buffer_hours"],
+            "score": cand["score"],
+        })
+
+    return {
+        "city": city,
+        "origin_zone": origin_zone,
+        "destination_zone": destination_zone,
+        "weight_tonnes": vehicle_weight_tonnes,
+        "horizon_hours": horizon_hours,
+        "recommendations": recommendations,
+        "message": "Top 3 departure windows. These are recommendations, not guarantees."
+    }
+
+
+
+
+
 def compute_prediction_interval(
     model,
     X_row: pd.DataFrame,
