@@ -529,7 +529,7 @@ async def lifespan(app: FastAPI):
 
     scheduler.add_job(_scheduled_nowcast_vsl_check, "interval", minutes=15)
     print("[Scheduler] Sandstorm nowcast VSL check scheduled every 15 minutes") 
-    
+
     scheduler.add_job(
     lambda: generate_weekly_report(city='Riyadh'),
     'cron', day_of_week='mon', hour=6, minute=0
@@ -4549,6 +4549,50 @@ async def freight_infractions(
 
     return {"infractions": rows, "total": len(rows)}
 
+
+
+
+# In app.py, near other freight endpoints
+class FreightOptimisationRequest(BaseModel):
+    city: str = Field("Riyadh")
+    origin_zone: str = Field(..., description="Departure zone")
+    destination_zone: str = Field(..., description="Arrival zone")
+    vehicle_weight_tonnes: float = Field(..., gt=0, description="Vehicle weight in tonnes")
+    preferred_date: Optional[str] = Field(None, description="ISO date (YYYY-MM-DD) to start from")
+    horizon_hours: int = Field(48, ge=1, le=168, description="Look-ahead horizon in hours (max 168 / 7 days)")
+
+@app.post("/freight/optimise-schedule", tags=["freight"])
+@limiter.limit("20/minute")
+def optimise_freight_schedule_endpoint(
+    request: Request,
+    payload: FreightOptimisationRequest,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"]))
+):
+    """
+    Recommend optimal departure windows for freight vehicles.
+
+    Returns top 3 windows over the next horizon (default 48 hours).
+    Avoids geofenced restrictions, Friday prayer windows, high congestion, and event peaks.
+
+    Role: OPERATOR or ADMIN. Rate limit: 20/min.
+    """
+    _assert_city_permitted(auth, payload.city)
+
+    try:
+        from src.model import optimise_freight_schedule
+        result = optimise_freight_schedule(
+            city=payload.city,
+            origin_zone=payload.origin_zone,
+            destination_zone=payload.destination_zone,
+            vehicle_weight_tonnes=payload.vehicle_weight_tonnes,
+            preferred_date=payload.preferred_date,
+            horizon_hours=payload.horizon_hours,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
