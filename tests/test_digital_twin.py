@@ -4,7 +4,7 @@ import os
 import pandas as pd
 from fastapi.testclient import TestClient
 from app import app
-from src.digital_twin import DigitalTwinState, create_twin
+from src.digital_twin import DigitalTwinState, create_twin, MAX_TWINS_PER_CITY
 from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features
 
 # Ensure API_KEY is set for tests
@@ -116,3 +116,101 @@ def test_twin_limit_enforced(monkeypatch):
         assert list_resp.status_code == 200
         twins = list_resp.json()["twins"]
         assert len(twins) == 3
+
+
+def test_twin_what_if_returns_before_after_comparison():
+    """Running what‑if on a twin returns forecasts and deltas."""
+    with TestClient(app) as client:
+        # Create a twin
+        create_resp = client.post(
+            "/twin/create?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert create_resp.status_code == 200
+        twin_id = create_resp.json()["twin_id"]
+
+        # Run what-if with a zone closure
+        scenario = {"zone_closures": ["Zone_1"]}
+        whatif_resp = client.post(
+            f"/twin/{twin_id}/what-if",
+            json={"scenario": scenario, "hours_ahead": 3},
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert whatif_resp.status_code == 200
+        data = whatif_resp.json()
+        assert "baseline_forecasts" in data
+        assert "scenario_forecasts" in data
+        assert "impact_delta" in data
+        assert "worst_impact_zone" in data
+        assert "recommendation" in data
+
+
+def test_twin_what_if_does_not_affect_base_twin_state():
+    with TestClient(app) as client:
+        # Create twin
+        create_resp = client.post(
+            "/twin/create?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert create_resp.status_code == 200
+        twin_id = create_resp.json()["twin_id"]
+
+        # Get initial list
+        list_resp = client.get(
+            "/twin/list?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        initial_count = len(list_resp.json()["twins"])
+
+        # Run what-if with speed reduction (guarantees a change)
+        scenario = {"speed_reductions": {"Zone_1": 0.5}}  # halve speed
+        whatif_resp = client.post(
+            f"/twin/{twin_id}/what-if",
+            json={"scenario": scenario, "hours_ahead": 3},
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert whatif_resp.status_code == 200
+        data = whatif_resp.json()
+        assert "modified_twin_id" in data
+        assert data["modified_twin_id"] is not None
+
+        # List again – count should be initial + 1
+        list_resp2 = client.get(
+            "/twin/list?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert len(list_resp2.json()["twins"]) == initial_count + 1
+
+
+def test_twin_compare_returns_delta_per_zone():
+    with TestClient(app) as client:
+        # Create baseline twin
+        base_resp = client.post(
+            "/twin/create?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert base_resp.status_code == 200
+        base_id = base_resp.json()["twin_id"]
+
+        # Create modified twin via what-if with speed reduction
+        scenario = {"speed_reductions": {"Zone_1": 0.5}}  # halve speed
+        whatif_resp = client.post(
+            f"/twin/{base_id}/what-if",
+            json={"scenario": scenario, "hours_ahead": 3},
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert whatif_resp.status_code == 200
+        mod_id = whatif_resp.json()["modified_twin_id"]
+        assert mod_id is not None
+
+        # Compare
+        compare_resp = client.post(
+            "/twin/compare",
+            json={"twin_a_id": base_id, "twin_b_id": mod_id},
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert compare_resp.status_code == 200
+        data = compare_resp.json()
+        assert "delta_per_zone" in data
+        # Zone_1 should have a positive delta (speed reduced → higher congestion)
+        assert data["delta_per_zone"]["Zone_1"] > 0
