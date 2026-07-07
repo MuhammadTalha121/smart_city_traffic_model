@@ -10,6 +10,7 @@ import numpy as np
 
 from sklearn.metrics import mean_absolute_error
 
+from apscheduler.schedulers.base import STATE_RUNNING
 
 from src.training import start_session, end_session
 
@@ -535,8 +536,13 @@ async def lifespan(app: FastAPI):
     'cron', day_of_week='mon', hour=6, minute=0
 )
 
-    scheduler.start()
-    print("[Scheduler] Nightly retraining scheduled at 03:00")
+    
+    # Inside lifespan, after adding all jobs
+    if scheduler.state != STATE_RUNNING:
+        scheduler.start()
+        print("[Scheduler] Nightly retraining scheduled at 03:00")
+    else:
+        print("[Scheduler] Already running, skipping start")
 
     telemetry_queue = TelemetryQueue()
     # Define a state getter that returns the needed attributes
@@ -554,7 +560,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    scheduler.shutdown()
+    if scheduler.state == STATE_RUNNING:
+        scheduler.shutdown()
 
 
 app = FastAPI(
@@ -3100,6 +3107,37 @@ def maintenance_priority(
         "zones_ranked"      : results,
         "data_source"       : "WeatherAdapter + live congestion",
     }
+
+
+
+
+from src.model import generate_maintenance_schedule
+
+@app.get("/maintenance/schedule", tags=["infrastructure"])
+@limiter.limit("20/minute")
+def maintenance_schedule(
+    request: Request,
+    city: str = "Riyadh",
+    horizon_days: int = 7,
+    auth: Dict = Depends(role_required(["ADMIN"])),
+):
+    """
+    Return maintenance recommendations for all zones sorted by urgency.
+    Role: ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+
+    try:
+        result = generate_maintenance_schedule(
+            city=city,
+            planning_horizon_days=horizon_days
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate schedule: {str(e)}")
+
 
 
 
