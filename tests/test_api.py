@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import time
 from fastapi.responses import Response
 import numpy as np
+from src.auth import create_key
 
 
 if not os.environ.get("API_KEY"):
@@ -1942,3 +1943,52 @@ def test_corridor_optimize_returns_offsets(client):
     assert len(data["offsets"]) == 3
     assert data["stops_avoided"] == 2
     assert data["throughput_improvement_pct"] > 0
+
+
+
+
+
+
+os.environ.setdefault("API_KEY", "test-key-for-pytest-only")
+TEST_KEY = os.environ["API_KEY"]
+
+
+def test_maintenance_schedule_covers_all_zones():
+    """Endpoint returns recommendations for all zones."""
+    with TestClient(app) as client:
+        response = client.get(
+            "/maintenance/schedule?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "zones" in data
+        assert data["total_zones"] == 5  # 5 zones
+        assert data["city"] == "Riyadh"
+        assert "generated_at" in data
+
+
+def test_maintenance_schedule_requires_admin():
+    """Only ADMIN role can access."""
+    ro_key = create_key("READ_ONLY", "all")
+    with TestClient(app) as client:
+        response = client.get(
+            "/maintenance/schedule?city=Riyadh",
+            headers={"X-API-Key": ro_key}
+        )
+        assert response.status_code == 403
+
+
+def test_critical_wear_zones_scheduled_before_low_wear_zones():
+    """Urgency ordering: Critical zones appear first."""
+    with TestClient(app) as client:
+        response = client.get(
+            "/maintenance/schedule?city=Riyadh",
+            headers={"X-API-Key": TEST_KEY}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        zones = data["zones"]
+        urgency_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+        urgencies = [urgency_order[z["urgency"]] for z in zones]
+        assert urgencies == sorted(urgencies), "Zones not sorted by urgency"
