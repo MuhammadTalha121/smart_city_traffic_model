@@ -1,13 +1,11 @@
 """
 NTCIP 1202 Signal Controller Interface (Stub) — PROMPT 121.
+Actuator Feedback Loop & Confirmation —.
 
 Implements a standards-shaped stub interface for sending signal timing
 plans to physical traffic controllers via NTCIP 1202 (Traffic Signal
-Controllers). This is NOT a real SNMP/NTCIP client — there is no field
-hardware in this environment. The stub lets the full actuation pipeline
-(safety gating, audit logging, command IDs, confirmation) be built and
-tested now; only the transport layer (_send_snmp_set) needs replacing
-for a real deployment.
+Controllers), plus a closed-loop confirmation mechanism that verifies
+commands were actually applied and escalates when they are not.
 
 Safety model
 ------------
@@ -18,13 +16,27 @@ ActuationSafetyGate additionally enforces:
   - zone is known (present in ZONE_ADJACENCY)
   - zone is not in HAJJ_LOCKDOWN_ZONES
 
-Every attempt — sent or rejected — is appended to signal_commands_log.csv.
+Confirmation model 
+--------------------------------
+30 seconds after a command reports "sent", confirm_actuation() polls
+verify_timing_applied(). If it fails, one retry is scheduled 15 seconds
+later. If both attempts fail, the command is logged UNCONFIRMED and an
+alert is escalated through the existing check_thresholds()/
+deliver_webhook_alert() pipeline — Critical severity for
+emergency_preemption-purpose commands, Elevated otherwise. Escalations
+are deduplicated per (zone, purpose) within a 15-minute window to avoid
+notification fatigue.
+
+Every attempt — sent, rejected, error, confirmed, or unconfirmed — is
+appended to signal_commands_log.csv.
 """
 
 import csv
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 import uuid
 
 from src.config import (
@@ -37,18 +49,48 @@ from src.config import (
 SIGNAL_COMMANDS_LOG_PATH = "signal_commands_log.csv"
 _LOG_FIELDS = [
     "command_id", "timestamp", "zone", "cycle_length", "green_phase_seconds",
-    "offset", "status", "reason", "confirmed",
+    "offset", "status", "reason", "confirmed", "attempt_count", "last_error_message",
 ]
 
 MIN_CYCLE_SECONDS = 30
 MAX_CYCLE_SECONDS = 180
 
+# ──  — confirmation timing ──────────────────────────
+CONFIRMATION_DELAY_S = 30
+CONFIRMATION_RETRY_DELAY_S = 15
+MAX_CONFIRMATION_ATTEMPTS = 2
+_ALERT_DEDUP_WINDOW_S = 900  # 15 minutes
+
+# Per (zone, purpose) -> last escalation datetime. Module-level, in-process
+# only (mirrors the pattern in app.py's _last_alert_sent for congestion/
+# incident alerts, kept local here since signal_controller.py must not
+# import app.py — that would create a circular import).
+_last_escalation_sent: Dict[str, datetime] = {}
+
 
 def _log_command(row: dict) -> None:
-    """Append one actuation attempt to signal_commands_log.csv (append-only)."""
+    """
+    Append one actuation/confirmation event to signal_commands_log.csv
+    (append-only). Schema-safe: if new columns were added since the file
+    was last written (e.g. attempt_count/last_error_message added in
+    PROMPT 122), backfills the existing rows once before appending, same
+    pattern as src/model.py's log_prediction().
+    """
     from src.training import training_log_path
-    path = Path(training_log_path(SIGNAL_COMMANDS_LOG_PATH))
-    is_new = not path.exists()
+    path = training_log_path(SIGNAL_COMMANDS_LOG_PATH)
+
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path, "r", encoding="utf-8") as f:
+            existing_header = f.readline().strip().split(",")
+        missing_cols = [c for c in _LOG_FIELDS if c not in existing_header]
+        if missing_cols:
+            import pandas as pd
+            existing_df = pd.read_csv(path, engine="python", on_bad_lines="skip")
+            for col in missing_cols:
+                existing_df[col] = ""
+            existing_df.to_csv(path, index=False)
+
+    is_new = not os.path.exists(path) or os.path.getsize(path) == 0
     with open(path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=_LOG_FIELDS)
         if is_new:
@@ -83,13 +125,12 @@ class ActuationSafetyGate:
 
 class NTCIPStubController:
     """
-    Simulates NTCIP 1202 SNMP SET commands to a traffic signal controller.
+    Simulates NTCIP 1202 SNMP SET/GET commands to a traffic signal controller.
 
-    Real deployment note: replace _send_snmp_set() with an actual SNMP
-    client (e.g. pysnmp) against SIGNAL_CONTROLLER_ENDPOINTS[zone] using
-    NTCIP 1202 OIDs, respecting NTCIP_TIMEOUT_SECONDS / NTCIP_RETRY_ATTEMPTS.
-    Safety gate, logging, and confirmation are transport-agnostic and do
-    not change.
+    Real deployment note: replace _send_snmp_set() / verify_timing_applied()
+    with an actual SNMP client (e.g. pysnmp) against
+    SIGNAL_CONTROLLER_ENDPOINTS[zone] using NTCIP 1202 OIDs. Safety gate,
+    logging, and confirmation are transport-agnostic and do not change.
     """
 
     def __init__(self):
@@ -164,3 +205,129 @@ class NTCIPStubController:
         timing OIDs, compared to expected_plan.
         """
         return True
+
+
+# ---------------------------------------------------------------------------
+# — Actuator Feedback Loop & Confirmation
+# ---------------------------------------------------------------------------
+
+def _escalate_unconfirmed_actuation(zone: str, command_id: str, expected_plan: dict) -> None:
+    """
+    Fire an alert through the existing alerting pipeline (check_thresholds
+    / deliver_webhook_alert infrastructure, PROMPT 085) when an actuation
+    command cannot be confirmed as applied by the field controller.
+
+    Severity: Critical if expected_plan['purpose'] == 'emergency_preemption',
+    else Elevated for routine timing commands. Deduplicated per
+    (zone, purpose) within _ALERT_DEDUP_WINDOW_S to avoid notification
+    fatigue on a persistently unreachable controller.
+    """
+    from src.pipeline import deliver_webhook_alert, log_alert
+
+    purpose = expected_plan.get("purpose", "routine")
+    severity = "Critical" if purpose == "emergency_preemption" else "Elevated"
+
+    dedup_key = f"actuation_unconfirmed:{zone}:{purpose}"
+    now = datetime.now()
+    last_sent = _last_escalation_sent.get(dedup_key)
+    if last_sent is not None and (now - last_sent).total_seconds() < _ALERT_DEDUP_WINDOW_S:
+        return
+    _last_escalation_sent[dedup_key] = now
+
+    alert = {
+        "zone": zone,
+        "city": expected_plan.get("city", "Riyadh"),
+        "metric": "actuation_confirmation",
+        "value": command_id,
+        "threshold": "CONFIRMED",
+        "severity": severity,
+    }
+
+    try:
+        log_alert([alert])
+    except Exception:
+        pass
+    webhook_url = os.getenv("WEBHOOK_URL", "")
+    try:
+        deliver_webhook_alert([alert], webhook_url)
+    except Exception:
+        pass
+
+
+def confirm_actuation(
+    command_id: str,
+    zone: str,
+    expected_plan: dict,
+    attempt: int = 1,
+) -> None:
+    """
+    Verify a previously sent actuation was applied by the field controller.
+
+    Intended to be scheduled via threading.Timer(CONFIRMATION_DELAY_S, ...)
+    immediately after a "sent" result from NTCIPStubController.send_timing_plan().
+    On failure, retries once after CONFIRMATION_RETRY_DELAY_S. After
+    MAX_CONFIRMATION_ATTEMPTS failed attempts, logs UNCONFIRMED and
+    escalates via _escalate_unconfirmed_actuation(). Intermediate failed
+    attempts (before retries are exhausted) are not logged — only the
+    final CONFIRMED or UNCONFIRMED outcome is written, per design.
+
+    This function is safe to call directly in tests (synchronous) — the
+    threading.Timer scheduling for the *first* call is the caller's
+    responsibility (see POST /signals/actuate in app.py).
+    """
+    controller = NTCIPStubController()
+    timestamp = datetime.now().isoformat()
+    error_message = ""
+
+    try:
+        applied = controller.verify_timing_applied(zone, expected_plan)
+        if not applied:
+            error_message = "Controller reported mismatched or no timing plan."
+    except Exception as e:
+        applied = False
+        error_message = f"Verification exception: {e}"
+
+    if applied:
+        _log_command({
+            "command_id": command_id, "timestamp": timestamp, "zone": zone,
+            "cycle_length": expected_plan.get("cycle_length", ""),
+            "green_phase_seconds": expected_plan.get("green_phase_seconds", ""),
+            "offset": expected_plan.get("offset", ""),
+            "status": "CONFIRMED", "reason": "Timing plan verified applied.",
+            "confirmed": True, "attempt_count": attempt, "last_error_message": "",
+        })
+        return
+
+    if attempt < MAX_CONFIRMATION_ATTEMPTS:
+        timer = threading.Timer(
+            CONFIRMATION_RETRY_DELAY_S,
+            confirm_actuation,
+            args=(command_id, zone, expected_plan, attempt + 1),
+        )
+        timer.daemon = True
+        timer.start()
+        return
+
+    # Retries exhausted — declare UNCONFIRMED and escalate.
+    _log_command({
+        "command_id": command_id, "timestamp": timestamp, "zone": zone,
+        "cycle_length": expected_plan.get("cycle_length", ""),
+        "green_phase_seconds": expected_plan.get("green_phase_seconds", ""),
+        "offset": expected_plan.get("offset", ""),
+        "status": "UNCONFIRMED", "reason": error_message or "Confirmation timed out.",
+        "confirmed": False, "attempt_count": attempt, "last_error_message": error_message,
+    })
+    _escalate_unconfirmed_actuation(zone, command_id, expected_plan)
+
+
+def schedule_confirmation(command_id: str, zone: str, expected_plan: dict) -> threading.Timer:
+    """
+    Schedule the first confirmation check CONFIRMATION_DELAY_S seconds from
+    now. Returns the Timer object (daemonized so it never blocks process
+    shutdown). Callers (e.g. POST /signals/actuate) should invoke this
+    exactly once per successfully "sent" command.
+    """
+    timer = threading.Timer(CONFIRMATION_DELAY_S, confirm_actuation, args=(command_id, zone, expected_plan))
+    timer.daemon = True
+    timer.start()
+    return timer
