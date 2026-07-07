@@ -10,7 +10,12 @@ import numpy as np
 
 from sklearn.metrics import mean_absolute_error
 
+
+from src.signal_controller import SIGNAL_COMMANDS_LOG_PATH
+
 from apscheduler.schedulers.base import STATE_RUNNING
+
+from src.signal_controller import NTCIPStubController, schedule_confirmation
 
 from src.training import start_session, end_session
 
@@ -31,7 +36,7 @@ from src.calibration import (
     generate_calibration_report,
 )
 from src.config import CALIBRATION_FACTORS_PATH, ACTUATION_COOLDOWN_SECONDS
-from src.signal_controller import NTCIPStubController
+from src.signal_controller import NTCIPStubController, schedule_confirmation
 
 
 from src.simulator import apply_scenario, run_scenario
@@ -155,6 +160,11 @@ class SignalActuateRequest(BaseModel):
     cycle_length: float = Field(..., gt=0, description="Total cycle length in seconds")
     green_phase_seconds: float = Field(..., gt=0, description="Green phase duration in seconds")
     offset: float = Field(0.0, description="Phase offset in seconds")
+    purpose: str = Field(
+        "routine",
+        description="Command purpose — 'routine' or 'emergency_preemption'; "
+                     "determines escalation severity if confirmation fails (PROMPT 122).",
+    )
 
 
 def _write_usage_log(log_data: dict) -> None:
@@ -1811,10 +1821,12 @@ def signals_actuate(
     auth: Dict = Depends(require_admin),
 ):
     """
-    PROMPT 121 — Send a signal timing plan to a traffic controller via
+     — Send a signal timing plan to a traffic controller via
     the NTCIP stub interface. ADMIN role only. Gated by ACTUATION_ENABLED
     and per-zone cooldown; every attempt (sent/rejected/error) is logged
-    to signal_commands_log.csv.
+    to signal_commands_log.csv. On a successful send, schedules a
+    confirmation check 30s later that verifies the plan was
+    actually applied and escalates an alert if it was not.
     """
     if not hasattr(app.state, "_last_actuation_time"):
         app.state._last_actuation_time = {}
@@ -1838,8 +1850,55 @@ def signals_actuate(
 
     if result["status"] == "sent":
         app.state._last_actuation_time[payload.zone] = now
+        expected_plan = {
+            "cycle_length": payload.cycle_length,
+            "green_phase_seconds": payload.green_phase_seconds,
+            "offset": payload.offset,
+            "purpose": payload.purpose,
+            "city": "Riyadh",
+        }
+        schedule_confirmation(result["command_id"], payload.zone, expected_plan)
 
     return result
+
+
+
+
+import math
+
+def _clean_nan(obj):
+    """Recursively replace NaN with None for JSON serialization."""
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    return obj
+
+
+@app.get("/signals/actuation-log", tags=["signals"])
+@limiter.limit("20/minute")
+def actuation_log(
+    request: Request,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Return last 50 actuation commands with confirmation status."""
+    log_path = SIGNAL_COMMANDS_LOG_PATH
+    if not os.path.exists(log_path):
+        return {"total": 0, "commands": []}
+
+    try:
+        df = pd.read_csv(log_path)
+        # Sort descending by timestamp (newest first)
+        df = df.sort_values("timestamp", ascending=False).head(50)
+        records = df.to_dict(orient="records")
+        # Clean NaN values
+        cleaned = _clean_nan(records)
+        return {"total": len(cleaned), "commands": cleaned}
+    except Exception as e:
+        # Graceful fallback: return empty list with error message
+        return {"total": 0, "commands": [], "error": str(e)}
 
 
 
