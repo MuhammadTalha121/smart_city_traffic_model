@@ -839,3 +839,11 @@ MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
     'mock'            : None,
     'real'            : 60,
 }
+
+
+
+
+# ── Maintenance Scheduler  ──────────────
+MAINTENANCE_DEFAULT_HORIZON_DAYS = 7
+MAINTENANCE_LOW_DEMAND_THRESHOLD = 0.3
+MAINTENANCE_WINDOW_HOURS = 4
