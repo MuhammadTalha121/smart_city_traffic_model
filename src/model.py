@@ -1785,6 +1785,236 @@ def compute_pavement_wear_index(
 
 
 
+def generate_maintenance_schedule(
+    city: str,
+    planning_horizon_days: int = 7,
+    low_demand_threshold: float = 0.3,
+    window_hours: int = 4
+) -> dict:
+    """
+    Generate maintenance recommendations for all zones in a city.
+
+    Parameters
+    ----------
+    city : str
+        City name.
+    planning_horizon_days : int
+        Number of days to look ahead for scheduling.
+    low_demand_threshold : float
+        Maximum acceptable average congestion score for a window.
+    window_hours : int
+        Duration of the recommended maintenance window in hours.
+
+    Returns
+    -------
+    dict
+        {
+            "city": str,
+            "generated_at": str,
+            "horizon_days": int,
+            "total_zones": int,
+            "zones": list of dicts sorted by urgency
+        }
+    """
+    from src.adapters import get_adapter
+    from src.data import get_active_events
+    from src.config import FRIDAY_PRAYER_HOURS
+    from datetime import datetime, timedelta
+
+    # Import app state for city data (lazy import to avoid circular dependency)
+    try:
+        from app import app
+        df = app.state.city_dfs.get(city) if hasattr(app.state, 'city_dfs') else None
+    except Exception:
+        df = None
+
+    if df is None:
+        raise ValueError(f"City '{city}' not found in app state.")
+
+    # Fetch current temperature for pavement wear calculation
+    try:
+        weather_df = get_adapter("weather").fetch(city)
+        temperature = float(weather_df["temperature"].iloc[0])
+    except Exception:
+        temperature = 38.0  # fallback
+
+    zones = []
+    now = datetime.now()
+
+    for zone in df["zone"].unique():
+        zone_df = df[df["zone"] == zone]
+        if zone_df.empty:
+            continue
+
+        latest = zone_df.sort_values("timestamp").iloc[-1]
+        vehicle_count = float(latest["vehicle_count"])
+        congestion_score = float(latest["congestion_score"])
+        road_type = str(latest["road_type"])
+
+        # 1. Pavement wear index
+        wear = compute_pavement_wear_index(
+            vehicle_count=vehicle_count,
+            congestion_score=congestion_score,
+            temperature_celsius=temperature
+        )
+        wear_index = wear["wear_index"]
+        risk_level = wear["risk_level"]
+
+        # 2. HCM v/c ratio and LOS
+        vc_result = compute_hcm_vc_ratio(vehicle_count, road_type)
+        los = vc_result["los_from_vc"]
+        vc_ratio = vc_result["vc_ratio"]
+
+        # 3. Determine urgency
+        if risk_level == "Critical" or los == "F":
+            urgency = "Critical"
+        elif risk_level == "High" or los == "E":
+            urgency = "High"
+        elif risk_level == "Moderate" or los == "D":
+            urgency = "Medium"
+        else:
+            urgency = "Low"
+
+        # 4. Find best maintenance window
+        best_window = None
+        best_avg_cong = 1.0  # worst possible
+
+        for day_offset in range(planning_horizon_days):
+            day_start = now + timedelta(days=day_offset)
+            for start_hour in range(0, 24, 2):  # 2‑hour step for window start
+                window_start = day_start.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+                if window_start < now:
+                    continue
+                window_end = window_start + timedelta(hours=window_hours)
+
+                excluded = False
+                congestion_scores = []
+
+                for h in range(window_hours):
+                    check_time = window_start + timedelta(hours=h)
+
+                    # Skip Friday prayer window (12–13)
+                    if check_time.weekday() == 4 and check_time.hour in FRIDAY_PRAYER_HOURS:
+                        excluded = True
+                        break
+
+                    # Skip active event peak hours
+                    active_events = get_active_events(city, check_time.date())
+                    for ev in active_events:
+                        if check_time.hour in ev.get("peak_hours", []):
+                            excluded = True
+                            break
+                    if excluded:
+                        break
+
+                    # Predict congestion for this hour
+                    hours_ahead = int((check_time - now).total_seconds() / 3600)
+                    if hours_ahead > 0:
+                        fc = forecast_congestion(zone_df, zone, hours_ahead=[hours_ahead])
+                        pred_score = fc[0]["predicted_score"] if fc else 0.5
+                    else:
+                        pred_score = congestion_score
+                    congestion_scores.append(pred_score)
+
+                if excluded:
+                    continue
+
+                avg_cong = sum(congestion_scores) / len(congestion_scores) if congestion_scores else 1.0
+                if avg_cong > low_demand_threshold:
+                    continue
+
+                if avg_cong < best_avg_cong:
+                    best_avg_cong = avg_cong
+                    best_window = (window_start, window_end)
+
+        # If no window found, pick the earliest non‑excluded window (relax threshold)
+        if best_window is None:
+            for day_offset in range(planning_horizon_days):
+                day_start = now + timedelta(days=day_offset)
+                for start_hour in range(0, 24, 2):
+                    window_start = day_start.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+                    if window_start < now:
+                        continue
+                    window_end = window_start + timedelta(hours=window_hours)
+
+                    excluded = False
+                    congestion_scores = []
+                    for h in range(window_hours):
+                        check_time = window_start + timedelta(hours=h)
+                        if check_time.weekday() == 4 and check_time.hour in FRIDAY_PRAYER_HOURS:
+                            excluded = True
+                            break
+                        active_events = get_active_events(city, check_time.date())
+                        for ev in active_events:
+                            if check_time.hour in ev.get("peak_hours", []):
+                                excluded = True
+                                break
+                        if excluded:
+                            break
+                        hours_ahead = int((check_time - now).total_seconds() / 3600)
+                        if hours_ahead > 0:
+                            fc = forecast_congestion(zone_df, zone, hours_ahead=[hours_ahead])
+                            pred_score = fc[0]["predicted_score"] if fc else 0.5
+                        else:
+                            pred_score = congestion_score
+                        congestion_scores.append(pred_score)
+                    if excluded:
+                        continue
+                    avg_cong = sum(congestion_scores) / len(congestion_scores) if congestion_scores else 1.0
+                    if avg_cong < best_avg_cong:
+                        best_avg_cong = avg_cong
+                        best_window = (window_start, window_end)
+                        break
+                if best_window is not None:
+                    break
+
+        # Ultimate fallback: use the first available window in the next 24 hours
+        if best_window is None:
+            for h in range(0, 24, 2):
+                window_start = now.replace(hour=h, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                if window_start < now:
+                    continue
+                best_window = (window_start, window_start + timedelta(hours=window_hours))
+                best_avg_cong = 1.0
+                break
+
+        # Build recommendation
+        reason = (
+            f"Wear index {wear_index:.1f} ({risk_level}), LOS {los}, v/c {vc_ratio:.2f}. "
+            f"Recommended window: {best_window[0].strftime('%Y-%m-%d %H:%M')} - {best_window[1].strftime('%H:%M')} "
+            f"with congestion {best_avg_cong:.2f}."
+        )
+
+        zones.append({
+            "zone": zone,
+            "wear_index": round(wear_index, 2),
+            "risk_level": risk_level,
+            "los": los,
+            "vc_ratio": round(vc_ratio, 3),
+            "urgency": urgency,
+            "recommended_window": {
+                "start": best_window[0].isoformat(),
+                "end": best_window[1].isoformat()
+            },
+            "expected_congestion_during_work": round(best_avg_cong, 3),
+            "reason": reason
+        })
+
+    # Sort by urgency: Critical > High > Medium > Low
+    urgency_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    zones.sort(key=lambda x: urgency_order.get(x["urgency"], 4))
+
+    return {
+        "city": city,
+        "generated_at": datetime.now().isoformat(),
+        "horizon_days": planning_horizon_days,
+        "total_zones": len(zones),
+        "zones": zones
+    }
+
+
+
+
 def compute_cooperative_route(
     origin_zone:      str,
     destination_zone: str,
