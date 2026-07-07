@@ -30,7 +30,9 @@ from src.calibration import (
     load_calibration_factors,
     generate_calibration_report,
 )
-from src.config import CALIBRATION_FACTORS_PATH
+from src.config import CALIBRATION_FACTORS_PATH, ACTUATION_COOLDOWN_SECONDS
+from src.signal_controller import NTCIPStubController
+
 
 from src.simulator import apply_scenario, run_scenario
 
@@ -147,6 +149,12 @@ class CorridorOptimizeRequest(BaseModel):
     route: List[str] = Field(..., description="Ordered list of zones in the corridor")
     vehicle_speed_kmph: float = Field(..., gt=0, description="Target speed for green wave (km/h)")
 
+
+class SignalActuateRequest(BaseModel):
+    zone: str = Field(..., description="Target zone, e.g. Zone_1")
+    cycle_length: float = Field(..., gt=0, description="Total cycle length in seconds")
+    green_phase_seconds: float = Field(..., gt=0, description="Green phase duration in seconds")
+    offset: float = Field(0.0, description="Phase offset in seconds")
 
 
 def _write_usage_log(log_data: dict) -> None:
@@ -1796,6 +1804,42 @@ def corridor_optimize(
 
 
 
+
+@app.post("/signals/actuate", tags=["signals"])
+def signals_actuate(
+    payload: SignalActuateRequest,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    PROMPT 121 — Send a signal timing plan to a traffic controller via
+    the NTCIP stub interface. ADMIN role only. Gated by ACTUATION_ENABLED
+    and per-zone cooldown; every attempt (sent/rejected/error) is logged
+    to signal_commands_log.csv.
+    """
+    if not hasattr(app.state, "_last_actuation_time"):
+        app.state._last_actuation_time = {}
+
+    now = datetime.now()
+    last = app.state._last_actuation_time.get(payload.zone)
+    if last is not None and (now - last).total_seconds() < ACTUATION_COOLDOWN_SECONDS:
+        remaining = ACTUATION_COOLDOWN_SECONDS - (now - last).total_seconds()
+        raise HTTPException(
+            status_code=429,
+            detail=f"Actuation cooldown active for {payload.zone} — retry in {remaining:.0f}s.",
+        )
+
+    controller = NTCIPStubController()
+    result = controller.send_timing_plan(
+        zone=payload.zone,
+        cycle_length=payload.cycle_length,
+        green_phase_seconds=payload.green_phase_seconds,
+        offset=payload.offset,
+    )
+
+    if result["status"] == "sent":
+        app.state._last_actuation_time[payload.zone] = now
+
+    return result
 
 
 
