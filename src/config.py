@@ -847,3 +847,26 @@ MAX_DATA_AGE_SECONDS: Dict[str, Optional[float]] = {
 MAINTENANCE_DEFAULT_HORIZON_DAYS = 7
 MAINTENANCE_LOW_DEMAND_THRESHOLD = 0.3
 MAINTENANCE_WINDOW_HOURS = 4
+
+
+
+
+
+# ==== — Signal Controller Interface (NTCIP Stub) ====
+SIGNAL_CONTROLLER_ENDPOINTS: Dict[str, str] = {
+    "Zone_1": "tcp://127.0.0.1:8881",
+    "Zone_2": "tcp://127.0.0.1:8882",
+    "Zone_3": "tcp://127.0.0.1:8883",
+    "Zone_4": "tcp://127.0.0.1:8884",
+    "Zone_5": "tcp://127.0.0.1:8885",
+}
+NTCIP_TIMEOUT_SECONDS: int = 5
+NTCIP_RETRY_ATTEMPTS: int = 3
+ACTUATION_ENABLED: bool = False  # SAFETY: must be explicitly True in production config
+
+# Zones locked from actuation during Hajj (pilgrimage route protection).
+# Reuses HAJJ_ROUTE_ZONES as the base set — kept as a separate name per
+# spec so lockdown policy can diverge from routing definitions later.
+HAJJ_LOCKDOWN_ZONES: List[str] = list(HAJJ_ROUTE_ZONES)
+
+ACTUATION_COOLDOWN_SECONDS: int = 60  # min interval between actuations per zone
