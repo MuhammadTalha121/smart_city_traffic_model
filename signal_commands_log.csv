@@ -1,0 +1,13 @@
+command_id,timestamp,zone,cycle_length,green_phase_seconds,offset,status,reason,confirmed
+fbc430a6-5945-4512-982e-bc961f22a664,2026-07-07T14:53:37.706359,Zone_1,90,45,0.0,rejected,Actuation disabled (ACTUATION_ENABLED=False).,
+f6d73097-1e67-448d-a866-deb4beb578b0,2026-07-07T14:53:37.715823,Zone_1,250,100,0.0,rejected,Zone 'Zone_1' is under Hajj lockdown — actuation blocked.,
+eb0cc240-1627-4ec9-a0ac-88a1f9dc3400,2026-07-07T14:53:37.930944,Zone_1,90,45,0.0,rejected,Zone 'Zone_1' is under Hajj lockdown — actuation blocked.,
+fc284930-ba32-4e7e-8c56-7a503d38d4cc,2026-07-07T14:53:37.982533,Zone_99,90,45,0.0,rejected,Unknown zone 'Zone_99'.,
+12b81a55-e31a-4126-9f00-7f59f9cbc2eb,2026-07-07T14:57:29.924654,Zone_1,90.0,45.0,0.0,rejected,Actuation disabled (ACTUATION_ENABLED=False).,
+fe019ae2-d85f-4f40-b93e-a36134aeb8ae,2026-07-07T14:57:30.011220,Zone_2,90.0,45.0,0.0,sent,Command transmitted to controller.,
+d4eb1766-f1fb-4c1a-bf4c-ac3cf2413187,2026-07-07T15:01:32.729067,Zone_1,90,45,0.0,rejected,Actuation disabled (ACTUATION_ENABLED=False).,
+6e82dfde-1434-4590-8f84-8d1d640702f2,2026-07-07T15:01:32.740151,Zone_2,250,100,0.0,rejected,"cycle_length 250s outside allowed range [30, 180].",
+3e9e516b-9067-41f1-996b-1e66c8ff2af0,2026-07-07T15:01:32.750107,Zone_1,90,45,0.0,rejected,Zone 'Zone_1' is under Hajj lockdown — actuation blocked.,
+8d2df089-bded-43af-b94b-ae63f26ac383,2026-07-07T15:01:32.807555,Zone_99,90,45,0.0,rejected,Unknown zone 'Zone_99'.,
+522ae283-bcb2-4205-a4b4-a4651e5ed784,2026-07-07T15:05:51.697345,Zone_1,90.0,45.0,0.0,rejected,Actuation disabled (ACTUATION_ENABLED=False).,
+2d36b6e5-99bc-41ee-b9ef-4feb31e25b60,2026-07-07T15:05:51.776733,Zone_2,90.0,45.0,0.0,sent,Command transmitted to controller.,
