@@ -1992,3 +1992,39 @@ def test_critical_wear_zones_scheduled_before_low_wear_zones():
         urgency_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
         urgencies = [urgency_order[z["urgency"]] for z in zones]
         assert urgencies == sorted(urgencies), "Zones not sorted by urgency"
+
+
+
+
+
+
+def test_adaptive_endpoint_accepts_simulation_param(client):
+    """/signals/adaptive should accept use_simulation=True."""
+    response = client.get(
+        "/signals/adaptive?city=Riyadh&use_simulation=True&sim_duration_minutes=10",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["use_simulation"] is True
+    assert data["sim_duration_minutes"] == 10
+    for signal in data["signals"]:
+        assert "engine" in signal
+
+
+def test_optimise_endpoint_returns_recommendation(client):
+    """POST /signals/optimise should return a recommended plan."""
+    response = client.post(
+        "/signals/optimise",
+        json={
+            "city": "Riyadh",
+            "zone": "Zone_1",
+            "sim_duration_minutes": 5,
+        },
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["zone"] == "Zone_1"
+    assert "recommended_plan" in data
+    assert "engine" in data
