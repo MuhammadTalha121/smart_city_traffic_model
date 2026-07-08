@@ -4453,6 +4453,81 @@ async def edge_simulation(
 
 
 
+from src.sumo_adapter import SUMOAdapter, SimulationResult
+from src.config import SIMULATION_ENGINE, SUMO_BINARY_PATH, SUMO_NETWORK_FILE
+sumo_adapter = SUMOAdapter()
+
+@app.get("/simulation/sumo-status", tags=["simulation"])
+@limiter.limit("20/minute")
+def sumo_status(
+    request: Request,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return SUMO availability and configuration status.
+    """
+    available = sumo_adapter.is_available()
+    return {
+        "available": available,
+        "engine": SIMULATION_ENGINE,
+        "binary": SUMO_BINARY_PATH,
+        "network_file": SUMO_NETWORK_FILE,
+    }
+
+
+@app.post("/simulation/run", tags=["simulation"])
+@limiter.limit("10/minute")
+def simulation_run(
+    request: Request,
+    payload: dict = Body(...),
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Run a traffic simulation (SUMO if available, otherwise static fallback).
+    Body: {city, scenario: {zone_closures, speed_reductions, demand_shifts, event_override}, duration_minutes}
+    """
+    city = payload.get("city", "Riyadh")
+    scenario = payload.get("scenario", {})
+    duration_minutes = payload.get("duration_minutes", 60)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Validate scenario keys
+    allowed_keys = {"zone_closures", "speed_reductions", "demand_shifts", "event_override"}
+    for key in scenario.keys():
+        if key not in allowed_keys:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid scenario key '{key}'. Allowed: {allowed_keys}"
+            )
+
+    # Add city to scenario for fallback
+    scenario["city"] = city
+
+    # Run simulation
+    result: SimulationResult = sumo_adapter.run_simulation(scenario, duration_minutes)
+
+    return {
+        "engine": result.engine,
+        "duration_minutes": result.duration_minutes,
+        "run_time_seconds": round(result.run_time_seconds, 2),
+        "total_delay_veh_hours": round(result.total_delay_veh_hours, 2),
+        "zones": [
+            {
+                "zone": z,
+                "avg_speed_kmh": round(result.avg_speeds.get(z, 0.0), 1),
+                "queue_length_vehicles": round(result.queue_lengths.get(z, 0.0), 1),
+                "throughput_vph": round(result.throughput_vph.get(z, 0.0), 1),
+            }
+            for z in result.zones
+        ],
+        "error": result.error,
+    }
+
+
+
+
 @app.get("/pipeline/hpo-history", tags=["pipeline"])
 async def hpo_history(
     limit: int = 10,
