@@ -22,3 +22,7 @@ markdown>=3.4
 python-multipart>=0.0.9
 torch>=2.0.0
 torch-geometric>=2.4.0
+
+
+SUMO optional (for simulation)
+sumolib>=1.18.0   # not required for fallback
