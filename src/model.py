@@ -4129,3 +4129,182 @@ def detect_incidents(
         })
 
     return result
+
+
+
+
+
+def optimise_signal_via_simulation(
+    zone: str,
+    city: str,
+    candidate_plans: List[dict] = None,
+    sim_duration_minutes: int = 30,
+) -> dict:
+    """
+    Evaluate candidate signal timing plans using SUMO simulation.
+    Returns the plan with lowest total delay (veh-hours).
+    Falls back to heuristic ranking if SUMO unavailable.
+    """
+    from src.sumo_adapter import SUMOAdapter, SimulationResult
+    from src.config import ACTUATION_ENABLED
+
+    # If no candidates provided, generate them
+    if candidate_plans is None:
+        candidate_plans = _generate_candidate_plans(zone, city)
+
+    if not candidate_plans:
+        return {
+            "zone": zone,
+            "recommended_plan": None,
+            "ranking": [],
+            "engine": "error",
+            "error": "No candidate plans generated",
+        }
+
+    # Try SUMO simulation
+    sumo = SUMOAdapter()
+    if sumo.is_available():
+        try:
+            results = []
+            for plan in candidate_plans:
+                # Create scenario with this signal plan
+                scenario = {
+                    "city": city,
+                    "signal_override": {
+                        "zone": zone,
+                        "cycle_length": plan["cycle_length"],
+                        "green_phase_seconds": plan["green_phase_seconds"],
+                        "offset": plan.get("offset", 0),
+                    }
+                }
+                result = sumo.run_simulation(scenario, sim_duration_minutes)
+                results.append({
+                    "plan": plan,
+                    "total_delay_veh_hours": result.total_delay_veh_hours,
+                    "avg_speed_kmh": result.avg_speeds.get(zone, 0.0),
+                    "throughput_vph": result.throughput_vph.get(zone, 0.0),
+                })
+
+            # Rank by total delay (lowest = best)
+            ranked = sorted(results, key=lambda x: x["total_delay_veh_hours"])
+            best = ranked[0] if ranked else None
+
+            return {
+                "zone": zone,
+                "recommended_plan": best["plan"] if best else None,
+                "ranking": ranked,
+                "engine": "sumo",
+                "sim_duration_minutes": sim_duration_minutes,
+            }
+        except Exception as e:
+            print(f"[Simulation-IL] SUMO simulation failed: {e}. Falling back to heuristic.")
+            # Fall through to heuristic
+
+    # Fallback: heuristic ranking (from PROMPT 107)
+    return _fallback_signal_optimisation(zone, city, candidate_plans)
+
+
+def _generate_candidate_plans(zone: str, city: str) -> List[dict]:
+    """Generate a range of candidate timing plans around the current adaptive recommendation."""
+    from app import app
+    from src.config import ZONE_ADJACENCY
+
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        return []
+
+    zone_df = df[df["zone"] == zone]
+    if zone_df.empty:
+        return []
+
+    latest = zone_df.iloc[-1]
+    vehicle_count = float(latest.get("vehicle_count", 100.0))
+    congestion_score = float(latest.get("congestion_score", 0.3))
+    hour = int(latest.get("hour", 8))
+    is_weekend = int(latest.get("is_weekend", 0))
+
+    # Get current adaptive timing
+    adj_scores = {}
+    for neighbor in ZONE_ADJACENCY.get(zone, []):
+        nr = df[df["zone"] == neighbor]
+        if not nr.empty:
+            adj_scores[neighbor] = float(nr.iloc[-1]["congestion_score"])
+
+    from src.config import ROAD_CAPACITY_VPH
+    road_type = str(latest.get("road_type", "arterial"))
+    capacity = ROAD_CAPACITY_VPH.get(road_type, 1600)
+    queue_est = min(vehicle_count / max(capacity, 1.0), 2.0)
+
+    current = compute_adaptive_signal_timing(
+        zone=zone,
+        vehicle_count=vehicle_count,
+        queue_length_estimate=queue_est,
+        adjacent_zone_scores=adj_scores,
+        hour=hour,
+        is_weekend=is_weekend,
+    )
+
+    # Generate variations around current plan
+    plans = []
+    base_cycle = current["cycle_seconds"]
+    base_green = current["green_seconds"]
+
+    # Variations: ±5%, ±10%, ±15% on cycle length and green ratio
+    for cycle_factor in [0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.15]:
+        cycle = max(30, int(base_cycle * cycle_factor))
+        # Adjust green proportionally, but also try different splits
+        for green_factor in [0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.15]:
+            green = max(10, min(cycle - 10, int(base_green * green_factor)))
+            # Avoid exact duplicates
+            if not any(p["cycle_length"] == cycle and p["green_phase_seconds"] == green for p in plans):
+                plans.append({
+                    "cycle_length": cycle,
+                    "green_phase_seconds": green,
+                    "offset": 0,
+                })
+
+    # Limit to max 15 plans to keep simulation time reasonable
+    if len(plans) > 15:
+        # Keep evenly spaced variations
+        step = len(plans) // 15
+        plans = plans[::step][:15]
+
+    return plans
+
+
+def _fallback_signal_optimisation(zone: str, city: str, candidate_plans: List[dict]) -> dict:
+    """Heuristic fallback when SUMO is unavailable."""
+    from app import app
+    from src.config import CONGESTION_THRESHOLDS
+
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        return {"zone": zone, "recommended_plan": None, "ranking": [], "engine": "error", "error": "City not found"}
+
+    zone_df = df[df["zone"] == zone]
+    if zone_df.empty:
+        return {"zone": zone, "recommended_plan": None, "ranking": [], "engine": "error", "error": "Zone not found"}
+
+    latest = zone_df.iloc[-1]
+    congestion_score = float(latest.get("congestion_score", 0.3))
+
+    # Simple heuristic: prefer shorter cycles for lower congestion
+    def heuristic_score(plan):
+        score = 0.0
+        # Lower cycle length is better when congestion is low
+        if congestion_score < 0.3:
+            score -= plan["cycle_length"] * 0.1
+        else:
+            # Higher green ratio is better when congestion is high
+            green_ratio = plan["green_phase_seconds"] / plan["cycle_length"]
+            score += green_ratio * 2.0
+        return score
+
+    ranked = sorted(candidate_plans, key=heuristic_score, reverse=True)
+
+    return {
+        "zone": zone,
+        "recommended_plan": ranked[0] if ranked else None,
+        "ranking": ranked,
+        "engine": "heuristic",
+    }
