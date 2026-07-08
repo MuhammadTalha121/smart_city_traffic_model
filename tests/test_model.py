@@ -2022,3 +2022,71 @@ def test_optimised_schedule_avoids_prayer_window():
 def test_optimised_schedule_avoids_predicted_high_congestion():
     """Ensure it avoids hours with congestion > 0.4."""
     pass
+
+
+
+
+
+
+
+import pytest
+from unittest.mock import Mock, patch
+from src.model import optimise_signal_via_simulation
+
+
+def test_simulation_optimised_plan_beats_heuristic_in_mock():
+    """With mock SUMO, simulation should find a better plan than heuristic."""
+    from src.model import optimise_signal_via_simulation
+    from unittest.mock import Mock, patch
+
+    with patch('src.sumo_adapter.SUMOAdapter') as MockSumo:
+        mock_instance = MockSumo.return_value
+        mock_instance.is_available.return_value = True
+
+        # Simulate two runs: first plan poor, second plan good
+        results = [
+            Mock(total_delay_veh_hours=100.0, avg_speeds={'Zone_1': 30.0}, throughput_vph={'Zone_1': 500}),
+            Mock(total_delay_veh_hours=50.0, avg_speeds={'Zone_1': 45.0}, throughput_vph={'Zone_1': 700}),
+        ]
+        mock_instance.run_simulation.side_effect = results
+
+        candidates = [
+            {"cycle_length": 60, "green_phase_seconds": 30, "offset": 0},
+            {"cycle_length": 90, "green_phase_seconds": 45, "offset": 0},
+        ]
+
+        result = optimise_signal_via_simulation(
+            zone="Zone_1",
+            city="Riyadh",
+            candidate_plans=candidates,
+            sim_duration_minutes=10,
+        )
+
+        assert result["engine"] == "sumo"
+        assert result["recommended_plan"] == candidates[1]
+        assert result["ranking"][0]["total_delay_veh_hours"] == 50.0
+
+
+def test_falls_back_to_heuristic_when_sumo_unavailable():
+    """When SUMO is not available, engine should be 'heuristic'."""
+    from src.model import optimise_signal_via_simulation
+    from unittest.mock import patch
+
+    with patch('src.sumo_adapter.SUMOAdapter') as MockSumo:
+        mock_instance = MockSumo.return_value
+        mock_instance.is_available.return_value = False
+
+        candidates = [
+            {"cycle_length": 60, "green_phase_seconds": 30, "offset": 0},
+            {"cycle_length": 90, "green_phase_seconds": 45, "offset": 0},
+        ]
+
+        result = optimise_signal_via_simulation(
+            zone="Zone_1",
+            city="Riyadh",
+            candidate_plans=candidates,
+        )
+
+        assert result["engine"] == "heuristic"
+        assert result["recommended_plan"] is not None
+
