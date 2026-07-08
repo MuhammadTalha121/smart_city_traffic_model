@@ -106,7 +106,7 @@ from src.model import (
         estimate_incident_clearance_time,
         INCIDENTS_LOG_PATH,
         _SEVERITY_ORDER,  compute_multimodal_index, compute_adaptive_signal_timing,
-        optimize_corridor_timing,
+        optimize_corridor_timing, optimise_signal_via_simulation,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -1720,16 +1720,19 @@ def signals_recommended(
 def signals_adaptive(
     request: Request,
     city: str = "Riyadh",
-    auth: Dict = Depends(role_required(['OPERATOR', 'ADMIN'])),
+    use_simulation: bool = False,
+    sim_duration_minutes: int = 30,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
 ):
     """
-    PROMPT 107 — Adaptive signal timing for all zones using real-time queue
-    and adjacent zone saturation. Returns per-zone adaptive timings with
-    spillback_risk and adaptation_reason. Rate limit: 20/min.
+    PROMPT 107/124 — Adaptive signal timing with optional simulation-in-the-loop optimisation.
+    
+    If use_simulation=True, evaluates candidate timing plans via SUMO simulation.
+    Falls back to heuristic if SUMO unavailable.
     """
     _assert_city_permitted(auth, city)
 
-    df = app.state.city_dfs.get(city, app.state.df)
+    df = app.state.city_dfs.get(city)
     if df is None:
         raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
 
@@ -1748,35 +1751,76 @@ def signals_adaptive(
         congestion_score = float(latest.get("congestion_score", 0.0))
         road_type = str(latest.get("road_type", "arterial"))
 
-        capacity = ROAD_CAPACITY_VPH.get(road_type, 1600)
-        queue_estimate = min(vehicle_count / max(capacity, 1.0), 2.0)
+        # If simulation requested, use simulation-in-the-loop optimisation
+        if use_simulation:
+            optimised = optimise_signal_via_simulation(
+                zone=zone,
+                city=city,
+                sim_duration_minutes=sim_duration_minutes,
+            )
+            timing = optimised.get("recommended_plan")
+            engine = optimised.get("engine", "heuristic")
+            if timing:
+                # Convert to standard format
+                timing = {
+                    "cycle_seconds": timing["cycle_length"],
+                    "green_seconds": timing["green_phase_seconds"],
+                    "red_seconds": timing["cycle_length"] - timing["green_phase_seconds"],
+                    "phase_ratio": round(timing["green_phase_seconds"] / timing["cycle_length"], 2),
+                    "timing_rationale": f"Simulation-optimised ({engine} engine)",
+                    "queue_length_estimate": 0.0,
+                    "spillback_risk": "Unknown",
+                    "adaptation_reason": "Simulation-in-the-loop optimisation",
+                }
+            else:
+                # Fallback to adaptive timing
+                timing = compute_adaptive_signal_timing(
+                    zone=zone,
+                    vehicle_count=vehicle_count,
+                    queue_length_estimate=0.5,
+                    adjacent_zone_scores={},
+                    hour=hour,
+                    is_weekend=is_weekend,
+                )
+                engine = "fallback"
+        else:
+            # Standard adaptive timing (PROMPT 107)
+            capacity = ROAD_CAPACITY_VPH.get(road_type, 1600)
+            queue_estimate = min(vehicle_count / max(capacity, 1.0), 2.0)
 
-        adj_scores = {}
-        for neighbor in ZONE_ADJACENCY.get(zone, []):
-            nr = df[df["zone"] == neighbor]
-            if not nr.empty:
-                adj_scores[neighbor] = float(nr.iloc[-1]["congestion_score"])
+            adj_scores = {}
+            for neighbor in ZONE_ADJACENCY.get(zone, []):
+                nr = df[df["zone"] == neighbor]
+                if not nr.empty:
+                    adj_scores[neighbor] = float(nr.iloc[-1]["congestion_score"])
 
-        timing = compute_adaptive_signal_timing(
-            zone=zone,
-            vehicle_count=vehicle_count,
-            queue_length_estimate=queue_estimate,
-            adjacent_zone_scores=adj_scores,
-            hour=hour,
-            is_weekend=is_weekend,
-        )
+            timing = compute_adaptive_signal_timing(
+                zone=zone,
+                vehicle_count=vehicle_count,
+                queue_length_estimate=queue_estimate,
+                adjacent_zone_scores=adj_scores,
+                hour=hour,
+                is_weekend=is_weekend,
+            )
+            engine = "adaptive"
 
         results.append({
-            "zone":             zone,
-            "hour":             hour,
+            "zone": zone,
+            "hour": hour,
             "congestion_score": round(congestion_score, 4),
-            "queue_estimate":   round(queue_estimate, 3),
-            "signal_timing":    timing,
+            "engine": engine,
+            "signal_timing": timing,
         })
 
     results.sort(key=lambda x: x["congestion_score"], reverse=True)
 
-    return {"city": city, "total_zones": len(results), "signals": results}
+    return {
+        "city": city,
+        "use_simulation": use_simulation,
+        "sim_duration_minutes": sim_duration_minutes if use_simulation else None,
+        "total_zones": len(results),
+        "signals": results,
+    }
 
 
 @app.post("/signals/corridor-optimize", tags=["signals"])
@@ -1901,6 +1945,52 @@ def actuation_log(
         return {"total": 0, "commands": [], "error": str(e)}
 
 
+
+
+
+class SignalOptimiseRequest(BaseModel):
+    city: str = Field("Riyadh")
+    zone: str = Field("Zone_1")
+    candidate_plans: Optional[List[dict]] = Field(None, description="List of candidate timing plans")
+    sim_duration_minutes: int = Field(30, ge=5, le=120)
+
+
+@app.post("/signals/optimise", tags=["signals"])
+@limiter.limit("10/minute")
+def signals_optimise(
+    request: Request,
+    payload: SignalOptimiseRequest,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    PROMPT 124 — Optimise signal timing using simulation-in-the-loop.
+    Returns the best candidate plan based on simulation results.
+    """
+    _assert_city_permitted(auth, payload.city)
+
+    df = app.state.city_dfs.get(payload.city)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{payload.city}' not found.")
+
+    if payload.zone not in df["zone"].unique():
+        raise HTTPException(status_code=422, detail=f"Zone '{payload.zone}' not found in city '{payload.city}'.")
+
+    result = optimise_signal_via_simulation(
+        zone=payload.zone,
+        city=payload.city,
+        candidate_plans=payload.candidate_plans,
+        sim_duration_minutes=payload.sim_duration_minutes,
+    )
+
+    return {
+        "city": payload.city,
+        "zone": payload.zone,
+        "recommended_plan": result.get("recommended_plan"),
+        "engine": result.get("engine"),
+        "sim_duration_minutes": payload.sim_duration_minutes,
+        "ranking": result.get("ranking", []),
+        "error": result.get("error"),
+    }
 
 
 # ---------------------------------------------------------------------------
