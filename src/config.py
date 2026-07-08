@@ -870,3 +870,14 @@ ACTUATION_ENABLED: bool = False  # SAFETY: must be explicitly True in production
 HAJJ_LOCKDOWN_ZONES: List[str] = list(HAJJ_ROUTE_ZONES)
 
 ACTUATION_COOLDOWN_SECONDS: int = 60  # min interval between actuations per zone
+
+
+
+
+# ── SUMO Simulation  ──────────────────────────
+SUMO_BINARY_PATH: str = os.getenv("SUMO_BINARY_PATH", "sumo")
+SIMULATION_ENGINE: str = os.getenv("SIMULATION_ENGINE", "auto")  # "sumo" | "static" | "auto"
+SUMO_NETWORK_FILE: str = "riyadh_5zones.net.xml"
+SUMO_ROUTE_FILE: str = "riyadh_5zones.rou.xml"
+SUMO_CONFIG_FILE: str = "riyadh_5zones.sumocfg"
+
