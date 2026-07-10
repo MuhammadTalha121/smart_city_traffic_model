@@ -106,7 +106,8 @@ from src.model import (
         estimate_incident_clearance_time,
         INCIDENTS_LOG_PATH,
         _SEVERITY_ORDER,  compute_multimodal_index, compute_adaptive_signal_timing,
-        optimize_corridor_timing, optimise_signal_via_simulation,
+        optimize_corridor_timing, optimise_signal_via_simulation, generate_maintenance_schedule,    
+    optimise_signal_via_simulation, 
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -3862,6 +3863,118 @@ async def heat_risk(
 
 
 
+# ===== Construction Zone Endpoints (PROMPT 125) =====
+
+class ConstructionZoneCreateRequest(BaseModel):
+    zone: str = Field(..., description="Zone where construction is happening")
+    road_name: str = Field(..., description="Name of the road")
+    start_date: str = Field(..., description="ISO date (YYYY-MM-DD)")
+    end_date: str = Field(..., description="ISO date (YYYY-MM-DD)")
+    start_hour: int = Field(..., ge=0, le=23, description="Start hour (0-23)")
+    end_hour: int = Field(..., ge=0, le=23, description="End hour (0-23)")
+    lanes_closed: int = Field(1, ge=1, le=6, description="Number of lanes closed")
+    total_lanes: int = Field(2, ge=1, le=6, description="Total lanes originally")
+    capacity_reduction_pct: float = Field(0.0, ge=0, le=100, description="Override capacity reduction %")
+    description: str = Field("", description="Optional description")
+
+
+@app.post("/construction/zones", tags=["construction"])
+@limiter.limit("10/minute")
+def construction_create(
+    request: Request,
+    payload: ConstructionZoneCreateRequest,
+    auth: Dict = Depends(require_admin),
+):
+    """Create a new construction zone. ADMIN only."""
+    from src.construction import add_construction_zone
+    try:
+        result = add_construction_zone(
+            zone=payload.zone,
+            road_name=payload.road_name,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            start_hour=payload.start_hour,
+            end_hour=payload.end_hour,
+            lanes_closed=payload.lanes_closed,
+            total_lanes=payload.total_lanes,
+            capacity_reduction_pct=payload.capacity_reduction_pct,
+            description=payload.description,
+        )
+        return {"status": "created", "construction": result}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/construction/zones", tags=["construction"])
+@limiter.limit("20/minute")
+def construction_list(
+    request: Request,
+    city: str = "Riyadh",
+    active_only: bool = False,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """List all construction zones (or only active ones). OPERATOR+."""
+    from src.construction import get_active_construction, _load_construction_zones
+    from dataclasses import asdict
+    if active_only:
+        active = get_active_construction(city)
+        return {"total": len(active), "zones": active}
+    else:
+        zones = _load_construction_zones()
+        zones_list = [asdict(z) for z in zones.values()]
+        return {"total": len(zones_list), "zones": zones_list}
+
+
+@app.get("/construction/zones/{zone_id}", tags=["construction"])
+@limiter.limit("20/minute")
+def construction_get(
+    request: Request,
+    zone_id: str,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Get a specific construction zone by ID. OPERATOR+."""
+    from src.construction import get_construction_zone
+    zone = get_construction_zone(zone_id)
+    if zone is None:
+        raise HTTPException(status_code=404, detail=f"Construction zone '{zone_id}' not found.")
+    return zone
+
+
+@app.delete("/construction/zones/{zone_id}", tags=["construction"])
+@limiter.limit("10/minute")
+def construction_delete(
+    request: Request,
+    zone_id: str,
+    auth: Dict = Depends(require_admin),
+):
+    """Delete a construction zone. ADMIN only."""
+    from src.construction import delete_construction_zone
+    deleted = delete_construction_zone(zone_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Construction zone '{zone_id}' not found.")
+    return {"status": "deleted", "zone_id": zone_id}
+
+
+@app.patch("/construction/zones/{zone_id}", tags=["construction"])
+@limiter.limit("10/minute")
+def construction_update(
+    request: Request,
+    zone_id: str,
+    payload: dict,
+    auth: Dict = Depends(require_admin),
+):
+    """Update a construction zone. ADMIN only."""
+    from src.construction import update_construction_zone
+    try:
+        result = update_construction_zone(zone_id, **payload)
+        return {"status": "updated", "construction": result}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+
+
+
 
 @app.get("/events/egress-plan", tags=["events"])
 @limiter.limit("20/minute")
@@ -4878,7 +4991,7 @@ def optimise_freight_schedule_endpoint(
     Recommend optimal departure windows for freight vehicles.
 
     Returns top 3 windows over the next horizon (default 48 hours).
-    Avoids geofenced restrictions, Friday prayer windows, high congestion, and event peaks.
+    Avoids geofenced restrictions, Friday prayer windows, high congestion, event peaks, and active construction zones.
 
     Role: OPERATOR or ADMIN. Rate limit: 20/min.
     """
