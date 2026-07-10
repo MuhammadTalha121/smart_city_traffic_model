@@ -227,3 +227,69 @@ def get_construction_zone(zone_id: str) -> Optional[dict]:
     zones = _load_construction_zones()
     cz = zones.get(zone_id)
     return asdict(cz) if cz else None
+
+
+
+
+
+
+def generate_diversion_advisory(zone: str, city: str = "Riyadh") -> dict:
+    """
+    Generate a diversion advisory for a zone with active construction.
+    Returns the recommended alternate zone, estimated delay, and construction details.
+    If no active construction in the zone, returns a message.
+    """
+    from app import app
+    from src.config import ZONE_ADJACENCY, ZONE_DISTANCES_KM
+
+    active = get_active_construction(city)
+    # Find construction in the given zone
+    construction_here = [cz for cz in active if cz['zone'] == zone]
+    if not construction_here:
+        return {
+            "zone": zone,
+            "advisory_type": "none",
+            "message": f"No active construction in {zone}."
+        }
+
+    # Get the city DataFrame for congestion scores
+    df = app.state.city_dfs.get(city)
+    if df is None:
+        return {
+            "zone": zone,
+            "advisory_type": "error",
+            "message": f"City '{city}' not found."
+        }
+
+    # Find adjacent zones without active construction
+    neighbors = ZONE_ADJACENCY.get(zone, [])
+    construction_zones = {cz['zone'] for cz in active}
+    safe_neighbors = [n for n in neighbors if n not in construction_zones]
+
+    if not safe_neighbors:
+        return {
+            "zone": zone,
+            "advisory_type": "no_alternate",
+            "message": f"No alternate route available around construction in {zone}.",
+            "construction": construction_here[0]
+        }
+
+    # Find the neighbor with the lowest congestion score (latest data)
+    latest = df.sort_values('timestamp').groupby('zone').last()
+    best_neighbor = min(safe_neighbors, key=lambda z: float(latest.loc[z]['congestion_score']) if z in latest.index else 0.5)
+
+    # Estimate delay: distance between zone and best_neighbor
+    key = tuple(sorted([zone, best_neighbor]))
+    distance_km = ZONE_DISTANCES_KM.get(key, 2.0)  # fallback
+    # Assume 20 km/h average in construction-affected area
+    estimated_delay_mins = (distance_km / 20) * 60
+
+    return {
+        "zone": zone,
+        "advisory_type": "diversion",
+        "construction": construction_here[0],
+        "recommended_alternate_zone": best_neighbor,
+        "estimated_delay_minutes": round(estimated_delay_mins, 1),
+        "distance_km": round(distance_km, 2),
+        "message": f"Active construction in {zone}. Divert traffic via {best_neighbor}."
+    }
