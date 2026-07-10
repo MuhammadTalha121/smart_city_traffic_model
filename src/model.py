@@ -18,6 +18,8 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
                         INCIDENT_PERSISTENCE_MINUTES)
 from datetime import datetime
 
+from src.construction import apply_construction_capacity
+
 # ---- GNN integration  ----
 try:
     from src.gnn_model import train_gnn, predict_gnn, reshape_to_graph_snapshots, build_zone_graph
@@ -403,6 +405,7 @@ def forecast_congestion(df: pd.DataFrame, zone: str,
     Returns predicted score, confidence interval, level, and recommendation.
     """
     from src.config import HOURLY_MULTIPLIERS, CITY_PROFILES
+    from src.construction import apply_construction_capacity
 
     zone_df  = df[df['zone'] == zone].sort_values('timestamp').copy()
     forecasts = []
@@ -414,6 +417,14 @@ def forecast_congestion(df: pd.DataFrame, zone: str,
 
     schedule = 'saudi' if city in SAUDI_CITIES else 'standard'
     multipliers = HOURLY_MULTIPLIERS[schedule]
+
+    road_type = zone_df["road_type"].iloc[0] if "road_type" in zone_df.columns else "arterial"
+    
+    from src.config import ROAD_CAPACITY_VPH
+    base_capacity = ROAD_CAPACITY_VPH.get(road_type, 1600)
+
+    # Apply construction capacity reduction at current time
+    effective_capacity = apply_construction_capacity(base_capacity, zone)
 
     residuals = []
     for h in range(1, 8):
@@ -1261,14 +1272,25 @@ def optimise_freight_schedule(
         all_events.append((dt, day_events))
 
     # Restriction check function
-    def is_restricted(zone: str, hour: int, weight: float) -> bool:
+        # Inside optimise_freight_schedule, replace the is_restricted function
+    def is_restricted(zone: str, hour: int, weight: float, dt: datetime) -> bool:
+        # Check geofenced restrictions
         restrictions = GEOFENCED_RESTRICTED_ZONES.get(zone)
-        if not restrictions:
-            return False
-        max_weight = restrictions['max_weight_tonnes']
-        restricted_hours = restrictions.get('restricted_hours', [])
-        if hour in restricted_hours and weight > max_weight:
-            return True
+        if restrictions:
+            max_weight = restrictions['max_weight_tonnes']
+            restricted_hours = restrictions.get('restricted_hours', [])
+            if hour in restricted_hours and weight > max_weight:
+                return True
+        
+        # Check active construction zones
+        from src.construction import get_active_construction
+        active_constructions = get_active_construction(city, dt)
+        for cz in active_constructions:
+            if cz.get("zone") == zone:
+                # Check if construction is active at this time
+                if cz.get("start_date") <= dt.strftime("%Y-%m-%d") <= cz.get("end_date"):
+                    if cz.get("start_hour") <= hour < cz.get("end_hour"):
+                        return True
         return False
 
     # Check prayer window
@@ -1307,7 +1329,7 @@ def optimise_freight_schedule(
     for idx, (dt, events) in enumerate(all_events):
         hour = dt.hour
         # Check restrictions for origin and destination
-        if is_restricted(origin_zone, hour, vehicle_weight_tonnes):
+        if is_restricted(origin_zone, hour, vehicle_weight_tonnes, dt):
             continue
         if is_restricted(destination_zone, hour, vehicle_weight_tonnes):
             continue
