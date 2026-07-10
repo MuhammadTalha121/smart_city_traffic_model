@@ -10,6 +10,7 @@ import numpy as np
 
 from sklearn.metrics import mean_absolute_error
 
+from src.construction import generate_diversion_advisory
 
 from src.signal_controller import SIGNAL_COMMANDS_LOG_PATH
 
@@ -3970,6 +3971,25 @@ def construction_update(
         return {"status": "updated", "construction": result}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+
+
+
+@app.get("/construction/diversion/{zone}", tags=["construction"])
+@limiter.limit("20/minute")
+def construction_diversion(
+    request: Request,
+    zone: str,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Generate a diversion advisory for a zone with active construction.
+    """
+    _assert_city_permitted(auth, city)
+    result = generate_diversion_advisory(zone, city)
+    return result
 
 
 
