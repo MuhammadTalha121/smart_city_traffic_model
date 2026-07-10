@@ -881,3 +881,10 @@ SUMO_NETWORK_FILE: str = "riyadh_5zones.net.xml"
 SUMO_ROUTE_FILE: str = "riyadh_5zones.rou.xml"
 SUMO_CONFIG_FILE: str = "riyadh_5zones.sumocfg"
 
+
+
+
+
+# ── Construction Zone Data Model (PROMPT 125) ───────────
+CONSTRUCTION_ZONES_FILE: str = "construction_zones.json"
+CONSTRUCTION_MIN_CAPACITY_FRACTION: float = 0.10  # never drop below 10% of base capacity
