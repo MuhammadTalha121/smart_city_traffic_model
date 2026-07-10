@@ -18,7 +18,7 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
                         INCIDENT_PERSISTENCE_MINUTES)
 from datetime import datetime
 
-from src.construction import apply_construction_capacity
+from src.construction import apply_construction_capacity, get_active_construction
 
 # ---- GNN integration  ----
 try:
@@ -1229,6 +1229,7 @@ def optimise_freight_schedule(
       - Friday prayer window (12–13) for Saudi cities
       - Predicted high congestion (score > 0.4)
       - Active events with multiplier > 1.2 during that hour
+      - Active construction zones
 
     Parameters
     ----------
@@ -1241,7 +1242,7 @@ def optimise_freight_schedule(
 
     Returns
     -------
-    dict with keys: city, origin_zone, destination_zone, weight_tonnes, recommendations (list of dicts)
+    dict with keys: city, origin_zone, destination_zone, weight_tonnes, recommendations (list of dicts), construction_conflict (bool)
     """
     from src.config import GEOFENCED_RESTRICTED_ZONES, FRIDAY_PRAYER_HOURS, SAUDI_CITIES, CONGESTION_THRESHOLDS
     from src.data import get_active_events
@@ -1257,22 +1258,21 @@ def optimise_freight_schedule(
     else:
         start_datetime = datetime.now()
 
+    construction_conflict = False
+
     # Load city DataFrame
     df = app.state.city_dfs.get(city)
     if df is None:
         raise ValueError(f"City '{city}' not found in app state.")
 
     # Get event data for the city on each day in horizon
-    # We'll check events per day
     all_events = []
     for h in range(horizon_hours):
         dt = start_datetime + timedelta(hours=h)
-        # Get events for that day (cached per day)
         day_events = get_active_events(city, dt.date())
         all_events.append((dt, day_events))
 
-    # Restriction check function
-        # Inside optimise_freight_schedule, replace the is_restricted function
+    # Restriction check function with dt parameter
     def is_restricted(zone: str, hour: int, weight: float, dt: datetime) -> bool:
         # Check geofenced restrictions
         restrictions = GEOFENCED_RESTRICTED_ZONES.get(zone)
@@ -1281,7 +1281,7 @@ def optimise_freight_schedule(
             restricted_hours = restrictions.get('restricted_hours', [])
             if hour in restricted_hours and weight > max_weight:
                 return True
-        
+
         # Check active construction zones
         from src.construction import get_active_construction
         active_constructions = get_active_construction(city, dt)
@@ -1306,13 +1306,9 @@ def optimise_freight_schedule(
     # Check high congestion
     def is_high_congestion(df: pd.DataFrame, zone: str, dt: datetime) -> bool:
         hour = dt.hour
-        # Use forecast_congestion for the given zone and hour ahead (0 hours = now)
-        # We need a way to get the forecast for the specific hour – forecast_congestion gives future hours
-        # We'll approximate: use the current congestion from the latest data for that zone and hour
         zone_df = df[df["zone"] == zone]
         if zone_df.empty:
             return False
-        # Get the mean congestion for that zone and hour (average over days)
         hour_mean = zone_df[zone_df["hour"] == hour]["congestion_score"].mean()
         return hour_mean > 0.4
 
@@ -1328,17 +1324,19 @@ def optimise_freight_schedule(
     candidates = []
     for idx, (dt, events) in enumerate(all_events):
         hour = dt.hour
-        # Check restrictions for origin and destination
+
+        # Check restrictions for origin and destination (pass dt)
         if is_restricted(origin_zone, hour, vehicle_weight_tonnes, dt):
+            construction_conflict = True
             continue
-        if is_restricted(destination_zone, hour, vehicle_weight_tonnes):
+        if is_restricted(destination_zone, hour, vehicle_weight_tonnes, dt):
+            construction_conflict = True
             continue
+
         if is_prayer_window(dt, city):
             continue
         if is_event_multiplier_high(dt, events):
             continue
-        # Check congestion for origin zone (the route will go through origin and destination, but we mainly care about origin departure)
-        # Actually we should check congestion on the route, but for simplicity check origin and destination.
         if is_high_congestion(df, origin_zone, dt) or is_high_congestion(df, destination_zone, dt):
             continue
 
@@ -1346,24 +1344,22 @@ def optimise_freight_schedule(
         origin_cong = df[(df["zone"] == origin_zone) & (df["hour"] == hour)]["congestion_score"].mean()
         dest_cong = df[(df["zone"] == destination_zone) & (df["hour"] == hour)]["congestion_score"].mean()
         avg_cong = (origin_cong + dest_cong) / 2
+
         # Buffer: hours until next restricted hour for either zone (look ahead within the horizon)
         buffer_hours = 0
         for future_idx in range(idx + 1, len(all_events)):
             future_dt, _ = all_events[future_idx]
             future_hour = future_dt.hour
-            if is_restricted(origin_zone, future_hour, vehicle_weight_tonnes) or is_restricted(destination_zone, future_hour, vehicle_weight_tonnes):
+            if is_restricted(origin_zone, future_hour, vehicle_weight_tonnes, future_dt) or is_restricted(destination_zone, future_hour, vehicle_weight_tonnes, future_dt):
                 buffer_hours = future_dt.hour - dt.hour
                 break
-        # If no restriction found, buffer = 24 (max)
         if buffer_hours == 0:
             buffer_hours = 24
 
-        # Score: lower congestion is better, higher buffer is better, earlier is better (lower index)
-        # Normalize: congestion weight 0.5, buffer weight 0.3, earliness weight 0.2
-        # Normalize congestion to 0-1 (inverse, lower is better)
-        norm_cong = 1 - min(avg_cong / 0.4, 1.0)  # if avg_cong > 0.4 we already excluded, so <0.4
-        norm_buffer = min(buffer_hours / 24, 1.0)  # 24 hours max
-        norm_earliness = 1 - (idx / horizon_hours)  # earlier hour has higher score
+        # Normalize scores
+        norm_cong = 1 - min(avg_cong / 0.4, 1.0)
+        norm_buffer = min(buffer_hours / 24, 1.0)
+        norm_earliness = 1 - (idx / horizon_hours)
 
         score = norm_cong * 0.5 + norm_buffer * 0.3 + norm_earliness * 0.2
 
@@ -1400,7 +1396,9 @@ def optimise_freight_schedule(
         "weight_tonnes": vehicle_weight_tonnes,
         "horizon_hours": horizon_hours,
         "recommendations": recommendations,
+        "construction_conflict": construction_conflict,
         "message": "Top 3 departure windows. These are recommendations, not guarantees."
+                   + (" Some windows are affected by construction conflicts." if construction_conflict and not recommendations else "")
     }
 
 
