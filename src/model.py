@@ -1014,25 +1014,23 @@ def get_intervention(zone: str, hour: int, congestion_level_str: str) -> Dict:
     }
 
 
+import portalocker
+
+
+
 def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predictions_log.csv',
                     interval_width: float = None, data_source: str = 'mock'):
     """
     Append a prediction and its explanation to the audit log CSV.
 
-    Schema-safe append. Root cause of the 'Expected 14 fields... saw 15'
-    ParserError: PROMPT 087 added the data_source column to an
-    already-populated log file whose on-disk header was never migrated —
-    pandas' C parser cannot read a CSV where row field counts vary. Before
-    appending, this now compares the new row's columns against the
-    existing file's header; if new columns are present, the file is
-    rewritten once with those columns backfilled empty for every
-    historical row, so all rows past and future stay consistent. This
-    keeps the column-addition pattern (INV-1, additive fields) safe for
-    any future column added to this log.
+    Schema-safe append. If new columns are added (e.g., data_source), the existing
+    file is rewritten once with the new columns backfilled, then the new row is appended.
+    Uses portalocker for thread/process-safe file access.
     """
     import os
     from datetime import datetime
-
+    import portalocker
+    import pandas as pd
     from src.training import training_log_path
 
     log_path = training_log_path(log_path)
@@ -1055,20 +1053,46 @@ def log_prediction(prediction: Dict, explanation: Dict, log_path: str = 'predict
         'data_source'     : data_source,
     }
 
-    if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-        with open(log_path, 'r', encoding='utf-8') as f:
+    log_df = pd.DataFrame([row])
+
+    # Acquire exclusive lock for the entire operation
+    with open(log_path, "a+", encoding="utf-8") as f:
+        portalocker.lock(f, portalocker.LOCK_EX)
+
+        # Check if file is empty
+        f.seek(0)
+        first_char = f.read(1)
+        is_empty = (first_char == '')
+
+        if not is_empty:
+            # Read existing header and check for missing columns
+            f.seek(0)
             existing_header = f.readline().strip().split(',')
-        missing_cols = [c for c in row.keys() if c not in existing_header]
-        if missing_cols:
-            existing_df = pd.read_csv(log_path, engine='python', on_bad_lines='skip')
-            for col in missing_cols:
-                existing_df[col] = ''
-            existing_df.to_csv(log_path, index=False)
+            missing_cols = [c for c in row.keys() if c not in existing_header]
 
-    log_df       = pd.DataFrame([row])
-    write_header = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
-    log_df.to_csv(log_path, mode='a', header=write_header, index=False)
+            if missing_cols:
+                # Rewrite the file with the missing columns added (backfilled)
+                f.seek(0)
+                existing_df = pd.read_csv(f, engine='python', on_bad_lines='skip')
+                for col in missing_cols:
+                    existing_df[col] = ''
+                # Move to top and rewrite
+                f.seek(0)
+                existing_df.to_csv(f, index=False)
+                # Truncate any leftover content
+                f.truncate()
+                # After rewrite, header is already present, so we just append
+                write_header = False
+            else:
+                write_header = False
+        else:
+            write_header = True
 
+        # Append the new row
+        f.seek(0, 2)  # move to end of file
+        log_df.to_csv(f, header=write_header, index=False)
+
+        portalocker.unlock(f)
 
 
 
@@ -3933,16 +3957,22 @@ _INCIDENTS_FIELDS = [
 _SEVERITY_ORDER = {"Minor": 1, "Moderate": 2, "Major": 3, "Critical": 4}
 
 
+import portalocker
+
 def _log_incident(record: dict) -> None:
-    """Append one incident row to incidents_log.csv (append-only)."""
     from src.training import training_log_path
     path = _incident_Path(training_log_path(INCIDENTS_LOG_PATH))
     is_new = not path.exists()
+    
     with open(path, "a", newline="", encoding="utf-8") as f:
+        portalocker.lock(f, portalocker.LOCK_EX)
         writer = _incident_csv.DictWriter(f, fieldnames=_INCIDENTS_FIELDS)
         if is_new:
             writer.writeheader()
         writer.writerow({k: record.get(k, "") for k in _INCIDENTS_FIELDS})
+        portalocker.unlock(f)
+
+    
 
 
 def estimate_incident_clearance_time(
