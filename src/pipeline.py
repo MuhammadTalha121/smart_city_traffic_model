@@ -570,15 +570,9 @@ def deliver_webhook_alert(alerts: list, webhook_url: str) -> bool:
         return False
 
 
-def log_alert(alerts: list, log_path: str = 'alerts_log.csv') -> None:
-    """
-    Append triggered alerts to alerts_log.csv for /alerts/history queries.
+import portalocker
 
-    Parameters
-    ----------
-    alerts   : List returned by check_thresholds().
-    log_path : Path to the alerts log CSV.
-    """
+def log_alert(alerts: list, log_path: str = 'alerts_log.csv') -> None:
     if not alerts:
         return
     
@@ -597,9 +591,13 @@ def log_alert(alerts: list, log_path: str = 'alerts_log.csv') -> None:
             'severity' : alert.get('severity'),
         })
 
-    log_df       = pd.DataFrame(rows)
-    write_header = not os.path.exists(log_path)
-    log_df.to_csv(log_path, mode='a', header=write_header, index=False)
+    log_df = pd.DataFrame(rows)
+    write_header = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
+    
+    with open(log_path, "a", encoding="utf-8") as f:
+        portalocker.lock(f, portalocker.LOCK_EX)
+        log_df.to_csv(f, header=write_header, index=False)
+        portalocker.unlock(f)
 
 
 
