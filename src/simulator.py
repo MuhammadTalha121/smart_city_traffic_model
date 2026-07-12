@@ -22,8 +22,9 @@ from src.config import (
 SCENARIOS_LOG_PATH = "scenarios_log.csv"
 
 
+import portalocker
+
 def _log_scenario(city: str, scenario: dict, hours_ahead: int, result: dict) -> None:
-    """Append-only log of scenario runs to scenarios_log.csv. Never raises."""
     try:
         row = {
             "timestamp": datetime.now().isoformat(),
@@ -39,7 +40,11 @@ def _log_scenario(city: str, scenario: dict, hours_ahead: int, result: dict) -> 
         log_path = training_log_path(SCENARIOS_LOG_PATH)
         log_df = pd.DataFrame([row])
         write_header = not os.path.exists(log_path)
-        log_df.to_csv(log_path, mode="a", header=write_header, index=False)
+        
+        with open(log_path, "a", encoding="utf-8") as f:
+            portalocker.lock(f, portalocker.LOCK_EX)
+            log_df.to_csv(f, header=write_header, index=False)
+            portalocker.unlock(f)
     except Exception:
         pass
 
