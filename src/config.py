@@ -885,6 +885,19 @@ SUMO_CONFIG_FILE: str = "riyadh_5zones.sumocfg"
 
 
 
-# ── Construction Zone Data Model (PROMPT 125) ───────────
+# ── Construction Zone Data Model───────────
 CONSTRUCTION_ZONES_FILE: str = "construction_zones.json"
 CONSTRUCTION_MIN_CAPACITY_FRACTION: float = 0.10  # never drop below 10% of base capacity
+
+
+
+
+# ── Caching Configuration ────────────────
+CACHE_TTL_SECONDS: int = 60
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+CACHE_ENABLED: bool = os.getenv("CACHE_ENABLED", "True").lower() == "true"
+
+# Endpoint-specific TTLs
+CACHE_TTL_PREDICT: int = 60
+CACHE_TTL_INCIDENTS: int = 30
+CACHE_TTL_WEATHER_NOWCAST: int = 600
