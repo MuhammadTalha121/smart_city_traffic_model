@@ -68,17 +68,13 @@ _ALERT_DEDUP_WINDOW_S = 900  # 15 minutes
 _last_escalation_sent: Dict[str, datetime] = {}
 
 
+import portalocker
+
 def _log_command(row: dict) -> None:
-    """
-    Append one actuation/confirmation event to signal_commands_log.csv
-    (append-only). Schema-safe: if new columns were added since the file
-    was last written (e.g. attempt_count/last_error_message added in
-    PROMPT 122), backfills the existing rows once before appending, same
-    pattern as src/model.py's log_prediction().
-    """
     from src.training import training_log_path
     path = training_log_path(SIGNAL_COMMANDS_LOG_PATH)
 
+    # Schema migration check
     if os.path.exists(path) and os.path.getsize(path) > 0:
         with open(path, "r", encoding="utf-8") as f:
             existing_header = f.readline().strip().split(",")
@@ -88,14 +84,19 @@ def _log_command(row: dict) -> None:
             existing_df = pd.read_csv(path, engine="python", on_bad_lines="skip")
             for col in missing_cols:
                 existing_df[col] = ""
-            existing_df.to_csv(path, index=False)
+            with open(path, "w", encoding="utf-8") as f_out:
+                portalocker.lock(f_out, portalocker.LOCK_EX)
+                existing_df.to_csv(f_out, index=False)
+                portalocker.unlock(f_out)
 
     is_new = not os.path.exists(path) or os.path.getsize(path) == 0
     with open(path, "a", newline="", encoding="utf-8") as f:
+        portalocker.lock(f, portalocker.LOCK_EX)
         writer = csv.DictWriter(f, fieldnames=_LOG_FIELDS)
         if is_new:
             writer.writeheader()
         writer.writerow({k: row.get(k, "") for k in _LOG_FIELDS})
+        portalocker.unlock(f)
 
 
 class ActuationSafetyGate:
