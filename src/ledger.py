@@ -149,7 +149,7 @@ def verify_ledger_chain(
     algorithm: str = HASH_ALGORITHM,
 ) -> Dict[str, Any]:
     """
-    PROMPT 068 - module-level, on-demand chain verification.
+    - module-level, on-demand chain verification.
 
     Same hash-chaining logic as ViolationLedger.verify_chain(), exposed as
     a standalone function so it can be called without instantiating a
@@ -208,7 +208,7 @@ class ViolationLedger:
         json_str = json.dumps(block_data, sort_keys=True, separators=(',', ':'))
         combined = json_str + previous_hash
         return hashlib.sha256(combined.encode('utf-8')).hexdigest()
-
+    import portalocker
     def append_violation(
         self,
         vehicle_id_hash: str,
@@ -221,7 +221,7 @@ class ViolationLedger:
         Append a new violation record, hash it, and return the full row.
         The previous hash is taken from the last stored block (or genesis).
 
-        PROMPT 068: when LEDGER_FREEZE_ON_BREAK is True (the default),
+         when LEDGER_FREEZE_ON_BREAK is True (the default),
         this re-verifies the existing chain before writing and raises
         LedgerIntegrityError instead of appending onto an already-broken
         chain. See the module docstring's BREAK-RECOVERY PROCEDURE.
@@ -235,41 +235,48 @@ class ViolationLedger:
                     'first_break_at_row': pre_check['first_invalid_block'],
                 })
 
-        # Read last row to get previous hash
-        last_hash = self.genesis_hash
-        block_number = 1
-        if os.path.exists(self.path) and os.path.getsize(self.path) > 0:
-            with open(self.path, 'r', newline='', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-                if rows:
-                    last_row = rows[-1]
-                    last_hash = last_row['block_hash']
-                    block_number = int(last_row['block_number']) + 1
+        # Acquire exclusive lock for the entire read+write operation
+        with open(self.path, 'r+', newline='', encoding='utf-8') as f:
+            portalocker.lock(f, portalocker.LOCK_EX)
 
-        # Prepare block data (excludes previous_hash and block_hash)
-        block_data = {
-            'vehicle_id_hash': vehicle_id_hash,
-            'violation_type': violation_type,
-            'zone': zone,
-            'timestamp': timestamp,
-            'penalty_sar': penalty_sar,
-        }
+            # Read last row to get previous hash and block number
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            if rows:
+                last_row = rows[-1]
+                last_hash = last_row['block_hash']
+                block_number = int(last_row['block_number']) + 1
+            else:
+                last_hash = self.genesis_hash
+                block_number = 1
 
-        block_hash = self._compute_block_hash(block_data, last_hash)
+            # Prepare block data (excludes previous_hash and block_hash)
+            block_data = {
+                'vehicle_id_hash': vehicle_id_hash,
+                'violation_type': violation_type,
+                'zone': zone,
+                'timestamp': timestamp,
+                'penalty_sar': penalty_sar,
+            }
 
-        # Build the CSV row
-        row = {
-            'block_number': block_number,
-            'previous_hash': last_hash,
-            'block_hash': block_hash,
-            **block_data,
-        }
+            block_hash = self._compute_block_hash(block_data, last_hash)
 
-        # Append to CSV
-        with open(self.path, 'a', newline='', encoding='utf-8') as f:
+            # Build the CSV row
+            row = {
+                'block_number': block_number,
+                'previous_hash': last_hash,
+                'block_hash': block_hash,
+                **block_data,
+            }
+
+            # Move cursor to the end of the file for appending
+            f.seek(0, 2)
+
+            # Write the new row
             writer = csv.DictWriter(f, fieldnames=row.keys())
             writer.writerow(row)
+
+            portalocker.unlock(f)
 
         return row
 
