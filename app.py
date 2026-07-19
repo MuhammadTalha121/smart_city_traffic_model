@@ -8,6 +8,8 @@ from typing import Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 
+from src.cache import init_cache, cached
+
 from sklearn.metrics import mean_absolute_error
 
 from src.construction import generate_diversion_advisory
@@ -36,9 +38,12 @@ from src.calibration import (
     load_calibration_factors,
     generate_calibration_report,
 )
-from src.config import CALIBRATION_FACTORS_PATH, ACTUATION_COOLDOWN_SECONDS
+from src.config import (CALIBRATION_FACTORS_PATH, ACTUATION_COOLDOWN_SECONDS, CACHE_TTL_PREDICT,
+    CACHE_TTL_INCIDENTS,
+    CACHE_TTL_WEATHER_NOWCAST,)
 from src.signal_controller import NTCIPStubController, schedule_confirmation
 
+from src.cache import init_cache, cached
 
 from src.simulator import apply_scenario, run_scenario
 
@@ -169,13 +174,19 @@ class SignalActuateRequest(BaseModel):
     )
 
 
+import portalocker
+
 def _write_usage_log(log_data: dict) -> None:
-    """Append a single usage log row to usage_log.csv."""
     from src.training import training_log_path
     log_path = training_log_path("usage_log.csv")
     row = pd.DataFrame([log_data])
     write_header = not os.path.exists(log_path)
-    row.to_csv(log_path, mode="a", header=write_header, index=False)
+    
+    with open(log_path, "a", encoding="utf-8") as f:
+        portalocker.lock(f, portalocker.LOCK_EX)
+        row.to_csv(f, header=write_header, index=False)
+        portalocker.unlock(f)
+
 
 def get_today_usage_for_key(key_hash: str) -> int:
     """
@@ -568,7 +579,11 @@ async def lifespan(app: FastAPI):
     # Define a state getter that returns the needed attributes
     def _get_state():
         return app.state
+    
+    # Initialize Redis cache
     telemetry_queue.start_worker(_get_state)
+    # Initialize Redis cache
+    await init_cache()
     app.state.telemetry_queue = telemetry_queue
 
         # ===== Edge cabinet simulators =====
@@ -986,7 +1001,7 @@ def calibration_upload(
 # ---------------------------------------------------------------------------
 # Prediction endpoints — authenticated
 # ---------------------------------------------------------------------------
-
+# @cached(expire=CACHE_TTL_PREDICT)
 @app.post("/predict", tags=["prediction"])
 @limiter.limit("60/minute")
 def predict(
@@ -1716,7 +1731,7 @@ def signals_recommended(
 
 
 
-
+@cached(expire=60)
 @app.get("/signals/adaptive", tags=["signals"])
 @limiter.limit("20/minute")
 def signals_adaptive(
@@ -2182,6 +2197,7 @@ def forecast(
     return {"city": city, "zone": zone, "forecasts": forecasts}
 
 
+@cached(expire=CACHE_TTL_WEATHER_NOWCAST)
 @app.get("/weather/nowcast", tags=["weather"])
 def weather_nowcast(
     city: str = "Riyadh",
@@ -3625,12 +3641,15 @@ _IDS_FIELDS  = ["timestamp", "zone", "hour", "risk_level", "flags",
                  "vehicle_count", "avg_speed"]
 
 
-def _log_ids_event(ids_result: dict, request) -> None:
+def _log_ids_event(ids_result: dict, request_data: dict) -> None:
     """Append one IDS event row to ids_log.csv."""
     from src.training import training_log_path
-    path    = _Path(training_log_path(IDS_LOG_PATH))
-    is_new  = not path.exists()
-    with open(path, "a", newline="") as f:
+    import portalocker
+    path = _Path(training_log_path(IDS_LOG_PATH))
+    is_new = not path.exists()
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        portalocker.lock(f, portalocker.LOCK_EX)
         writer = _csv.DictWriter(f, fieldnames=_IDS_FIELDS)
         if is_new:
             writer.writeheader()
@@ -3640,9 +3659,10 @@ def _log_ids_event(ids_result: dict, request) -> None:
             "hour":          ids_result["hour"],
             "risk_level":    ids_result["risk_level"],
             "flags":         "|".join(ids_result["flags"]),
-            "vehicle_count": request.vehicle_count,
-            "avg_speed":     request.avg_speed,
+            "vehicle_count": request_data.get("vehicle_count", 0),
+            "avg_speed":     request_data.get("avg_speed", 0),
         })
+        portalocker.unlock(f)
 
 
 @app.get("/ids/alerts", tags=["security"])
@@ -5224,7 +5244,7 @@ async def equity_summary(
 
 
 
-
+@cached(expire=CACHE_TTL_INCIDENTS)
 @app.get("/incidents/active", tags=["incidents"])
 @limiter.limit("20/minute")
 def incidents_active(

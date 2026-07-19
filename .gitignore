@@ -78,3 +78,6 @@ scenarios_log.csv
 *_training.csv
 
 sensor_registry.json
+
+
+load_test_report.html
