@@ -2235,3 +2235,64 @@ def test_agency_city_scope_enforced():
 
     # Should not raise for permitted city
     assert_agency_city_permitted(credentials, "Riyadh")
+
+
+
+
+def test_police_incident_overrides_model_severity():
+    from src.model import detect_incidents
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, add_cross_zone_lag_features, apply_event_multipliers
+
+    df = generate_traffic_data(city="Riyadh")
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = apply_event_multipliers(df, city="Riyadh")
+    df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
+
+    police_incidents = [{
+        "incident_id": "MRR-TEST",
+        "zone"       : "Zone_1",
+        "city"       : "Riyadh",
+        "severity"   : "Critical",
+        "source"     : "muroor",
+    }]
+
+    # Force a detectable speed drop in Zone_1
+    import numpy as np
+    zone_mask = df["zone"] == "Zone_1"
+    df.loc[zone_mask & (df.index >= df[zone_mask].index[-15:][0]), "avg_speed"] *= 0.2
+
+    result = detect_incidents(
+        df, "Zone_1", city="Riyadh",
+        police_incidents=police_incidents, log=False,
+    )
+
+    if result["incident_detected"]:
+        assert result["severity"] == "Critical"
+        assert result["source"] == "muroor"
+
+
+def test_muroor_outbound_push_logged(tmp_path, monkeypatch):
+    from src.adapters import MuroorAdapter
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "MUROOR_OUTBOUND_LOG", str(tmp_path / "muroor_out.csv"))
+
+    adapter = MuroorAdapter()
+    result  = adapter.push_signal_status("Riyadh", "Zone_2", "green")
+    assert result is True
+
+    import csv
+    with open(cfg.MUROOR_OUTBOUND_LOG) as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["zone"] == "Zone_2"
+    assert rows[0]["data_type"] == "signal_status"
+    assert rows[0]["value"] == "green"
+
+
+def test_muroor_sync_returns_mock_incidents():
+    from src.adapters import MuroorAdapter
+    incidents = MuroorAdapter().fetch_police_incidents("Riyadh")
+    assert isinstance(incidents, list)
+    assert all("severity" in i and "zone" in i for i in incidents)
+    assert all(i.get("source") == "muroor" for i in incidents)
