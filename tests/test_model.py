@@ -2090,3 +2090,85 @@ def test_falls_back_to_heuristic_when_sumo_unavailable():
         assert result["engine"] == "heuristic"
         assert result["recommended_plan"] is not None
 
+
+
+def test_rwis_mock_returns_all_zones():
+    from src.adapters import RWISAdapter
+    from src.config import RWIS_MOCK_DATA
+    adapter = RWISAdapter()
+    results = adapter.fetch_all_zones(list(RWIS_MOCK_DATA.keys()))
+    assert set(results.keys()) == set(RWIS_MOCK_DATA.keys())
+    for zone, data in results.items():
+        assert "pavement_temp_c" in data
+        assert "moisture_level" in data
+        assert "visibility_m" in data
+        assert data["black_ice_risk"] is False  # Saudi climate self-audit
+
+def test_maintenance_rescheduled_when_pavement_wet():
+    from unittest.mock import patch, MagicMock
+    from src.model import generate_maintenance_schedule
+    from src.data import generate_traffic_data, apply_hourly_patterns, add_lag_features, add_cross_zone_lag_features, apply_event_multipliers
+    from src.config import RWIS_MOISTURE_RESCHEDULE_THRESHOLD
+
+    df = generate_traffic_data(city="Riyadh")
+    df = apply_hourly_patterns(df, city="Riyadh")
+    df = apply_event_multipliers(df, city="Riyadh")
+    df = add_lag_features(df)
+    df = add_cross_zone_lag_features(df)
+
+    mock_app = MagicMock()
+    mock_app.state.city_dfs = {"Riyadh": df}
+
+    wet_conditions = {
+        "Zone_1": {
+            "pavement_temp_c": 20.0,
+            "moisture_level": RWIS_MOISTURE_RESCHEDULE_THRESHOLD + 0.1,
+            "visibility_m": 8000,
+            "black_ice_risk": False,
+        }
+    }
+
+    with patch("app.app", mock_app):
+        schedule = generate_maintenance_schedule(city="Riyadh", road_conditions=wet_conditions)
+
+    zone_1_tasks = [t for t in schedule["zones"] if t.get("zone") == "Zone_1"]
+    assert len(zone_1_tasks) > 0
+    assert all(t.get("status") == "deferred" for t in zone_1_tasks)
+
+
+
+
+
+
+def test_preemption_plan_covers_correct_corridor():
+    from src.model import generate_preemption_plan
+    vehicle = {
+        "id": "AMB-001", "type": "ambulance",
+        "current_zone": "Zone_1", "destination_zone": "Zone_4",
+        "speed_kmh": 80, "eta_minutes": 3,
+    }
+    plan = generate_preemption_plan(vehicle, "Riyadh")
+    assert "Zone_1" in plan["corridor"]
+    assert len(plan["corridor"]) <= 3  # EMERGENCY_PREEMPTION_CORRIDOR_LENGTH
+    assert len(plan["timing_plan"]) == len(plan["corridor"])
+    assert all(t["action"] == "extend_green" for t in plan["timing_plan"])
+
+
+def test_preemption_blocked_when_actuation_disabled():
+    from src.model import generate_preemption_plan
+    vehicle = {
+        "id": "FIRE-001", "type": "fire",
+        "current_zone": "Zone_2", "destination_zone": "Zone_5",
+        "speed_kmh": 90, "eta_minutes": 2,
+    }
+    plan = generate_preemption_plan(vehicle, "Riyadh")
+    # ACTUATION_ENABLED is False by default in config
+    assert plan["actuation_mode"] == "recommendation_only"
+
+
+def test_no_preemption_when_no_active_vehicles():
+    from src.adapters import EmergencyVehicleFeed
+    feed = EmergencyVehicleFeed()
+    # Stub returns empty list when EMERGENCY_FEED_ENDPOINT is not configured
+    vehicles = feed.get_active_emergency_vehicles("Riyadh")
+    assert vehicles == []
