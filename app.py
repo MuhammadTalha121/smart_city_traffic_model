@@ -566,6 +566,20 @@ async def lifespan(app: FastAPI):
     lambda: generate_weekly_report(city='Riyadh'),
     'cron', day_of_week='mon', hour=6, minute=0
 )
+    
+    def _scheduled_preemption_check():
+        from src.adapters import EmergencyVehicleFeed
+        from src.model import generate_preemption_plan
+        feed = EmergencyVehicleFeed()
+        for city in app.state.city_dfs.keys():
+            vehicles = feed.get_active_emergency_vehicles(city)
+            if vehicles:
+                for v in vehicles:
+                    plan = generate_preemption_plan(v, city)
+                    print(f"[Preemption] {city}: vehicle {v['id']} corridor {plan['corridor']}")
+
+    scheduler.add_job(_scheduled_preemption_check, "interval", seconds=30)
+    print("[Scheduler] Emergency vehicle preemption check scheduled every 30 seconds")
 
     
     # Inside lifespan, after adding all jobs
@@ -2213,6 +2227,32 @@ def weather_nowcast(
     }
 
 
+@app.get("/weather/road-conditions", tags=["weather"])
+@limiter.limit("20/minute")
+def road_conditions(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Road surface conditions per zone from RWIS sensors (PROMPT 129)."""
+    from src.adapters import RWISAdapter
+    from src.config import CITY_PROFILES, RWIS_ENDPOINT
+
+    _assert_city_permitted(auth, city)
+
+    city_profile = CITY_PROFILES.get(city)
+    if city_profile is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    zones = [f"Zone_{i}" for i in range(1, city_profile["zones"] + 1)]
+    conditions = RWISAdapter().fetch_all_zones(zones)
+
+    return {
+        "city": city,
+        "zones": conditions,
+        "source": "rwis_real" if RWIS_ENDPOINT else "rwis_mock",
+    }
+
 
 
 @app.get("/emergency/response-time", tags=["safety"])
@@ -2264,6 +2304,29 @@ def emergency_response_time(
         "fastest_estimated_minutes" : estimates[0]["estimated_minutes"] if estimates else None,
         "who_threshold_mins"        : 8,
         "estimates"                 : estimates,
+    }
+
+
+@app.get("/emergency/preemption-status", tags=["emergency"])
+@limiter.limit("30/minute")
+def emergency_preemption_status(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Active emergency vehicles and their pre-emption plans (PROMPT 130)."""
+    from src.adapters import EmergencyVehicleFeed
+    from src.model import generate_preemption_plan
+
+    _assert_city_permitted(auth, city)
+
+    vehicles = EmergencyVehicleFeed().get_active_emergency_vehicles(city)
+    plans    = [generate_preemption_plan(v, city) for v in vehicles]
+
+    return {
+        "city"            : city,
+        "active_vehicles" : len(vehicles),
+        "preemption_plans": plans,
     }
 
 
