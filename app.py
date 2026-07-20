@@ -3155,6 +3155,162 @@ def export_gtfs_rt(
 
 
 
+# ── Agency Data Sharing Gateway (PROMPT 131) ─────────────────────────────────
+from src.agency_gateway import validate_agency_token, log_agency_access, assert_agency_city_permitted
+from fastapi.security import APIKeyHeader as _AgencyKeyHeader
+
+_agency_key_header = _AgencyKeyHeader(name="X-Agency-Token", auto_error=False)
+
+
+def _get_agency_token(request: Request) -> str:
+    return request.headers.get("X-Agency-Token", "")
+
+
+@app.get("/agency/traffic-status", tags=["agency"])
+@limiter.limit("60/minute")
+def agency_traffic_status(
+    request: Request,
+    city: str = "Riyadh",
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """Simplified zone-level traffic status for government agencies (PROMPT 131)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/agency/traffic-status", city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    df = app.state.city_dfs[city]
+    zones = []
+    for zone in sorted(df["zone"].unique()):
+        latest = df[df["zone"] == zone].sort_values("timestamp").iloc[-1]
+        score  = float(latest["congestion_score"])
+        if score >= 0.8:
+            status = "Incident"
+        elif score >= 0.6:
+            status = "Congested"
+        elif score >= 0.4:
+            status = "Slow"
+        else:
+            status = "Normal"
+        zones.append({"zone": zone, "status": status, "congestion_score": round(score, 3)})
+
+    return {"city": city, "generated_at": __import__('datetime').datetime.now().isoformat(), "zones": zones}
+
+
+@app.get("/agency/incidents", tags=["agency"])
+@limiter.limit("60/minute")
+def agency_incidents(
+    request: Request,
+    city: str = "Riyadh",
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """Active incidents for Traffic Police integration (PROMPT 131)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/agency/incidents", city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    from src.model import detect_anomalies
+    df      = app.state.city_dfs[city]
+    model   = getattr(app.state, "models", {}).get(city)
+    anomalies = detect_anomalies(df, model) if model else []
+
+    incidents = [
+        {
+            "zone"              : a.get("zone"),
+            "severity"          : a.get("severity", "unknown"),
+            "congestion_score"  : a.get("congestion_score"),
+            "clearance_estimate": a.get("clearance_estimate", "unknown"),
+        }
+        for a in anomalies
+    ]
+    return {"city": city, "active_incidents": len(incidents), "incidents": incidents}
+
+
+@app.get("/agency/export/gtfs-rt", tags=["agency"])
+@limiter.limit("60/minute")
+def agency_export_gtfs_rt(
+    request: Request,
+    city: str = "Riyadh",
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """GTFS-RT feed for Public Transport Authority (PROMPT 131)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/agency/export/gtfs-rt", city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+    return generate_gtfs_rt_feed(city)
+
+
+@app.get("/agency/export/siri", tags=["agency"])
+@limiter.limit("60/minute")
+def agency_export_siri(
+    request: Request,
+    city: str = "Riyadh",
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """SIRI feed for Public Transport Authority (PROMPT 131)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/agency/export/siri", city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+    return build_siri_service_delivery([], [], producer_ref=f"AgencyGateway-{city}")
+
+
+@app.get("/agency/export/datex-ii", tags=["agency"])
+@limiter.limit("60/minute")
+def agency_export_datex_ii(
+    request: Request,
+    city: str = "Riyadh",
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """DATEX II export for agency interoperability (PROMPT 131)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/agency/export/datex-ii", city)
+
+    return generate_datex_payload(city)
+
+
+@app.get("/agency/response-time", tags=["agency"])
+@limiter.limit("60/minute")
+def agency_response_time(
+    request: Request,
+    city: str = "Riyadh",
+    destination_zone: str = "Zone_1",
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """Estimated emergency response time to a zone (PROMPT 131)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/agency/response-time", city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    df     = app.state.city_dfs[city]
+    zones  = df[df["zone"] == destination_zone]
+    if zones.empty:
+        raise HTTPException(status_code=404, detail=f"Zone '{destination_zone}' not found.")
+
+    latest = zones.sort_values("timestamp").iloc[-1]
+    score  = float(latest["congestion_score"])
+    base_minutes   = 8.0
+    delay_minutes  = round(score * 12.0, 1)
+    total_minutes  = round(base_minutes + delay_minutes, 1)
+
+    return {
+        "city"                    : city,
+        "destination_zone"        : destination_zone,
+        "base_response_time_min"  : base_minutes,
+        "congestion_delay_min"    : delay_minutes,
+        "estimated_total_min"     : total_minutes,
+        "congestion_score"        : round(score, 3),
+    }
+
+
 
 
 @app.get("/mobility/last-mile", tags=["mobility"])
