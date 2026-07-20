@@ -929,3 +929,31 @@ AGENCY_TOKENS: Dict[str, dict] = {
     # Format: "token_prefix_8chars": {agency_id, agency_name, allowed_cities, allowed_endpoints}
     # Populated at runtime via create_key(role="AGENCY"). Empty by default — no hardcoded secrets.
 }
+
+
+
+# ── Muroor Integration ───────────────────────────────
+MUROOR_API_ENDPOINT: str = ""  # empty = use mock
+MUROOR_OUTBOUND_LOG: str = "muroor_outbound_log.csv"
+MUROOR_MOCK_INCIDENTS: List[dict] = [
+    {
+        "incident_id"  : "MRR-001",
+        "zone"         : "Zone_1",
+        "city"         : "Riyadh",
+        "type"         : "accident",
+        "severity"     : "Major",
+        "timestamp"    : "2026-07-20T08:30:00",
+        "clearance_est": 45,
+        "source"       : "muroor",
+    },
+    {
+        "incident_id"  : "MRR-002",
+        "zone"         : "Zone_3",
+        "city"         : "Riyadh",
+        "type"         : "breakdown",
+        "severity"     : "Minor",
+        "timestamp"    : "2026-07-20T09:15:00",
+        "clearance_est": 20,
+        "source"       : "muroor",
+    },
+]
