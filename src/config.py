@@ -901,3 +901,23 @@ CACHE_ENABLED: bool = os.getenv("CACHE_ENABLED", "True").lower() == "true"
 CACHE_TTL_PREDICT: int = 60
 CACHE_TTL_INCIDENTS: int = 30
 CACHE_TTL_WEATHER_NOWCAST: int = 600
+
+
+
+# ── RWIS Sensor Integration  ──────────────────────────
+RWIS_ENDPOINT: str = ""  # empty = use mock data
+RWIS_MOISTURE_RESCHEDULE_THRESHOLD: float = 0.3
+
+RWIS_MOCK_DATA: Dict[str, dict] = {
+    "Zone_1": {"pavement_temp_c": 44.0, "moisture_level": 0.0, "visibility_m": 10000, "black_ice_risk": False},
+    "Zone_2": {"pavement_temp_c": 43.5, "moisture_level": 0.0, "visibility_m": 10000, "black_ice_risk": False},
+    "Zone_3": {"pavement_temp_c": 45.0, "moisture_level": 0.0, "visibility_m": 10000, "black_ice_risk": False},
+    "Zone_4": {"pavement_temp_c": 42.0, "moisture_level": 0.0, "visibility_m": 10000, "black_ice_risk": False},
+    "Zone_5": {"pavement_temp_c": 41.5, "moisture_level": 0.0, "visibility_m": 10000, "black_ice_risk": False},
+}
+
+
+# ── Emergency Vehicle Preemption  ──────────────────────
+EMERGENCY_PREEMPTION_CORRIDOR_LENGTH: int = 3
+EMERGENCY_VEHICLE_TYPES: List[str] = ["ambulance", "fire", "police"]
+EMERGENCY_FEED_ENDPOINT: str = ""  # empty = use stub (returns empty list)
