@@ -29,11 +29,15 @@ async def init_cache():
 
 
 def cached(expire: int = 60):
-    """Wrapper for cache decorator with consistent naming."""
-    if _cache_enabled:
-        return cache(expire=expire)
-    else:
-        # No-op decorator
-        def decorator(func):
-            return func
-        return decorator
+    """Wrapper for cache decorator — checks flag at call time, not decoration time."""
+    def decorator(func):
+        cached_func = cache(expire=expire)(func)
+        
+        async def wrapper(*args, **kwargs):
+            if _cache_enabled:
+                return await cached_func(*args, **kwargs)
+            return await func(*args, **kwargs)
+        
+        wrapper.__name__ = func.__name__
+        return wrapper
+    return decorator
