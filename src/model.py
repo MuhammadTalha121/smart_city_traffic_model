@@ -3932,6 +3932,7 @@ def detect_incidents(
     window_minutes: int = 15,
     city: str = "Riyadh",
     log: bool = True,
+    police_incidents: list = None,
 ) -> dict:
     """
     Detect likely incidents distinct from general congestion.
@@ -3991,6 +3992,7 @@ def detect_incidents(
         "zone": zone,
         "city": city,
         "timestamp": _incident_dt.now().isoformat(),
+        "source"            : "model",
     }
 
     zone_df = df[df["zone"] == zone].sort_values("timestamp") if "zone" in df.columns else df.sort_values("timestamp")
@@ -4064,6 +4066,16 @@ def detect_incidents(
     }
     recommended_action = actions.get(severity, "Monitor zone.")
 
+
+    # Police-confirmed incidents take precedence over model-detected severity.
+    muroor_source = False
+    if police_incidents:
+        for pi in police_incidents:
+            if pi.get("zone") == zone and pi.get("city") == city:
+                severity      = pi["severity"]
+                muroor_source = True
+                break
+
     result = {
         "incident_detected": True,
         "severity": severity,
@@ -4075,6 +4087,7 @@ def detect_incidents(
         "zone": zone,
         "city": city,
         "timestamp": _incident_dt.now().isoformat(),
+        "source"            : "muroor" if muroor_source else "model",
     }
 
     # --- Log ---
