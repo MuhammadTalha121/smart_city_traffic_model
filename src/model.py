@@ -1833,7 +1833,8 @@ def generate_maintenance_schedule(
     city: str,
     planning_horizon_days: int = 7,
     low_demand_threshold: float = 0.3,
-    window_hours: int = 4
+    window_hours: int = 4,
+    road_conditions: dict = None,
 ) -> dict:
     """
     Generate maintenance recommendations for all zones in a city.
@@ -2021,7 +2022,14 @@ def generate_maintenance_schedule(
                 best_window = (window_start, window_start + timedelta(hours=window_hours))
                 best_avg_cong = 1.0
                 break
-
+        
+        deferred = False
+        if road_conditions:
+            from src.config import RWIS_MOISTURE_RESCHEDULE_THRESHOLD
+            zone_rwis = road_conditions.get(zone, {})
+            moisture = zone_rwis.get("moisture_level", 0.0)
+            if moisture > RWIS_MOISTURE_RESCHEDULE_THRESHOLD:
+                deferred = True
         # Build recommendation
         reason = (
             f"Wear index {wear_index:.1f} ({risk_level}), LOS {los}, v/c {vc_ratio:.2f}. "
@@ -2041,7 +2049,9 @@ def generate_maintenance_schedule(
                 "end": best_window[1].isoformat()
             },
             "expected_congestion_during_work": round(best_avg_cong, 3),
-            "reason": reason
+            "reason": reason,
+            "deferred": deferred,
+            "status": "deferred" if deferred else "scheduled",
         })
 
     # Sort by urgency: Critical > High > Medium > Low
@@ -4252,6 +4262,83 @@ def optimise_signal_via_simulation(
 
     # Fallback: heuristic ranking (from PROMPT 107)
     return _fallback_signal_optimisation(zone, city, candidate_plans)
+
+
+
+
+def generate_preemption_plan(vehicle: dict, city: str) -> dict:
+    """
+    Generate a signal pre-emption plan for an approaching emergency vehicle (PROMPT 130).
+
+    Projects the vehicle's path via ZONE_ADJACENCY and returns timing adjustments:
+    - Approach zones: extend green
+    - Crossing zones: hold red on conflicting approaches
+
+    Respects ACTUATION_ENABLED — returns recommendation only if False.
+    Respects HAJJ_LOCKDOWN_ZONES — cannot override without explicit admin flag.
+    """
+    from src.config import (
+        ZONE_ADJACENCY, ACTUATION_ENABLED, HAJJ_LOCKDOWN_ZONES,
+        EMERGENCY_PREEMPTION_CORRIDOR_LENGTH,
+    )
+
+    current_zone     = vehicle.get("current_zone")
+    destination_zone = vehicle.get("destination_zone")
+    vehicle_id       = vehicle.get("id", "unknown")
+    vehicle_type     = vehicle.get("type", "unknown")
+    eta_minutes      = vehicle.get("eta_minutes", 0)
+
+    # Build corridor: current zone + up to CORRIDOR_LENGTH adjacent zones toward destination
+    corridor = [current_zone]
+    visited  = {current_zone}
+    frontier = current_zone
+
+    for _ in range(EMERGENCY_PREEMPTION_CORRIDOR_LENGTH - 1):
+        neighbours = ZONE_ADJACENCY.get(frontier, [])
+        # Prefer neighbour that is the destination or not yet visited
+        next_zone = None
+        for n in neighbours:
+            if n == destination_zone:
+                next_zone = n
+                break
+        if next_zone is None:
+            for n in neighbours:
+                if n not in visited:
+                    next_zone = n
+                    break
+        if next_zone is None:
+            break
+        corridor.append(next_zone)
+        visited.add(next_zone)
+        frontier = next_zone
+
+    # Check Hajj lockdown
+    locked_zones = [z for z in corridor if z in HAJJ_LOCKDOWN_ZONES]
+
+    timing_plan = []
+    for i, zone in enumerate(corridor):
+        timing_plan.append({
+            "zone"              : zone,
+            "action"            : "extend_green",
+            "green_extension_s" : max(15, int(eta_minutes * 60 / max(len(corridor), 1))),
+            "hold_cross_red"    : True,
+            "sequence_position" : i + 1,
+        })
+
+    return {
+        "vehicle_id"      : vehicle_id,
+        "vehicle_type"    : vehicle_type,
+        "city"            : city,
+        "corridor"        : corridor,
+        "timing_plan"     : timing_plan,
+        "actuation_mode"  : "active" if ACTUATION_ENABLED else "recommendation_only",
+        "hajj_locked_zones": locked_zones,
+        "hajj_override_required": len(locked_zones) > 0,
+        "generated_at"    : __import__('datetime').datetime.now().isoformat(),
+    }
+
+
+
 
 
 def _generate_candidate_plans(zone: str, city: str) -> List[dict]:
