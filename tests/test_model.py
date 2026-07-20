@@ -2172,3 +2172,66 @@ def test_no_preemption_when_no_active_vehicles():
     # Stub returns empty list when EMERGENCY_FEED_ENDPOINT is not configured
     vehicles = feed.get_active_emergency_vehicles("Riyadh")
     assert vehicles == []
+
+
+
+
+def test_agency_token_wrong_role_rejected():
+    from src.agency_gateway import validate_agency_token
+    from src.auth import create_key
+    from fastapi import HTTPException
+    import pytest
+
+    operator_token = create_key(role="OPERATOR")
+    with pytest.raises(HTTPException) as exc:
+        validate_agency_token(operator_token)
+    assert exc.value.status_code == 403
+
+
+def test_agency_token_missing_rejected():
+    from src.agency_gateway import validate_agency_token
+    from fastapi import HTTPException
+    import pytest
+
+    with pytest.raises(HTTPException) as exc:
+        validate_agency_token(None)
+    assert exc.value.status_code == 401
+
+
+def test_agency_token_valid_accepted():
+    from src.agency_gateway import validate_agency_token
+    from src.auth import create_key
+
+    agency_token = create_key(role="AGENCY", city_scope="Riyadh")
+    credentials  = validate_agency_token(agency_token)
+    assert credentials["role"] == "AGENCY"
+
+
+def test_agency_access_log_written(tmp_path, monkeypatch):
+    import src.agency_gateway as gw
+    log_path = str(tmp_path / "test_agency_log.csv")
+    monkeypatch.setattr(gw, "AGENCY_ACCESS_LOG", log_path)
+
+    gw.log_agency_access("abcdef12secrettoken", "/agency/traffic-status", "Riyadh")
+
+    import csv
+    with open(log_path) as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["token_prefix"] == "abcdef12"  # only first 8 chars
+    assert rows[0]["endpoint"] == "/agency/traffic-status"
+    assert rows[0]["city"] == "Riyadh"
+
+
+def test_agency_city_scope_enforced():
+    from src.agency_gateway import assert_agency_city_permitted
+    from fastapi import HTTPException
+    import pytest
+
+    credentials = {"role": "AGENCY", "city_scope": "Riyadh"}
+    with pytest.raises(HTTPException) as exc:
+        assert_agency_city_permitted(credentials, "Jeddah")
+    assert exc.value.status_code == 403
+
+    # Should not raise for permitted city
+    assert_agency_city_permitted(credentials, "Riyadh")
