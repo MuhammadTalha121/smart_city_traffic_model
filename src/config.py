@@ -921,3 +921,11 @@ RWIS_MOCK_DATA: Dict[str, dict] = {
 EMERGENCY_PREEMPTION_CORRIDOR_LENGTH: int = 3
 EMERGENCY_VEHICLE_TYPES: List[str] = ["ambulance", "fire", "police"]
 EMERGENCY_FEED_ENDPOINT: str = ""  # empty = use stub (returns empty list)
+
+
+# ── Agency Data Sharing Gateway ──────────────────────
+AGENCY_ACCESS_LOG: str = "agency_access_log.csv"
+AGENCY_TOKENS: Dict[str, dict] = {
+    # Format: "token_prefix_8chars": {agency_id, agency_name, allowed_cities, allowed_endpoints}
+    # Populated at runtime via create_key(role="AGENCY"). Empty by default — no hardcoded secrets.
+}
