@@ -236,6 +236,7 @@ class ViolationLedger:
                 })
 
         # Acquire exclusive lock for the entire read+write operation
+        import portalocker
         with open(self.path, 'r+', newline='', encoding='utf-8') as f:
             portalocker.lock(f, portalocker.LOCK_EX)
 
