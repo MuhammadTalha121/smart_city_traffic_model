@@ -33,7 +33,13 @@ def _hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 def create_key(role: str, city_scope: str = 'all') -> str:
-    """Generate a new API key, store hashed, return plain key."""
+    """
+    Generate a new API key, store hashed, return plain key.
+
+    Valid roles: OPERATOR, ADMIN, VIEWER, AGENCY.
+    AGENCY role grants access to /agency/* endpoints only (PROMPT 131).
+    city_scope: 'all' or comma-separated city names e.g. 'Riyadh,Jeddah'.
+    """
     init_auth_db()
     plain_key = secrets.token_hex(32)
     key_hash = _hash_key(plain_key)
