@@ -534,6 +534,94 @@ class MockPedestrianFlowAdapter(BaseAdapter):
 
 
 
+class RWISAdapter:
+    """
+    Road Weather Information System adapter .
+
+    fetch_road_conditions(zone) → dict with keys:
+        pavement_temp_c : float — surface temperature in Celsius
+        moisture_level  : float — 0.0 (dry) to 1.0 (flooded)
+        visibility_m    : float — metres; 10000 = unlimited
+        black_ice_risk  : bool  — always False for Saudi climate by default
+    """
+
+    def fetch_road_conditions(self, zone: str) -> dict:
+        from src.config import RWIS_ENDPOINT
+        if RWIS_ENDPOINT:
+            return self._fetch_real(zone)
+        return self._fetch_mock(zone)
+
+    def fetch_all_zones(self, zones: list) -> dict:
+        return {zone: self.fetch_road_conditions(zone) for zone in zones}
+
+    def _fetch_mock(self, zone: str) -> dict:
+        from src.config import RWIS_MOCK_DATA
+        data = RWIS_MOCK_DATA.get(zone)
+        if data is None:
+            return {"pavement_temp_c": 40.0, "moisture_level": 0.0,
+                    "visibility_m": 10000, "black_ice_risk": False, "source": "mock_default"}
+        return {**data, "source": "mock"}
+
+    def _fetch_real(self, zone: str) -> dict:
+        from src.config import RWIS_ENDPOINT
+        url = f"{RWIS_ENDPOINT.rstrip('/')}/{zone}"
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            required = {"pavement_temp_c", "moisture_level", "visibility_m", "black_ice_risk"}
+            missing = required - set(data.keys())
+            if missing:
+                raise ValueError(f"RWIS response missing fields: {missing}")
+            return {**data, "source": "real"}
+        except Exception as e:
+            print(f"[RWIS] Real endpoint failed for zone '{zone}': {e}. Falling back to mock.")
+            return self._fetch_mock(zone)
+
+
+
+class EmergencyVehicleFeed:
+    """
+    Emergency vehicle feed adapter (PROMPT 130).
+
+    get_active_emergency_vehicles(city) → List[dict]
+    Each vehicle: {id, type, current_zone, destination_zone, speed_kmh, eta_minutes}
+
+    Stub returns empty list by default.
+    Reads from EMERGENCY_FEED_ENDPOINT if configured.
+    """
+
+    def get_active_emergency_vehicles(self, city: str) -> list:
+        from src.config import EMERGENCY_FEED_ENDPOINT
+        if EMERGENCY_FEED_ENDPOINT:
+            return self._fetch_real(city)
+        return []
+
+    def _fetch_real(self, city: str) -> list:
+        from src.config import EMERGENCY_FEED_ENDPOINT, EMERGENCY_VEHICLE_TYPES
+        url = f"{EMERGENCY_FEED_ENDPOINT.rstrip('/')}/{city}"
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            vehicles = response.json()
+            if not isinstance(vehicles, list):
+                raise ValueError("Expected a list of vehicle objects")
+            validated = []
+            for v in vehicles:
+                required = {"id", "type", "current_zone", "destination_zone", "speed_kmh", "eta_minutes"}
+                if not required.issubset(v.keys()):
+                    print(f"[EmergencyVehicleFeed] Skipping vehicle missing fields: {v}")
+                    continue
+                if v["type"] not in EMERGENCY_VEHICLE_TYPES:
+                    print(f"[EmergencyVehicleFeed] Unknown vehicle type '{v['type']}' — skipping")
+                    continue
+                validated.append(v)
+            return validated
+        except Exception as e:
+            print(f"[EmergencyVehicleFeed] Fetch failed: {e}. Returning empty list.")
+            return []
+        
+
 def get_adapter(source: str) -> BaseAdapter:
     """
     Return the correct adapter instance for the requested source.
@@ -553,6 +641,8 @@ def get_adapter(source: str) -> BaseAdapter:
         'micromobility' : MockMicroMobilityAdapter,
         'pedestrian'    : MockPedestrianFlowAdapter,
         'real'          : RealSensorAdapter,
+        'rwis'          : RWISAdapter,
+        'emergency_feed'   : EmergencyVehicleFeed,
     }
     cls = adapters.get(source)
     if cls is None:
