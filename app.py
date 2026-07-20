@@ -581,6 +581,34 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(_scheduled_preemption_check, "interval", seconds=30)
     print("[Scheduler] Emergency vehicle preemption check scheduled every 30 seconds")
 
+    def _scheduled_muroor_sync():
+        from src.adapters import MuroorAdapter
+        from src.model import detect_incidents
+        adapter = MuroorAdapter()
+        if not hasattr(app.state, "last_muroor_sync"):
+            app.state.last_muroor_sync = {}
+
+        for city, city_df in app.state.city_dfs.items():
+            police_incidents = adapter.fetch_police_incidents(city)
+            app.state.last_muroor_sync[city] = datetime.now().isoformat()
+
+            if police_incidents:
+                for pi in police_incidents:
+                    zone = pi.get("zone")
+                    if zone:
+                        result = detect_incidents(
+                            city_df, zone, city=city,
+                            police_incidents=police_incidents, log=False,
+                        )
+                        if result["incident_detected"]:
+                            print(
+                                f"[Muroor] {city}/{zone}: "
+                                f"{result['severity']} ({result['source']})"
+                            )
+
+    scheduler.add_job(_scheduled_muroor_sync, "interval", minutes=5)
+    print("[Scheduler] Muroor sync scheduled every 5 minutes")
+
     
     # Inside lifespan, after adding all jobs
     if scheduler.state != STATE_RUNNING:
@@ -3310,6 +3338,27 @@ def agency_response_time(
         "congestion_score"        : round(score, 3),
     }
 
+
+@app.get("/agency/muroor-status", tags=["agency"])
+@limiter.limit("30/minute")
+def muroor_status(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """Last Muroor sync status and police-confirmed incident count (PROMPT 132)."""
+    from src.adapters import MuroorAdapter
+    _assert_city_permitted(auth, city)
+
+    incidents = MuroorAdapter().fetch_police_incidents(city)
+    last_sync = getattr(app.state, "last_muroor_sync", {}).get(city, "never")
+
+    return {
+        "city"                    : city,
+        "last_sync"               : last_sync,
+        "police_confirmed_incidents": len(incidents),
+        "incidents"               : incidents,
+    }
 
 
 
