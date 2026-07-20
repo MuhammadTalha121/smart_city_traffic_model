@@ -620,7 +620,78 @@ class EmergencyVehicleFeed:
         except Exception as e:
             print(f"[EmergencyVehicleFeed] Fetch failed: {e}. Returning empty list.")
             return []
-        
+
+
+
+class MuroorAdapter:
+    """
+    Bidirectional Muroor (Saudi Traffic Police) integration adapter (PROMPT 132).
+
+    Inbound:  fetch_police_incidents(city) → List[dict]
+    Outbound: push_signal_status(city, zone, status) → bool
+              push_vms_message(city, zone, message) → bool
+
+    Stub reads from MUROOR_MOCK_INCIDENTS and logs outbound to MUROOR_OUTBOUND_LOG.
+    Real integration: set MUROOR_API_ENDPOINT in .env.
+    """
+
+    def fetch_police_incidents(self, city: str) -> list:
+        """Return police-confirmed incidents for a city."""
+        from src.config import MUROOR_API_ENDPOINT
+        if MUROOR_API_ENDPOINT:
+            return self._fetch_real(city)
+        return self._fetch_mock(city)
+
+    def _fetch_mock(self, city: str) -> list:
+        from src.config import MUROOR_MOCK_INCIDENTS
+        return [i for i in MUROOR_MOCK_INCIDENTS if i.get("city") == city]
+
+    def _fetch_real(self, city: str) -> list:
+        from src.config import MUROOR_API_ENDPOINT
+        url = f"{MUROOR_API_ENDPOINT.rstrip('/')}/incidents/{city}"
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            incidents = response.json()
+            if not isinstance(incidents, list):
+                raise ValueError("Expected list of incident objects")
+            required = {"incident_id", "zone", "city", "severity", "source"}
+            return [i for i in incidents if required.issubset(i.keys())]
+        except Exception as e:
+            print(f"[MuroorAdapter] Real fetch failed: {e}. Falling back to mock.")
+            return self._fetch_mock(city)
+
+    def push_signal_status(self, city: str, zone: str, status: str) -> bool:
+        """Log outbound signal status to Muroor (stub logs to CSV)."""
+        return self._log_outbound(city, zone, "signal_status", status)
+
+    def push_vms_message(self, city: str, zone: str, message: str) -> bool:
+        """Log outbound VMS message to Muroor (stub logs to CSV)."""
+        return self._log_outbound(city, zone, "vms_message", message)
+
+    def _log_outbound(self, city: str, zone: str, data_type: str, value: str) -> bool:
+        import csv, os
+        from src.config import MUROOR_OUTBOUND_LOG
+        row = {
+            "timestamp": datetime.now().isoformat(),
+            "city"     : city,
+            "zone"     : zone,
+            "data_type": data_type,
+            "value"    : value,
+        }
+        file_exists = os.path.isfile(MUROOR_OUTBOUND_LOG)
+        try:
+            with open(MUROOR_OUTBOUND_LOG, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=row.keys())
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(row)
+            return True
+        except Exception as e:
+            print(f"[MuroorAdapter] Outbound log failed: {e}")
+            return False
+
+
 
 def get_adapter(source: str) -> BaseAdapter:
     """
@@ -643,6 +714,7 @@ def get_adapter(source: str) -> BaseAdapter:
         'real'          : RealSensorAdapter,
         'rwis'          : RWISAdapter,
         'emergency_feed'   : EmergencyVehicleFeed,
+        'muroor'           : MuroorAdapter,
     }
     cls = adapters.get(source)
     if cls is None:
