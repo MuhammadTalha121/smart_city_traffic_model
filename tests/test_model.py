@@ -2348,3 +2348,22 @@ def test_public_traffic_status_valid_labels():
         valid_statuses = {"Normal", "Slow", "Congested", "Incident"}
         for zone in data.get("zones", []):
             assert zone["status"] in valid_statuses
+
+
+
+
+def test_portal_served_at_get_portal():
+    from fastapi.testclient import TestClient
+    from app import app as fastapi_app
+    client = TestClient(fastapi_app, raise_server_exceptions=True)
+    response = client.get("/portal")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "traffic" in response.text.lower()
+
+
+def test_arabic_status_labels_cover_all_statuses():
+    from src.config import STATUS_LABELS_AR
+    required = {"Normal", "Slow", "Congested", "Incident"}
+    assert required.issubset(set(STATUS_LABELS_AR.keys())), \
+        f"Missing Arabic labels for: {required - set(STATUS_LABELS_AR.keys())}"
