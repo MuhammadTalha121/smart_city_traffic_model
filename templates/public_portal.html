@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" id="html-root">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart City Traffic — Riyadh</title>
+  <style>
+    :root {
+      --green : #22c55e;
+      --amber : #f59e0b;
+      --red   : #ef4444;
+      --blue  : #3b82f6;
+      --bg    : #0f172a;
+      --card  : #1e293b;
+      --text  : #f1f5f9;
+      --muted : #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Tahoma, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; padding: 1.5rem;
+    }
+    header {
+      display: flex; justify-content: space-between;
+      align-items: center; margin-bottom: 1.5rem;
+      flex-wrap: wrap; gap: 0.75rem;
+    }
+    h1 { font-size: 1.4rem; font-weight: 700; }
+    .lang-toggle {
+      background: var(--card); border: 1px solid #334155;
+      color: var(--text); padding: 0.4rem 1rem;
+      border-radius: 0.5rem; cursor: pointer; font-size: 0.9rem;
+    }
+    .advisory-banner {
+      background: #7c2d12; border-left: 4px solid var(--red);
+      border-radius: 0.5rem; padding: 0.75rem 1rem;
+      margin-bottom: 1.25rem; display: none;
+    }
+    .advisory-banner.visible { display: block; }
+    .section-title {
+      font-size: 0.85rem; font-weight: 600;
+      color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 0.75rem;
+    }
+    .zones-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 0.75rem; margin-bottom: 1.5rem;
+    }
+    .zone-card {
+      background: var(--card); border-radius: 0.75rem;
+      padding: 1rem; text-align: center;
+      border: 2px solid transparent;
+    }
+    .zone-card .zone-name { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.4rem; }
+    .zone-card .zone-status { font-size: 1.1rem; font-weight: 700; }
+    .zone-card .zone-score { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
+    .status-Normal   { border-color: var(--green); color: var(--green); }
+    .status-Slow     { border-color: var(--amber); color: var(--amber); }
+    .status-Congested{ border-color: var(--red);   color: var(--red);   }
+    .status-Incident { border-color: var(--red);   color: var(--red); background: #1a0a0a; }
+    .incidents-list { margin-bottom: 1.5rem; }
+    .incident-row {
+      background: var(--card); border-radius: 0.5rem;
+      padding: 0.75rem 1rem; margin-bottom: 0.5rem;
+      display: flex; justify-content: space-between;
+      align-items: center; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .badge {
+      font-size: 0.75rem; font-weight: 600;
+      padding: 0.2rem 0.6rem; border-radius: 9999px;
+    }
+    .badge-Critical { background: #7f1d1d; color: #fca5a5; }
+    .badge-Major    { background: #7c2d12; color: #fdba74; }
+    .badge-Moderate { background: #713f12; color: #fde68a; }
+    .badge-Minor    { background: #1e3a5f; color: #93c5fd; }
+    .no-data { color: var(--muted); font-size: 0.9rem; padding: 0.5rem 0; }
+    footer {
+      margin-top: 2rem; color: var(--muted);
+      font-size: 0.75rem; text-align: center;
+    }
+    .refresh-note { color: var(--muted); font-size: 0.75rem; margin-bottom: 1rem; }
+
+    /* RTL overrides */
+    [dir="rtl"] .advisory-banner { border-left: none; border-right: 4px solid var(--red); }
+    [dir="rtl"] header { flex-direction: row-reverse; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">🚦 Riyadh Traffic — Live Status</h1>
+    <button class="lang-toggle" onclick="toggleLang()" id="lang-btn">عربي</button>
+  </header>
+
+  <div class="advisory-banner" id="advisory-banner">
+    <strong id="advisory-title">⚠ Travel Advisory</strong>
+    <p id="advisory-text"></p>
+  </div>
+
+  <p class="refresh-note" id="refresh-note">Auto-refreshes every 60 seconds</p>
+
+  <p class="section-title" id="zones-label">Zone Status</p>
+  <div class="zones-grid" id="zones-grid">
+    <p class="no-data">Loading...</p>
+  </div>
+
+  <p class="section-title" id="incidents-label">Active Incidents</p>
+  <div class="incidents-list" id="incidents-list">
+    <p class="no-data">Loading...</p>
+  </div>
+
+  <footer id="footer-note">
+    Official City of Riyadh Traffic Intelligence System &mdash; Vision 2030
+  </footer>
+
+  <noscript>
+    <p style="color:#f59e0b;margin-top:1rem;">
+      JavaScript is disabled. Please enable it for live data, or visit
+      <a href="/public/traffic-status" style="color:#60a5fa">/public/traffic-status</a>
+      and <a href="/public/incidents" style="color:#60a5fa">/public/incidents</a> directly.
+    </p>
+  </noscript>
+
+  <script>
+    const LABELS = {
+      en: {
+        title        : "🚦 Riyadh Traffic — Live Status",
+        zonesLabel   : "Zone Status",
+        incidentsLabel: "Active Incidents",
+        noIncidents  : "No active incidents.",
+        clearance    : "Clearance",
+        mins         : "min",
+        refreshNote  : "Auto-refreshes every 60 seconds",
+        advisoryTitle: "⚠ Travel Advisory",
+        footerNote   : "Official City of Riyadh Traffic Intelligence System — Vision 2030",
+        langBtn      : "عربي",
+        statuses     : { Normal:"Normal", Slow:"Slow", Congested:"Congested", Incident:"Incident" },
+      },
+      ar: {
+        title        : "🚦 حركة الرياض — الحالة الآنية",
+        zonesLabel   : "حالة المناطق",
+        incidentsLabel: "الحوادث النشطة",
+        noIncidents  : "لا توجد حوادث نشطة.",
+        clearance    : "وقت الإخلاء",
+        mins         : "دقيقة",
+        refreshNote  : "يتجدد تلقائياً كل 60 ثانية",
+        advisoryTitle: "⚠ تنبيه السفر",
+        footerNote   : "نظام ذكاء المرور الرسمي لمدينة الرياض — رؤية 2030",
+        langBtn      : "English",
+        statuses     : { Normal:"طبيعي", Slow:"بطيء", Congested:"مزدحم", Incident:"حادث" },
+      },
+    };
+
+    let lang = "en";
+
+    function toggleLang() {
+      lang = lang === "en" ? "ar" : "en";
+      const html = document.getElementById("html-root");
+      html.setAttribute("lang", lang);
+      html.setAttribute("dir", lang === "ar" ? "rtl" : "ltr");
+      applyLabels();
+      loadData();
+    }
+
+    function applyLabels() {
+      const L = LABELS[lang];
+      document.getElementById("title").textContent          = L.title;
+      document.getElementById("zones-label").textContent    = L.zonesLabel;
+      document.getElementById("incidents-label").textContent= L.incidentsLabel;
+      document.getElementById("refresh-note").textContent   = L.refreshNote;
+      document.getElementById("lang-btn").textContent       = L.langBtn;
+      document.getElementById("footer-note").textContent    = L.footerNote;
+      document.getElementById("advisory-title").textContent = L.advisoryTitle;
+    }
+
+    async function loadData() {
+      const L = LABELS[lang];
+      const city = "Riyadh";
+
+      // Zone status
+      try {
+        const res  = await fetch(`/public/traffic-status?city=${city}&lang=${lang}`);
+        const data = await res.json();
+        const grid = document.getElementById("zones-grid");
+        grid.innerHTML = "";
+        for (const z of data.zones || []) {
+          const statusLabel = L.statuses[z.status] || z.status;
+          grid.innerHTML += `
+            <div class="zone-card status-${z.status}">
+              <div class="zone-name">${z.zone}</div>
+              <div class="zone-status ${z.status}">${statusLabel}</div>
+              <div class="zone-score">${z.congestion_score}</div>
+            </div>`;
+        }
+      } catch (e) {
+        document.getElementById("zones-grid").innerHTML =
+          `<p class="no-data">Could not load zone data.</p>`;
+      }
+
+      // Incidents
+      try {
+        const res  = await fetch(`/public/incidents?city=${city}&lang=${lang}`);
+        const data = await res.json();
+        const list = document.getElementById("incidents-list");
+        if (!data.incidents || data.incidents.length === 0) {
+          list.innerHTML = `<p class="no-data">${L.noIncidents}</p>`;
+        } else {
+          list.innerHTML = data.incidents.map(i => `
+            <div class="incident-row">
+              <span>${i.zone}</span>
+              <span class="badge badge-${i.severity}">${i.severity}</span>
+              <span style="color:var(--muted);font-size:0.8rem">
+                ${L.clearance}: ${i.clearance_mins ?? "—"} ${L.mins}
+              </span>
+            </div>`).join("");
+        }
+      } catch (e) {
+        document.getElementById("incidents-list").innerHTML =
+          `<p class="no-data">Could not load incidents.</p>`;
+      }
+
+      // Travel advisory banner
+      try {
+        const res  = await fetch(`/public/travel-advisory?city=${city}&lang=${lang}`);
+        const data = await res.json();
+        const banner = document.getElementById("advisory-banner");
+        const text   = document.getElementById("advisory-text");
+        if (data.advisories && data.advisories.length > 0) {
+          const msg = lang === "ar"
+            ? (data.advisories[0].message_ar || data.advisories[0].message)
+            : data.advisories[0].message;
+          text.textContent = msg;
+          banner.classList.add("visible");
+        } else {
+          banner.classList.remove("visible");
+        }
+      } catch (e) {
+        document.getElementById("advisory-banner").classList.remove("visible");
+      }
+    }
+
+    // Initial load
+    loadData();
+    // Auto-refresh every 60 seconds
+    setInterval(loadData, 60000);
+  </script>
+</body>
+</html>
