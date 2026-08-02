@@ -2296,3 +2296,55 @@ def test_muroor_sync_returns_mock_incidents():
     assert isinstance(incidents, list)
     assert all("severity" in i and "zone" in i for i in incidents)
     assert all(i.get("source") == "muroor" for i in incidents)
+
+
+
+
+
+
+
+
+
+def test_public_incidents_omits_sensitive_fields():
+    from fastapi.testclient import TestClient
+    from app import app as fastapi_app
+    client = TestClient(fastapi_app, raise_server_exceptions=False)
+
+    response = client.get("/public/incidents?city=Riyadh")
+    assert response.status_code in (200, 429)
+    if response.status_code == 200:
+        data = response.json()
+        for incident in data.get("incidents", []):
+            assert "speed_drop_pct"    not in incident
+            assert "volume_change_pct" not in incident
+            assert "confidence"        not in incident
+            assert "recommended_action" not in incident
+
+
+def test_route_status_returns_estimated_travel_time():
+    from fastapi.testclient import TestClient
+    from app import app as fastapi_app
+    client = TestClient(fastapi_app, raise_server_exceptions=False)
+
+    response = client.get("/public/route-status?from_zone=Zone_1&to_zone=Zone_5&city=Riyadh")
+    assert response.status_code in (200, 429)
+    if response.status_code == 200:
+        data = response.json()
+        assert "estimated_minutes" in data
+        assert "congestion_level"  in data
+        assert "path"              in data
+        assert data["reachable"] is True
+
+
+def test_public_traffic_status_valid_labels():
+    from fastapi.testclient import TestClient
+    from app import app as fastapi_app
+    client = TestClient(fastapi_app, raise_server_exceptions=False)
+
+    response = client.get("/public/traffic-status?city=Riyadh")
+    assert response.status_code in (200, 429)
+    if response.status_code == 200:
+        data = response.json()
+        valid_statuses = {"Normal", "Slow", "Congested", "Incident"}
+        for zone in data.get("zones", []):
+            assert zone["status"] in valid_statuses
