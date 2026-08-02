@@ -81,6 +81,10 @@ import asyncio
 import time
 from src.queue_worker import TelemetryQueue
 
+
+from fastapi.templating import Jinja2Templates
+
+
 from fastapi.responses import Response
 
 from src.config import (HAJJ_DATES, SAUDI_CITIES, VSL_HIGHWAY_ZONES, IDS_MAX_SPEED_KMPH, NOISE_BASE_DB,
@@ -639,6 +643,12 @@ async def lifespan(app: FastAPI):
 
     if scheduler.state == STATE_RUNNING:
         scheduler.shutdown()
+
+import os as _os
+templates = Jinja2Templates(
+    directory=_os.path.join(_os.path.dirname(__file__), "templates")
+)
+
 
 
 app = FastAPI(
@@ -3606,6 +3616,17 @@ def public_weather(
         "driving_advisory"     : "Conditions are safe." if safe_to_drive else "Sandstorm risk. Drive with caution.",
         "driving_advisory_ar"  : "الأحوال آمنة." if safe_to_drive else "خطر عاصفة رملية. تحلَّ بالحذر.",
     }
+
+
+
+@app.get("/portal", response_class=HTMLResponse, tags=["public"])
+@limiter.limit("30/minute")
+def citizen_portal(request: Request):
+    """Bilingual citizen traffic portal — Arabic/English (PROMPT 134)."""
+    return templates.TemplateResponse(
+    request=request,
+    name="public_portal.html",
+)
 
 
 
