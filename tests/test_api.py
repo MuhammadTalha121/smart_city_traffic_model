@@ -2028,3 +2028,23 @@ def test_optimise_endpoint_returns_recommendation(client):
     assert data["zone"] == "Zone_1"
     assert "recommended_plan" in data
     assert "engine" in data
+
+
+
+
+def test_public_endpoints_require_no_auth():
+    from fastapi.testclient import TestClient
+    from app import app as fastapi_app
+    client = TestClient(fastapi_app, raise_server_exceptions=False)
+
+    endpoints = [
+        "/public/traffic-status?city=Riyadh",
+        "/public/incidents?city=Riyadh",
+        "/public/travel-advisory?city=Riyadh",
+        "/public/route-status?from_zone=Zone_1&to_zone=Zone_5&city=Riyadh",
+        "/public/weather?city=Riyadh",
+    ]
+    for endpoint in endpoints:
+        response = client.get(endpoint)
+        assert response.status_code in (200, 429), \
+            f"{endpoint} returned {response.status_code} — should not require auth"
