@@ -957,3 +957,14 @@ MUROOR_MOCK_INCIDENTS: List[dict] = [
         "source"       : "muroor",
     },
 ]
+
+
+
+
+# ── Citizen Portal ───────────────────────────────────
+STATUS_LABELS_AR: Dict[str, str] = {
+    "Normal"   : "طبيعي",
+    "Slow"     : "بطيء",
+    "Congested": "مزدحم",
+    "Incident" : "حادث",
+}
