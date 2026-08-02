@@ -3362,6 +3362,253 @@ def muroor_status(
 
 
 
+
+# ── Citizen Traveller Information API (PROMPT 133) ────────────────────────────
+
+
+@app.get("/public/traffic-status", tags=["public"])
+@limiter.limit("10/minute")
+def public_traffic_status(
+    request: Request,
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    Zone-level traffic status for citizens. No authentication required (PROMPT 133).
+    Returns Normal / Slow / Congested / Incident per zone.
+    Rate limit: 10 req/min per IP.
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    STATUS_AR = {
+        "Normal"   : "طبيعي",
+        "Slow"     : "بطيء",
+        "Congested": "مكتظ",
+        "Incident" : "حادث",
+    }
+
+    df    = app.state.city_dfs[city]
+    zones = []
+    for zone in sorted(df["zone"].unique()):
+        latest = df[df["zone"] == zone].sort_values("timestamp").iloc[-1]
+        score  = float(latest["congestion_score"])
+        if score >= 0.8:
+            status = "Incident"
+        elif score >= 0.6:
+            status = "Congested"
+        elif score >= 0.4:
+            status = "Slow"
+        else:
+            status = "Normal"
+
+        entry = {"zone": zone, "status": status, "congestion_score": round(score, 3)}
+        if lang == "ar":
+            entry["status_ar"] = STATUS_AR.get(status, status)
+        zones.append(entry)
+
+    return {
+        "city"        : city,
+        "generated_at": datetime.now().isoformat(),
+        "lang"        : lang,
+        "zones"       : zones,
+    }
+
+
+@app.get("/public/incidents", tags=["public"])
+@limiter.limit("10/minute")
+def public_incidents(
+    request: Request,
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    Active incidents for citizens — operational details omitted (PROMPT 133).
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    df    = app.state.city_dfs[city]
+    zones = df["zone"].unique() if "zone" in df.columns else []
+
+    public_incidents_list = []
+    for zone in zones:
+        result = detect_incidents(df, zone=zone, city=city, log=False)
+        if result["incident_detected"]:
+            # Omit: speed_drop_pct, volume_change_pct, confidence, recommended_action (operational)
+            public_incidents_list.append({
+                "zone"             : result["zone"],
+                "severity"         : result["severity"],
+                "clearance_mins"   : result["clearance_mins"],
+                "timestamp"        : result["timestamp"],
+            })
+
+    public_incidents_list.sort(
+        key=lambda x: _SEVERITY_ORDER.get(x.get("severity", "Minor"), 0),
+        reverse=True,
+    )
+
+    return {
+        "city"           : city,
+        "total_incidents": len(public_incidents_list),
+        "incidents"      : public_incidents_list,
+        "timestamp"      : datetime.now().isoformat(),
+    }
+
+
+@app.get("/public/travel-advisory", tags=["public"])
+@limiter.limit("10/minute")
+def public_travel_advisory(
+    request: Request,
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    Travel advisories for citizens — sandstorm, prayer window, event impacts (PROMPT 133).
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    from src.config import FRIDAY_PRAYER_HOURS
+
+    advisories = []
+    now        = datetime.now()
+
+    # Prayer window advisory
+    if now.weekday() == 4 and now.hour in FRIDAY_PRAYER_HOURS:
+        advisories.append({
+            "type"             : "prayer_window",
+            "message"          : "Friday prayer in progress. Expect road closures near mosques.",
+            "message_ar"       : "صلاة الجمعة جارية. توقع إغلاق الطرق بالقرب من المساجد.",
+            "recommended_action": "Delay travel by 30 minutes.",
+        })
+
+    # Sandstorm advisory via nowcast
+    try:
+        nowcast_df = get_adapter("weather").fetch_nowcast(city)
+        if not nowcast_df.empty:
+            peak_risk = float(nowcast_df["sandstorm_risk_pct"].max())
+            if peak_risk >= 60:
+                advisories.append({
+                    "type"              : "sandstorm_warning",
+                    "sandstorm_risk_pct": peak_risk,
+                    "message"           : f"Sandstorm risk {peak_risk:.0f}%. Reduce speed and increase following distance.",
+                    "message_ar"        : f"خطر العاصفة الرملية {peak_risk:.0f}٪. قلل السرعة وزد مسافة الأمان.",
+                    "recommended_action": "Avoid travel if risk exceeds 80%.",
+                })
+    except Exception:
+        pass
+
+    # High congestion advisory
+    if city in app.state.city_dfs:
+        df = app.state.city_dfs[city]
+        congested_zones = []
+        for zone in df["zone"].unique():
+            latest = df[df["zone"] == zone].sort_values("timestamp").iloc[-1]
+            if float(latest["congestion_score"]) >= 0.7:
+                congested_zones.append(zone)
+        if congested_zones:
+            advisories.append({
+                "type"              : "congestion_advisory",
+                "affected_zones"    : congested_zones,
+                "message"           : f"Heavy traffic in {', '.join(congested_zones)}. Consider alternate routes.",
+                "message_ar"        : f"حركة مرور كثيفة في {', '.join(congested_zones)}. يُنصح بسلوك طرق بديلة.",
+                "recommended_action": "Use alternate routes or delay travel.",
+            })
+
+    return {
+        "city"        : city,
+        "generated_at": now.isoformat(),
+        "lang"        : lang,
+        "advisories"  : advisories,
+        "advisory_count": len(advisories),
+    }
+
+
+@app.get("/public/route-status", tags=["public"])
+@limiter.limit("10/minute")
+def public_route_status(
+    request: Request,
+    from_zone: str = "Zone_1",
+    to_zone: str   = "Zone_5",
+    city: str      = "Riyadh",
+    lang: str      = "en",
+):
+    """
+    Estimated travel time between two zones for citizens (PROMPT 133).
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    from src.config import ZONE_ADJACENCY
+    all_zones = set(ZONE_ADJACENCY.keys())
+
+    if from_zone not in all_zones:
+        raise HTTPException(status_code=400, detail=f"Unknown zone '{from_zone}'.")
+    if to_zone not in all_zones:
+        raise HTTPException(status_code=400, detail=f"Unknown zone '{to_zone}'.")
+    if from_zone == to_zone:
+        return {
+            "city": city, "from_zone": from_zone, "to_zone": to_zone,
+            "reachable": True, "estimated_minutes": 0.0,
+            "congestion_level": "Normal", "hops": 0, "path": [from_zone],
+        }
+
+    route = _estimate_route_travel_time(from_zone, to_zone, city)
+    return {"city": city, "from_zone": from_zone, "to_zone": to_zone, **route}
+
+
+@app.get("/public/weather", tags=["public"])
+@limiter.limit("10/minute")
+def public_weather(
+    request: Request,
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    Simplified current weather and 3-hour sandstorm nowcast for citizens (PROMPT 133).
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    try:
+        weather_df = get_adapter("weather").fetch(city)
+        current    = weather_df.iloc[0]
+        weather_summary = {
+            "condition"   : str(current["weather"]),
+            "temperature_c": float(current["temperature"]),
+            "wind_speed_kmh": float(current["wind_speed"]),
+            "visibility_m" : float(current["visibility"]),
+            "source"       : str(current["source"]),
+        }
+    except Exception:
+        weather_summary = {
+            "condition"    : "clear",
+            "temperature_c": 35.0,
+            "wind_speed_kmh": 10.0,
+            "visibility_m" : 10000.0,
+            "source"       : "fallback",
+        }
+
+    try:
+        nowcast_df  = get_adapter("weather").fetch_nowcast(city)
+        peak_risk   = float(nowcast_df["sandstorm_risk_pct"].max()) if not nowcast_df.empty else 0.0
+        safe_to_drive = peak_risk < 60
+    except Exception:
+        peak_risk     = 0.0
+        safe_to_drive = True
+
+    return {
+        "city"                 : city,
+        "generated_at"         : datetime.now().isoformat(),
+        "lang"                 : lang,
+        "current_weather"      : weather_summary,
+        "sandstorm_risk_pct"   : peak_risk,
+        "safe_to_drive"        : safe_to_drive,
+        "driving_advisory"     : "Conditions are safe." if safe_to_drive else "Sandstorm risk. Drive with caution.",
+        "driving_advisory_ar"  : "الأحوال آمنة." if safe_to_drive else "خطر عاصفة رملية. تحلَّ بالحذر.",
+    }
+
+
+
 @app.get("/mobility/last-mile", tags=["mobility"])
 def last_mile_efficiency(
     city: str  = "Riyadh",
@@ -3672,6 +3919,74 @@ def cooperative_route(
         "city"            : body.city,
         "penetration_rate": body.penetration_rate,
         **result,
+    }
+
+
+
+def _estimate_route_travel_time(from_zone: str, to_zone: str, city: str) -> dict:
+    """
+    Estimate travel time between two zones using ZONE_ADJACENCY BFS
+    and current congestion scores (PROMPT 133).
+    """
+    from collections import deque
+    from src.config import ZONE_ADJACENCY
+
+    df = app.state.city_dfs.get(city, app.state.df)
+
+    # BFS to find shortest hop path
+    queue    = deque([[from_zone]])
+    visited  = {from_zone}
+    path     = None
+
+    while queue:
+        current_path = queue.popleft()
+        current_zone = current_path[-1]
+        if current_zone == to_zone:
+            path = current_path
+            break
+        for neighbour in ZONE_ADJACENCY.get(current_zone, []):
+            if neighbour not in visited:
+                visited.add(neighbour)
+                queue.append(current_path + [neighbour])
+
+    if path is None:
+        return {
+            "reachable"          : False,
+            "estimated_minutes"  : None,
+            "congestion_level"   : "Unknown",
+            "hops"               : None,
+            "path"               : [],
+        }
+
+    # Base: 8 min per zone hop; congestion adds delay
+    base_minutes = 8
+    total_minutes = 0.0
+    worst_score   = 0.0
+
+    for zone in path[1:]:  # skip origin zone
+        zone_df = df[df["zone"] == zone]
+        if not zone_df.empty:
+            score = float(zone_df.sort_values("timestamp").iloc[-1]["congestion_score"])
+        else:
+            score = 0.3
+        worst_score    = max(worst_score, score)
+        total_minutes += base_minutes + (score * 10.0)
+
+    if worst_score >= 0.8:
+        congestion_level = "Incident"
+    elif worst_score >= 0.6:
+        congestion_level = "Congested"
+    elif worst_score >= 0.4:
+        congestion_level = "Slow"
+    else:
+        congestion_level = "Normal"
+
+    return {
+        "reachable"         : True,
+        "estimated_minutes" : round(total_minutes, 1),
+        "congestion_level"  : congestion_level,
+        "hops"              : len(path) - 1,
+        "path"              : path,
     }
 
 
