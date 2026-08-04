@@ -1059,6 +1059,13 @@ def calibration_upload(
 def predict(
     request: Request,
     payload: PredictRequest,
+    probabilistic: bool = Query(
+        False,
+        description=(
+            "If true, include P10/P50/P90 quantile fields and uncertainty_level "
+            "in the response. Default false preserves the existing response schema."
+        ),
+    ),
     auth: Dict = Depends(require_api_key),
 ):
     """
@@ -1231,6 +1238,20 @@ def predict(
         "confidence_high" : confidence["confidence_high"],
         "confidence_level": confidence["confidence_level"],
     }
+
+
+    # ── opt-in probabilistic fields ───────────────────────────
+    if probabilistic:
+        result["probabilistic"] = predict_with_uncertainty(
+            quantile_models = app.state.quantile_models,
+            X_row           = X_row,
+            zone            = p["zone"],
+            city            = p["city"],
+            horizon_hours   = 1,
+        )
+    # ── end probabilistic ─────────────────────────────────────────────────
+
+
 
     result["intervention"] = get_intervention(
         zone               = p["zone"],
