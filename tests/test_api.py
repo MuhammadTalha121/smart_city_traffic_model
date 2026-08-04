@@ -2048,3 +2048,43 @@ def test_public_endpoints_require_no_auth():
         response = client.get(endpoint)
         assert response.status_code in (200, 429), \
             f"{endpoint} returned {response.status_code} — should not require auth"
+
+
+
+    
+
+def test_predict_backward_compatible_without_probabilistic_param(client):
+    """
+    Default POST /predict must not contain a 'probabilistic' key.
+    Existing required fields must remain present.
+    """
+    payload = {
+        "city"            : "Riyadh",
+        "zone"            : "Zone_1",       # ← capital Z, underscore
+        "hour"            : 9,
+        "vehicle_count"   : 200,
+        "avg_speed"       : 60.0,
+        "weather"         : "clear",        # ← lowercase
+        "road_type"       : "highway",      # ← lowercase
+        "rush_hour"       : True,
+        "is_weekend"      : False,
+        "is_late_night"   : False,
+        "event"           : 0,
+        "hour_multiplier" : 1.0,
+    }
+    response = client.post(
+        "/predict",
+        json=payload,
+        headers={"X-API-key": TEST_KEY},
+    )
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    required_fields = ["congestion_score", "congestion_level", "explanation", "plain_english"]
+    for field in required_fields:
+        assert field in data, f"Required field '{field}' missing from default /predict response"
+
+    assert "probabilistic" not in data, (
+        "'probabilistic' must not appear in the response when the query param is not set"
+    )
