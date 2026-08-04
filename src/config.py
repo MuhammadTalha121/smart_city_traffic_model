@@ -968,3 +968,18 @@ STATUS_LABELS_AR: Dict[str, str] = {
     "Congested": "مزدحم",
     "Incident" : "حادث",
 }
+
+
+
+# ── — Probabilistic forecasting ────────────────────────────────
+from typing import List, Dict   # add to existing imports if not present
+
+FORECAST_QUANTILES: List[float] = [0.10, 0.50, 0.90]
+
+PROBABILISTIC_MODE: bool = False  # False = backward-compatible point prediction default
+
+UNCERTAINTY_LEVEL_THRESHOLDS: Dict[str, float] = {
+    "Low":    0.10,   # P90 - P10 < 0.10 → Low uncertainty
+    "Medium": 0.25,   # P90 - P10 < 0.25 → Medium uncertainty
+                      # else              → High uncertainty
+}
