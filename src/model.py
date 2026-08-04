@@ -3636,6 +3636,101 @@ def predict_with_confidence(quantile_models: Dict, X_row: pd.DataFrame) -> Dict:
 
 
 
+def train_quantile_model(df: pd.DataFrame, quantile: float) -> xgb.XGBRegressor:
+    """
+    Train a single XGBoost quantile regression model for the given quantile alpha.
+
+    Convenience interface over train_xgboost_quantile() for callers that need
+    to train one quantile at a time from a raw DataFrame. Internally calls
+    prepare_features() to guarantee feature-engineering consistency with the
+    point-prediction pipeline.
+
+    Requires xgboost>=2.0 (objective='reg:quantileerror').
+
+    Args:
+        df:       Full traffic DataFrame produced by add_lag_features().
+                  Must contain a 'congestion_score' column.
+        quantile: Target quantile in (0, 1).
+                  Standard values: 0.10, 0.50, 0.90.
+
+    Returns:
+        Fitted XGBRegressor for the requested quantile.
+    """
+    X, y, feature_cols = prepare_features(df)
+
+    quantile_key = f"q{int(quantile * 100)}_model"
+    models = train_xgboost_quantile(X, y, quantiles=[quantile])
+    return models[quantile_key]
+
+
+def predict_with_uncertainty(
+    quantile_models: Dict,
+    X_row: pd.DataFrame,
+    zone: str,
+    city: str,
+    horizon_hours: int = 1,
+) -> Dict:
+    """
+    Return a P10/P50/P90 probabilistic forecast and labelled uncertainty level.
+
+    Complements predict_with_confidence() with P-notation labelling and
+    UNCERTAINTY_LEVEL_THRESHOLDS classification. Uncertainty scales linearly
+    with forecast horizon: each additional hour beyond the first widens the
+    band by 5% of its base width to reflect reduced predictability.
+
+    Quantile crossing is handled identically to predict_with_confidence():
+    the interval is always symmetrised around P50 after horizon scaling,
+    so confidence_low <= p50 <= confidence_high is guaranteed.
+
+    Args:
+        quantile_models: Dict with keys q10_model, q50_model, q90_model.
+        X_row:           Single-row DataFrame aligned to training feature columns.
+        zone:            Zone identifier — retained for audit traceability.
+        city:            City name — retained for audit traceability.
+        horizon_hours:   Forecast horizon in hours. Values >1 widen uncertainty.
+
+    Returns:
+        {
+            p10:               float in [0, 1],
+            p50:               float in [0, 1],
+            p90:               float in [0, 1],
+            uncertainty_level: "Low" | "Medium" | "High",
+        }
+    """
+    from src.config import UNCERTAINTY_LEVEL_THRESHOLDS
+
+    q10 = float(np.clip(quantile_models["q10_model"].predict(X_row)[0], 0.0, 1.0))
+    q50 = float(np.clip(quantile_models["q50_model"].predict(X_row)[0], 0.0, 1.0))
+    q90 = float(np.clip(quantile_models["q90_model"].predict(X_row)[0], 0.0, 1.0))
+
+    base_spread           = max(q90 - q10, 0.0)
+    horizon_spread_factor = 1.0 + max(0, horizon_hours - 1) * 0.05
+    scaled_spread         = base_spread * horizon_spread_factor
+
+    p10 = round(max(0.0, q50 - scaled_spread / 2), 4)
+    p50 = round(q50, 4)
+    p90 = round(min(1.0, q50 + scaled_spread / 2), 4)
+
+    width = round(p90 - p10, 4)
+
+    if width < UNCERTAINTY_LEVEL_THRESHOLDS["Low"]:
+        uncertainty_level = "Low"
+    elif width < UNCERTAINTY_LEVEL_THRESHOLDS["Medium"]:
+        uncertainty_level = "Medium"
+    else:
+        uncertainty_level = "High"
+
+    return {
+        "p10":               p10,
+        "p50":               p50,
+        "p90":               p90,
+        "uncertainty_level": uncertainty_level,
+    }
+
+
+
+
+
 
 def compute_equity_summary(city: str, days: int = 30) -> Dict:
     """
