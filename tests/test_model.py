@@ -2367,3 +2367,70 @@ def test_arabic_status_labels_cover_all_statuses():
     required = {"Normal", "Slow", "Congested", "Incident"}
     assert required.issubset(set(STATUS_LABELS_AR.keys())), \
         f"Missing Arabic labels for: {required - set(STATUS_LABELS_AR.keys())}"
+
+
+
+
+
+
+
+def test_quantile_p50_close_to_point_estimate():
+    """
+    P50 quantile model should produce predictions strongly correlated
+    with the point-estimate model on held-out data.
+    """
+    from sklearn.model_selection import train_test_split
+
+    from src.data import add_lag_features, apply_hourly_patterns, generate_traffic_data
+    from src.model import prepare_features, train_xgboost, train_xgboost_quantile
+
+    df = generate_traffic_data(city="Riyadh", n_days=7)
+    df = apply_hourly_patterns(df)
+    df = add_lag_features(df)
+
+    X, y, feature_cols = prepare_features(df)          # ← 3-tuple, not 2
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    point_model, _, _ = train_xgboost(X_train, y_train)
+    quantile_models   = train_xgboost_quantile(X_train, y_train)
+
+    point_preds = point_model.predict(X_test)
+    p50_preds   = quantile_models["q50_model"].predict(X_test)
+
+    correlation = float(np.corrcoef(point_preds, p50_preds)[0, 1])
+    assert correlation > 0.90, (
+        f"P50 should correlate >0.90 with point estimate; got r={correlation:.3f}"
+    )
+
+
+def test_p10_less_than_p90():
+    """
+    P10 predictions must be below P90 predictions for the substantial
+    majority of test rows (>80%), confirming interval ordering is intact.
+    """
+    from sklearn.model_selection import train_test_split
+
+    from src.data import add_lag_features, apply_hourly_patterns, generate_traffic_data
+    from src.model import prepare_features, train_xgboost_quantile
+
+    df = generate_traffic_data(city="Riyadh", n_days=7)
+    df = apply_hourly_patterns(df)
+    df = add_lag_features(df)
+
+    X, y, feature_cols = prepare_features(df)          # ← 3-tuple, not 2
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    quantile_models = train_xgboost_quantile(X_train, y_train)
+
+    p10_preds = quantile_models["q10_model"].predict(X_test)
+    p90_preds = quantile_models["q90_model"].predict(X_test)
+
+    ordered_fraction = float((p10_preds < p90_preds).mean())
+    assert ordered_fraction > 0.80, (
+        f"P10 < P90 must hold for >80% of predictions; got {ordered_fraction:.2%}"
+    )
