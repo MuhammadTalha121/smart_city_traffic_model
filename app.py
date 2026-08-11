@@ -117,7 +117,7 @@ from src.model import (
         INCIDENTS_LOG_PATH,
         _SEVERITY_ORDER,  compute_multimodal_index, compute_adaptive_signal_timing,
         optimize_corridor_timing, optimise_signal_via_simulation, generate_maintenance_schedule,    
-    optimise_signal_via_simulation, 
+    optimise_signal_via_simulation, predict_with_uncertainty,
 )
 from src.ids import SensorIntrusionDetector 
 
@@ -6137,6 +6137,63 @@ def twin_compare(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
+
+
+
+
+
+# ---------------------------------------------------------------------------
+ 
+@app.get("/hajj/readiness-report", tags=["hajj"])
+def hajj_readiness_report(
+    phase: str = "peak",
+    year: int = 2026,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Run the Hajj 2026 compound-stress readiness simulation and return the full report.
+ 
+    - **phase**: 'inbound' | 'peak' | 'outbound'  (default: peak)
+    - **year**: Hajj year (default 2026)
+    - **role**: ADMIN only
+    """
+    from src.hajj_simulation import generate_hajj_peak_scenario, run_hajj_readiness_test
+ 
+    try:
+        scenario = generate_hajj_peak_scenario(year=year, phase=phase)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+ 
+    report = run_hajj_readiness_test(scenario)
+ 
+    return {
+        "scenario_id"        : report.scenario_id,
+        "phases_tested"      : report.phases_tested,
+        "test_pass"          : report.test_pass,
+        "failure_reasons"    : report.failure_reasons,
+        "alerts_fired"       : report.alerts_fired,
+        "incidents_detected" : report.incidents_detected,
+        "signals_recommended": report.signals_recommended,
+        "max_cascade_depth"  : report.max_cascade_depth,
+        "bottleneck_zones"   : report.bottleneck_zones,
+        "generated_at_utc"   : report.generated_at_utc,
+        "zone_results": [
+            {
+                "zone_id"              : z.zone_id,
+                "city"                 : z.city,
+                "congestion_score"     : z.congestion_score,
+                "congestion_level"     : z.congestion_level,
+                "utilisation_pct"      : z.utilisation_pct,
+                "alert_fired"          : z.alert_fired,
+                "incident_detected"    : z.incident_result.get("incident_detected"),
+                "incident_severity"    : z.incident_result.get("severity"),
+                "cascade_depth"        : z.cascade_depth,
+                "signal_recommendation": z.signal_recommendation,
+            }
+            for z in report.zone_results
+        ],
+    }
+ 
 
 
 
