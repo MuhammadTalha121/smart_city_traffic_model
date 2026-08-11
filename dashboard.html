@@ -1024,6 +1024,8 @@
               <div class="result-level-badge" id="r-level-badge">—</div>
               <div class="result-level-badge" id="r-confidence-badge"
                    style="font-size:0.65rem;margin-top:4px;background:var(--text-muted)20;border:1px solid var(--border);color:var(--text-muted)">—</div>
+              <div class="result-level-badge" id="r-uncertainty-badge"
+                   style="display:none;font-size:0.65rem;margin-top:4px;cursor:help">—</div>
               <div class="result-zone-label" id="r-zone-label">—</div>
             </div>
           </div>
@@ -1047,6 +1049,25 @@
             </div>
             <div class="gi-flag" id="r-gi-flag" style="display:none">
               ⚠️ GREEN INITIATIVE THRESHOLD BREACHED (>500 kg CO₂/hr)
+            </div>
+          </div>
+
+          <!-- P10/P50/P90 Probabilistic Panel (PROMPT 136) -->
+          <div id="r-prob-panel" style="display:none;background:rgba(78,205,196,0.04);border:1px solid rgba(78,205,196,0.12);border-radius:var(--radius-md);padding:1rem;margin-bottom:1.25rem">
+            <div class="emissions-title" style="color:var(--teal)">📊 Probabilistic Forecast — P10 / P50 / P90</div>
+            <div class="emissions-row">
+              <div>
+                <div class="em-item-val" id="r-p10" style="color:var(--sky);font-size:1.2rem">—</div>
+                <div class="em-item-unit">الحد الأدنى (P10)</div>
+              </div>
+              <div>
+                <div class="em-item-val" id="r-p50" style="color:var(--teal);font-size:1.2rem">—</div>
+                <div class="em-item-unit">التوقع المتوسط (P50)</div>
+              </div>
+              <div>
+                <div class="em-item-val" id="r-p90" style="color:var(--rose);font-size:1.2rem">—</div>
+                <div class="em-item-unit">الحد الأقصى (P90)</div>
+              </div>
             </div>
           </div>
 
@@ -1284,6 +1305,9 @@
       </div>
     </div>
 
+    <!-- Zone uncertainty indicator (PROMPT 136) -->
+    <div id="fc-uncertainty-wrap" style="display:none;margin-bottom:1.25rem"></div>
+
     <div class="forecast-grid" id="forecast-cards">
       <div class="forecast-card now">
         <div class="fc-horizon">Now</div>
@@ -1298,7 +1322,7 @@
     <div class="card">
       <div class="card-header">
         <span class="card-title">Forecast Trajectory</span>
-        <span class="card-tag">CONFIDENCE BAND</span>
+        <span class="card-tag">P10 / P50 / P90</span>
       </div>
       <div class="chart-wrap" style="height:220px">
         <canvas id="chart-forecast"></canvas>
@@ -1679,7 +1703,7 @@ async function runPrediction() {
   };
 
   try {
-    const data = await apiPost('/predict', payload);
+    const data = await apiPost('/predict?probabilistic=true', payload);
     renderResult(data, zone);
   } catch (e) {
     // Fallback: compute locally if API is sleeping
@@ -1760,6 +1784,36 @@ function renderResult(data, zone) {
       confEl.style.border = `1px solid ${confColor}40`;
     }
   }
+
+  // ── PROMPT 136: uncertainty badge + P10/P50/P90 panel ─────────────────
+  const probPanel = el('r-prob-panel');
+  const ubadge    = el('r-uncertainty-badge');
+  const prob      = data.probabilistic;
+
+  if (prob && probPanel && ubadge) {
+    const UNCERTAINTY_STYLES = {
+      Low:    { color: 'var(--jade)',  bg: 'var(--jade-soft)',  border: 'rgba(90,175,138,0.2)',  arLabel: 'ثقة عالية',     tip: 'High confidence prediction — interval width < 10%' },
+      Medium: { color: 'var(--amber)', bg: 'var(--amber-soft)', border: 'var(--border-accent)',  arLabel: 'ثقة متوسطة',    tip: 'Moderate uncertainty — treat with caution (10–25% interval)' },
+      High:   { color: 'var(--rose)',  bg: 'var(--rose-soft)',  border: 'rgba(224,112,112,0.2)', arLabel: 'عدم يقين عالٍ', tip: 'High uncertainty — multiple factors in conflict (>25% interval)' },
+    };
+    const style = UNCERTAINTY_STYLES[prob.uncertainty_level] || UNCERTAINTY_STYLES.Medium;
+
+    ubadge.style.display    = 'inline-flex';
+    ubadge.style.color      = style.color;
+    ubadge.style.background = style.bg;
+    ubadge.style.border     = `1px solid ${style.border}`;
+    ubadge.setAttribute('data-tip', style.tip);
+    ubadge.textContent      = `${prob.uncertainty_level} Uncertainty / ${style.arLabel}`;
+
+    probPanel.style.display = 'block';
+    el('r-p10').textContent = prob.p10.toFixed(4);
+    el('r-p50').textContent = prob.p50.toFixed(4);
+    el('r-p90').textContent = prob.p90.toFixed(4);
+  } else {
+    if (probPanel) probPanel.style.display = 'none';
+    if (ubadge)    ubadge.style.display    = 'none';
+  }
+  // ── end PROMPT 136 ──────────────────────────────────────────────────────
 
   // Emissions
   if (data.emissions) {
@@ -2214,6 +2268,25 @@ async function loadForecast() {
     // Chart
     renderForecastChart(parseFloat(currentScore), forecasts);
 
+    // ── PROMPT 136: fetch probabilistic uncertainty for selected zone ───
+    try {
+      const currentHour = new Date().getHours();
+      const mult = SAUDI_MULTIPLIERS[currentHour] || 1.0;
+      const probData = await apiPost('/predict?probabilistic=true', {
+        city: 'Riyadh', zone, hour: currentHour,
+        vehicle_count: 200, avg_speed: 60,
+        weather: 'clear', road_type: 'highway',
+        rush_hour: [7,8,17,18].includes(currentHour) ? 1 : 0,
+        is_weekend: 0,
+        is_late_night: [21,22,23,0].includes(currentHour) ? 1 : 0,
+        event: 0, hour_multiplier: mult,
+      });
+      renderForecastUncertainty(probData.probabilistic || null);
+    } catch (_) {
+      renderForecastUncertainty(null);
+    }
+    // ── end PROMPT 136 ──────────────────────────────────────────────────
+
   } catch(e) {
     // Fallback
     const base = 0.31;
@@ -2249,12 +2322,12 @@ function renderForecastChart(currentScore, forecasts) {
       labels,
       datasets: [
         {
-          label: 'Upper bound', data: upper,
+          label: 'P90', data: upper,
           borderColor: 'transparent', backgroundColor: 'rgba(212,175,100,0.08)',
           fill: '+1', tension: 0.4, pointRadius: 0,
         },
         {
-          label: 'Forecast', data: scores,
+          label: 'P50 — Median', data: scores,
           borderColor: '#d4af64', backgroundColor: 'transparent',
           fill: false, tension: 0.4,
           borderWidth: 2,
@@ -2262,7 +2335,7 @@ function renderForecastChart(currentScore, forecasts) {
           pointRadius: 5, pointHoverRadius: 7,
         },
         {
-          label: 'Lower bound', data: lower,
+          label: 'P10', data: lower,
           borderColor: 'transparent', backgroundColor: 'rgba(212,175,100,0.08)',
           fill: false, tension: 0.4, pointRadius: 0,
         },
@@ -2277,7 +2350,7 @@ function renderForecastChart(currentScore, forecasts) {
           backgroundColor: '#111720', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
           titleColor: '#8b9ab0', bodyColor: '#f0ede8', padding: 10,
           filter: item => item.datasetIndex === 1,
-          callbacks: { label: ctx => ` Score: ${ctx.parsed.y.toFixed(4)}` }
+          callbacks: { label: ctx => ` P50: ${ctx.parsed.y.toFixed(4)}` }
         }
       },
       scales: {
@@ -2286,6 +2359,40 @@ function renderForecastChart(currentScore, forecasts) {
       }
     }
   });
+}
+
+/* ═══════════════════════════════════════════════════
+   PROMPT 136 — FORECAST UNCERTAINTY INDICATOR
+═══════════════════════════════════════════════════ */
+function renderForecastUncertainty(prob) {
+  const wrap = document.getElementById('fc-uncertainty-wrap');
+  if (!wrap) return;
+  if (!prob) { wrap.style.display = 'none'; return; }
+
+  const COLORS    = { Low: 'var(--jade)', Medium: 'var(--amber)', High: 'var(--rose)' };
+  const AR_LABELS = { Low: 'ثقة عالية', Medium: 'ثقة متوسطة', High: 'عدم يقين عالٍ' };
+  const color   = COLORS[prob.uncertainty_level]    || 'var(--text-muted)';
+  const arLabel = AR_LABELS[prob.uncertainty_level] || '';
+  const width   = (prob.p90 - prob.p10).toFixed(4);
+
+  wrap.style.display = 'block';
+  wrap.innerHTML = `
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:0.75rem 1rem;
+                background:${color}10;border:1px solid ${color}30;border-radius:var(--radius-md)">
+      <span style="font-size:0.68rem;font-family:var(--font-mono);color:var(--text-muted);
+                   letter-spacing:0.07em;text-transform:uppercase">Current Hour Forecast Uncertainty</span>
+      <span style="color:${color};font-family:var(--font-mono);font-size:0.8rem;font-weight:500"
+            data-tip="P90 − P10 = ${width}">
+        ${prob.uncertainty_level} / ${arLabel}
+      </span>
+      <span style="color:var(--text-muted);font-size:0.72rem;font-family:var(--font-mono)">
+        P10 <span style="color:var(--sky)">${prob.p10.toFixed(3)}</span>
+        &nbsp;·&nbsp;
+        P50 <span style="color:var(--teal)">${prob.p50.toFixed(3)}</span>
+        &nbsp;·&nbsp;
+        P90 <span style="color:var(--rose)">${prob.p90.toFixed(3)}</span>
+      </span>
+    </div>`;
 }
 
 /* ═══════════════════════════════════════════════════
