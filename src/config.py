@@ -417,15 +417,7 @@ EVENING_OUTBOUND_HOURS: List[int] = [16, 17, 18, 19]
 
 
 
-# ---------------------------------------------------------------------------
-# Tidal flow constants —
-# ---------------------------------------------------------------------------
 
-TIDAL_ASYMMETRY_THRESHOLD: float = 2.5
-TIDAL_MIN_TOTAL_LANES: int       = 4
-TIDAL_ELIGIBLE_ZONES: List[str]  = ['Zone_1', 'Zone_2']
-MORNING_INBOUND_HOURS: List[int]  = [6, 7, 8, 9]
-EVENING_OUTBOUND_HOURS: List[int] = [16, 17, 18, 19]
 
 # == – Green Wave Corridor Planner =====
 EMERGENCY_SPEED_KMPH = {
@@ -463,16 +455,6 @@ HEAT_RISK_THRESHOLDS = {
 }
 
 
-
-# =====– Extreme Heat Infrastructure Risk Assessment =====
-SURFACE_TEMP_OFFSET_CELSIUS    = 12.0
-ASPHALT_CRITICAL_TEMP_CELSIUS  = 55.0
-HEAT_RISK_THRESHOLDS = {
-    'Low': 45.0,
-    'Elevated': 50.0,
-    'High': 55.0,
-    'Critical': 60.0
-}
 
 
 
