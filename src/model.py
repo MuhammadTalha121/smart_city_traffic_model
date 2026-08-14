@@ -4455,3 +4455,142 @@ def _fallback_signal_optimisation(zone: str, city: str, candidate_plans: List[di
         "ranking": ranked,
         "engine": "heuristic",
     }
+
+
+
+
+
+
+
+
+
+# ===== Hajj Incident Response Playbook Generator =====
+
+def generate_hajj_playbook(
+    incident_type: str,
+    severity: str,
+    phase: str,
+) -> Dict:
+    """
+    Generate a Saudi-calibrated, ordered incident response playbook for Hajj operations.
+
+    Prayer-time constraint: any action with time_limit_minutes that would execute
+    during FRIDAY_PRAYER_HOURS (12–13) has its time_limit_minutes extended by 60
+    and a prayer_time_hold flag added. No forced road closures are issued during Jumu'ah.
+
+    Args:
+        incident_type: "crowd_crush_risk" | "mass_vehicle_breakdown" |
+                       "sandstorm_onset" | "medical_emergency_convoy"
+        severity:      "minor" | "moderate" | "critical"
+        phase:         "inbound" | "peak" | "outbound"
+
+    Returns:
+        Dict with keys: incident_type, severity, phase, prayer_constrained,
+        total_steps, estimated_resolution_minutes, actions (ordered list).
+    """
+    from src.config import FRIDAY_PRAYER_HOURS, HAJJ_LOCKDOWN_ZONES
+
+    VALID_INCIDENT_TYPES = {
+        "crowd_crush_risk",
+        "mass_vehicle_breakdown",
+        "sandstorm_onset",
+        "medical_emergency_convoy",
+    }
+    VALID_SEVERITIES = {"minor", "moderate", "critical"}
+    VALID_PHASES = {"inbound", "peak", "outbound"}
+
+    if incident_type not in VALID_INCIDENT_TYPES:
+        raise ValueError(f"Unknown incident_type '{incident_type}'. Valid: {VALID_INCIDENT_TYPES}")
+    if severity not in VALID_SEVERITIES:
+        raise ValueError(f"Unknown severity '{severity}'. Valid: {VALID_SEVERITIES}")
+    if phase not in VALID_PHASES:
+        raise ValueError(f"Unknown phase '{phase}'. Valid: {VALID_PHASES}")
+
+    severity_multiplier = {"minor": 1, "moderate": 2, "critical": 3}[severity]
+    phase_note = {
+        "inbound":  "Pilgrims arriving — inbound corridor prioritised.",
+        "peak":     "Day of Arafat peak — all zones at maximum density.",
+        "outbound": "Mass departure — outbound corridor and Zone_1 egress critical.",
+    }[phase]
+
+    # --------------- Action templates per incident type ---------------
+    _playbooks: Dict[str, List[Dict]] = {
+        "crowd_crush_risk": [
+            {"step": 1, "action": "Activate crowd density sensors in Zone_1 and Zone_3 (Hajj lockdown zones); confirm utilisation > 90%.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 2},
+            {"step": 2, "action": "Issue Variable Message Sign (VMS) alerts redirecting pilgrims to Zone_2 and Zone_4 alternate corridors.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 3},
+            {"step": 3, "action": "Extend green phase on Zone_2 and Zone_4 arterials by 30 seconds; reduce pedestrian crossing intervals.", "responsible_party": "Signal Control System (automated)", "time_limit_minutes": 2},
+            {"step": 4, "action": "Notify Hajj Operations Command (MOI) and deploy crowd management teams to Zone_1 chokepoints.", "responsible_party": "Incident Commander", "time_limit_minutes": 5},
+            {"step": 5, "action": "Activate preemption plan: suspend non-emergency vehicle access to Zone_3 via Zone_m2 entry gate.", "responsible_party": "OPERATOR + Field Unit", "time_limit_minutes": 4},
+            {"step": 6, "action": "Coordinate with Makkah Route Authority to reroute feeder buses away from Zone_1 until density < 75%.", "responsible_party": "Transit Coordinator", "time_limit_minutes": 10},
+            {"step": 7, "action": "Continuous monitoring: re-evaluate congestion score every 2 minutes; escalate to CRITICAL if cascade depth > 2.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 30},
+        ],
+        "mass_vehicle_breakdown": [
+            {"step": 1, "action": "Confirm stalled vehicles via camera feed and sensor drop in vehicle speed; log zone and lane.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 3},
+            {"step": 2, "action": "Dispatch recovery units from nearest depot (estimated 8–12 min response); update ETA on dashboard.", "responsible_party": "Incident Commander", "time_limit_minutes": 5},
+            {"step": 3, "action": "Activate contraflow on adjacent zone if breakdown blocks > 50% of road width.", "responsible_party": "Field Unit + OPERATOR", "time_limit_minutes": 6},
+            {"step": 4, "action": "Generate VMS messages: warn of reduced capacity on affected segment; suggest Zone_5 bypass.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 3},
+            {"step": 5, "action": "Reroute freight and non-pilgrimage vehicles via Ring Road until clearance confirmed.", "responsible_party": "Freight Coordinator", "time_limit_minutes": 8},
+            {"step": 6, "action": "Confirm clearance and restore normal signal timing; log incident clearance time to predictions_log.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 60},
+        ],
+        "sandstorm_onset": [
+            {"step": 1, "action": "Confirm sandstorm onset via Open-Meteo API sandstorm flag or RWIS visibility reading < 200m.", "responsible_party": "System (automated)", "time_limit_minutes": 1},
+            {"step": 2, "action": "Apply Variable Speed Limit (VSL) reduction: reduce speed limits by 40% across all active zones.", "responsible_party": "Signal Control System (automated)", "time_limit_minutes": 2},
+            {"step": 3, "action": "Activate hazard lighting and strobe markers on Zone_1 and Zone_3 pilgrimage routes.", "responsible_party": "Field Unit", "time_limit_minutes": 5},
+            {"step": 4, "action": "Issue public advisory via VMS and Saudi National Centre of Meteorology alert channel.", "responsible_party": "Incident Commander", "time_limit_minutes": 5},
+            {"step": 5, "action": "Suspend open-top shuttle services and outdoor crowd management operations until visibility > 500m.", "responsible_party": "Transit Coordinator", "time_limit_minutes": 10},
+            {"step": 6, "action": "Monitor sandstorm severity every 10 minutes; escalate to road closure if visibility < 50m.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 60},
+            {"step": 7, "action": "Restore normal operations in staged sequence (Zone_5 → Zone_4 → Zone_2 → Zone_3 → Zone_1) once visibility > 500m for 20 consecutive minutes.", "responsible_party": "Incident Commander", "time_limit_minutes": 120},
+        ],
+        "medical_emergency_convoy": [
+            {"step": 1, "action": "Receive convoy request from Saudi Red Crescent Authority (SRCA): confirm origin, destination, and number of vehicles.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 2},
+            {"step": 2, "action": "Generate preemption plan via generate_preemption_plan(): calculate green wave corridor from origin to hospital.", "responsible_party": "System (automated)", "time_limit_minutes": 1},
+            {"step": 3, "action": "Activate signal preemption along convoy route; hold all cross-traffic red for convoy duration.", "responsible_party": "Signal Control System (automated)", "time_limit_minutes": 2},
+            {"step": 4, "action": "Broadcast convoy alert via VMS on all zones along route; clear shoulder lanes.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 2},
+            {"step": 5, "action": "Field units deployed at Zone_1/Zone_3 intersection to manually enforce convoy passage.", "responsible_party": "Field Unit", "time_limit_minutes": 4},
+            {"step": 6, "action": "Confirm convoy cleared destination; restore normal signal timing; log event.", "responsible_party": "Traffic Control Operator", "time_limit_minutes": 30},
+        ],
+    }
+
+    actions = _playbooks[incident_type]
+
+    # Scale time limits with severity
+    scaled_actions = []
+    for action in actions:
+        a = dict(action)
+        if severity == "critical":
+            a["time_limit_minutes"] = max(1, int(a["time_limit_minutes"] * 0.6))  # faster response required
+        elif severity == "minor":
+            a["time_limit_minutes"] = int(a["time_limit_minutes"] * 1.5)
+        scaled_actions.append(a)
+
+    # Prayer-time constraint: flag and extend any actions that fall in Jumu'ah window
+    # "crowd_crush_risk" step 5 involves a forced road closure — never during prayer hours
+    prayer_constrained = False
+    PRAYER_HOLD_ACTIONS = {"crowd_crush_risk": {5}}   # step numbers blocked during prayer
+
+    for a in scaled_actions:
+        hold_steps = PRAYER_HOLD_ACTIONS.get(incident_type, set())
+        if a["step"] in hold_steps:
+            a["prayer_time_hold"] = True
+            a["prayer_note"] = (
+                f"If current time is within Friday prayer window (hours {FRIDAY_PRAYER_HOURS}), "
+                "delay this action until prayer concludes (~13:30 local). "
+                "Extend time_limit_minutes by 60 accordingly."
+            )
+            a["time_limit_minutes"] += 60
+            prayer_constrained = True
+        else:
+            a["prayer_time_hold"] = False
+
+    estimated_resolution = sum(a["time_limit_minutes"] for a in scaled_actions)
+
+    return {
+        "incident_type": incident_type,
+        "severity": severity,
+        "phase": phase,
+        "phase_note": phase_note,
+        "prayer_constrained": prayer_constrained,
+        "total_steps": len(scaled_actions),
+        "estimated_resolution_minutes": estimated_resolution,
+        "actions": scaled_actions,
+    }
