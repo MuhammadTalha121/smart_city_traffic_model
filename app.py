@@ -6193,7 +6193,77 @@ def hajj_readiness_report(
             for z in report.zone_results
         ],
     }
+
  
+
+
+
+
+
+# ===== PROMPT 138 — paste before @app.websocket("/ws/live/{city}") =====
+
+@app.get("/hajj/playbook", tags=["hajj"])
+def hajj_playbook(
+    incident_type: str,
+    severity: str = "critical",
+    phase: str = "peak",
+    format: str = "json",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return a Saudi-calibrated Hajj incident response playbook.
+
+    - **incident_type**: crowd_crush_risk | mass_vehicle_breakdown | sandstorm_onset | medical_emergency_convoy
+    - **severity**: minor | moderate | critical
+    - **phase**: inbound | peak | outbound
+    - **format**: json (default) | html
+    - **role**: OPERATOR or ADMIN
+    """
+    from src.model import generate_hajj_playbook
+
+    try:
+        playbook = generate_hajj_playbook(
+            incident_type=incident_type,
+            severity=severity,
+            phase=phase,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if format == "html":
+        rows = "".join(
+            f"<tr><td>{a['step']}</td><td>{a['action']}</td>"
+            f"<td>{a['responsible_party']}</td><td>{a['time_limit_minutes']} min</td>"
+            f"<td>{'⚠️ Prayer hold' if a.get('prayer_time_hold') else '—'}</td></tr>"
+            for a in playbook["actions"]
+        )
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Hajj Playbook — {incident_type}</title>
+<style>
+  body{{font-family:Arial,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:2rem}}
+  h1{{color:#f0a500}}h2{{color:#00bcd4}}
+  table{{width:100%;border-collapse:collapse;margin-top:1rem}}
+  th{{background:#1a1a2e;color:#00bcd4;padding:8px;text-align:left}}
+  td{{padding:8px;border-bottom:1px solid #333}}
+  .meta{{color:#aaa;font-size:0.9rem;margin-bottom:1rem}}
+  .warn{{color:#f0a500}}
+</style></head>
+<body>
+<h1>Hajj Incident Response Playbook</h1>
+<h2>{incident_type.replace("_"," ").title()} — {severity.upper()} — Phase: {phase}</h2>
+<p class="meta">{playbook['phase_note']}<br>
+Estimated resolution: <strong>{playbook['estimated_resolution_minutes']} min</strong> |
+Prayer constrained: <strong class="warn">{'Yes' if playbook['prayer_constrained'] else 'No'}</strong></p>
+<table>
+<tr><th>#</th><th>Action</th><th>Responsible Party</th><th>Time Limit</th><th>Prayer Hold</th></tr>
+{rows}
+</table>
+</body></html>"""
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html)
+
+    return playbook 
 
 
 
