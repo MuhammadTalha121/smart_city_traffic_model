@@ -1,4 +1,4 @@
-.PHONY: load-test test
+.PHONY: load-test test validate-standards
 
 load-test:
 	@echo "Running load test..."
@@ -7,3 +7,6 @@ load-test:
 
 test:
 	py -m pytest tests/ -v
+
+validate-standards:
+	py -m pytest tests/test_standards_compliance.py -v
