@@ -1,7 +1,6 @@
 version: '3.9'
 
 services:
-
   api:
     build: .
     container_name: traffic_api
@@ -14,3 +13,35 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: traffic_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  backup:
+    image: alpine:3.18
+    container_name: traffic_backup
+    command: >
+      sh -c "
+        apk add --no-cache bash &&
+        while true; do
+          /app/scripts/backup.sh;
+          sleep 86400;
+        done
+      "
+    volumes:
+      - .:/app
+      - ./backups:/app/backups
+    depends_on:
+      - api
+    restart: always
+
+volumes:
+  redis_data:
