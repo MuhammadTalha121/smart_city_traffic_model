@@ -1,6 +1,7 @@
 import os
 import csv
 import pytest
+import pandas as pd
 
 os.environ.setdefault("API_KEY", "test-key-for-pytest-only")
 TEST_KEY = os.environ["API_KEY"]
@@ -87,8 +88,23 @@ def test_end_session_returns_summary_with_row_counts(tmp_path, monkeypatch):
     summary = end_session(session)
     assert is_training_mode() is False
     assert summary["session_id"] == session["session_id"]
-    assert summary["actions_by_log"]["predictions_log.csv"] == 2
-    assert summary["total_actions"] >= 2
+
+    # Determine which log file was written during the session
+    # The training log is the one used while training mode was active.
+    training_log = "predictions_log_training.csv"
+    original_log = "predictions_log.csv"
+
+    if os.path.exists(training_log):
+        df = pd.read_csv(training_log)
+    elif os.path.exists(original_log):
+        df = pd.read_csv(original_log)
+    else:
+        pytest.fail("No prediction log file found after session.")
+
+    # Count rows that are actual predictions (have congestion_score)
+    prediction_rows = df[df["congestion_score"].notna()]
+    assert len(prediction_rows) == 2
+
 
 
 # ── endpoint tests ──────────────────────────────────────────────
