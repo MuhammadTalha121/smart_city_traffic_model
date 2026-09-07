@@ -4911,6 +4911,45 @@ def rotate_api_key(
 
 
 
+# ── System Health Endpoint ───────────────────────────────────────────
+@app.get("/system/health", tags=["system"])
+def system_health():
+    """
+    No‑auth health check with detailed system status.
+    Returns:
+      - status: "healthy" (always)
+      - model_loaded: bool
+      - redis_connected: bool (attempts to ping Redis)
+      - last_backup_timestamp: ISO timestamp of the most recent backup (if any)
+    """
+    model_loaded = hasattr(app.state, "model") and app.state.model is not None
+
+    redis_connected = False
+    try:
+        # Attempt to import and use the Redis client from the cache module
+        from src.cache import redis_client
+        if redis_client is not None:
+            try:
+                redis_client.ping()
+                redis_connected = True
+            except Exception:
+                pass
+    except (ImportError, AttributeError, Exception):
+        # Redis client not available or not configured
+        pass
+
+    last_backup = None
+    if os.path.exists("last_backup.txt"):
+        with open("last_backup.txt", "r") as f:
+            last_backup = f.read().strip()
+
+    return {
+        "status": "healthy",
+        "model_loaded": model_loaded,
+        "redis_connected": redis_connected,
+        "last_backup_timestamp": last_backup,
+    }
+
 
 # ===== Operator Training Mode =====
 
