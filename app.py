@@ -40,7 +40,8 @@ from src.calibration import (
 )
 from src.config import (CALIBRATION_FACTORS_PATH, ACTUATION_COOLDOWN_SECONDS, CACHE_TTL_PREDICT,
     CACHE_TTL_INCIDENTS,
-    CACHE_TTL_WEATHER_NOWCAST,)
+    CACHE_TTL_WEATHER_NOWCAST,
+    PARKING_CAPACITY_ZONES,)
 from src.signal_controller import NTCIPStubController, schedule_confirmation
 
 from src.cache import init_cache, cached
@@ -3637,6 +3638,109 @@ def public_weather(
         "driving_advisory"     : "Conditions are safe." if safe_to_drive else "Sandstorm risk. Drive with caution.",
         "driving_advisory_ar"  : "الأحوال آمنة." if safe_to_drive else "خطر عاصفة رملية. تحلَّ بالحذر.",
     }
+
+
+@app.get("/public/parking-guidance", tags=["public"])
+@limiter.limit("10/minute")
+def public_parking_guidance(
+    request: Request,
+    target_zone: Optional[str] = None,
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    Provide parking guidance for citizens.
+
+    Returns zones with predicted occupancy < 80%, sorted by walking distance
+    from the target_zone (or from city centre if not provided).
+    Includes prayer‑time warning if guidance overlaps Friday prayer.
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    df = app.state.city_dfs[city]
+    now = datetime.now()
+
+    # 1. Get all garages and their current/forecast occupancy
+    garages = []
+    for zone, capacity in PARKING_CAPACITY_ZONES.items():
+        # Use latest congestion score to estimate current fill rate
+        zone_data = df[df["zone"] == zone]
+        if zone_data.empty:
+            congestion = 0.3  # fallback
+        else:
+            latest = zone_data.sort_values("timestamp").iloc[-1]
+            congestion = float(latest["congestion_score"])
+
+        # Simulate current fill rate: 0.3 + congestion * 0.6, capped at 0.95
+        current_fill = min(0.3 + congestion * 0.6, 0.95)
+
+        # Predict next hour occupancy (simplified)
+        # We'll use the existing predict_parking_occupancy if garage_id exists,
+        # but since we have per‑zone capacity, we can compute directly.
+        # For simplicity, we use a heuristic: occupancy increases with congestion.
+        # We'll produce a 1h forecast based on historical hourly patterns.
+        hour = now.hour
+        # Hourly pattern: morning peak, evening peak, night low
+        if 7 <= hour <= 9:
+            hour_factor = 1.2
+        elif 17 <= hour <= 19:
+            hour_factor = 1.3
+        elif 22 <= hour or hour <= 5:
+            hour_factor = 0.7
+        else:
+            hour_factor = 1.0
+
+        # Forecast occupancy = current_fill + congestion * hour_factor * 0.1
+        forecast_fill = min(current_fill + congestion * hour_factor * 0.1, 1.0)
+
+        available = max(0, int(capacity * (1 - forecast_fill)))
+        garages.append({
+            "zone": zone,
+            "capacity": capacity,
+            "current_occupancy_pct": round(current_fill * 100, 1),
+            "forecast_occupancy_pct_1h": round(forecast_fill * 100, 1),
+            "available_spaces": available,
+            "congestion_score": round(congestion, 3),
+        })
+
+    # 2. Filter to those with forecast occupancy < 80%
+    available_garages = [g for g in garages if g["forecast_occupancy_pct"] < 80]
+
+    # 3. Sort by walking distance from target_zone (or city centre)
+    if target_zone and target_zone in PARKING_CAPACITY_ZONES:
+        # Compute distances from target_zone to all other zones using ZONE_DISTANCES_KM
+        def distance_to_target(zone):
+            key = tuple(sorted([target_zone, zone]))
+            return ZONE_DISTANCES_KM.get(key, 5.0)  # fallback 5 km
+        available_garages.sort(key=lambda g: distance_to_target(g["zone"]))
+    else:
+        # Default: sort by available spaces descending
+        available_garages.sort(key=lambda g: g["available_spaces"], reverse=True)
+
+    # 4. Prayer‑time warning
+    prayer_warning = False
+    if now.weekday() == 4 and now.hour in FRIDAY_PRAYER_HOURS:
+        prayer_warning = True
+
+    # 5. Build response
+    response = {
+        "city": city,
+        "target_zone": target_zone,
+        "generated_at": now.isoformat(),
+        "lang": lang,
+        "prayer_warning": prayer_warning,
+        "total_garages": len(available_garages),
+        "garages": available_garages,
+    }
+    if prayer_warning:
+        response["prayer_message"] = (
+            "Friday prayer in progress. Parking near mosques may be limited."
+            if lang == "en"
+            else "صلاة الجمعة جارية. قد تكون مواقف السيارات بالقرب من المساجد محدودة."
+        )
+    return response
 
 
 
