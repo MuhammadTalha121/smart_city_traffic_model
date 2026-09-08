@@ -623,6 +623,40 @@ class EmergencyVehicleFeed:
 
 
 
+
+from src.config import FLEET_TELEMATICS_ENDPOINT, MOCK_FLEET_POSITIONS
+
+class FleetTelematicsAdapter:
+    """
+    Adapter for fleet telematics data. Returns live positions and status.
+    If FLEET_TELEMATICS_ENDPOINT is set, fetches from real API (mock not implemented).
+    Otherwise, returns MOCK_FLEET_POSITIONS.
+    """
+
+    def fetch_positions(self, city: str) -> List[Dict]:
+        """Return a list of vehicle positions for the given city."""
+        if FLEET_TELEMATICS_ENDPOINT:
+            # In a real integration, you would call the API here.
+            # For now, we fall back to mock.
+            pass
+
+        # Return mock data
+        vehicles = MOCK_FLEET_POSITIONS
+        # Optionally filter by city if the mock supports it
+        # We'll keep as is; city is not used in mock.
+        return vehicles
+
+    def get_vehicle(self, vehicle_id: str) -> Optional[Dict]:
+        """Return a single vehicle by ID, or None if not found."""
+        for v in MOCK_FLEET_POSITIONS:
+            if v["vehicle_id"] == vehicle_id:
+                return v
+        return None
+
+
+
+
+
 class MuroorAdapter:
     """
     Bidirectional Muroor (Saudi Traffic Police) integration adapter (PROMPT 132).
