@@ -52,7 +52,9 @@ from src.gtfs_rt_export import generate_gtfs_rt_feed
 
 
 from src.edge_simulation import EdgeCabinetSimulator
-from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING, estimate_noise_level, predict_parking_occupancy
+from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
+                        DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
+                        generate_dynamic_reroute)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -126,7 +128,7 @@ from src.ids import SensorIntrusionDetector
 from src.ledger import ViolationLedger, verify_ledger_chain, LedgerIntegrityError
 from src.config import VIOLATION_LEDGER_PATH, SLA_TREND_WINDOW_DAYS
 
-from src.adapters import get_adapter, GreenWavePlanner, GreenWavePlanner, is_data_stale
+from src.adapters import get_adapter, GreenWavePlanner, GreenWavePlanner, is_data_stale, FleetTelematicsAdapter
 from src.pipeline import run_pipeline, compute_drift_score, check_thresholds, deliver_webhook_alert, log_alert
 from src.pipeline import run_pipeline, compute_drift_score, log_api_usage, build_key_registry, validate_prediction_input, compute_sla_metrics
 from src.pipeline import read_predictions_log, compute_sla_trend, check_sla_breach_alerts
@@ -2418,6 +2420,80 @@ def freight_windows(
         "rationale"           : result["rationale"],
     }
 
+
+
+@app.get("/freight/fleet-status", tags=["freight"])
+@limiter.limit("20/minute")
+def fleet_status(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return live fleet telematics positions for all vehicles in the city.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    _assert_city_permitted(auth, city)
+
+    adapter = FleetTelematicsAdapter()
+    vehicles = adapter.fetch_positions(city)
+
+    # Add a derived field: if status is stalled, highlight
+    for v in vehicles:
+        v["alert"] = v["status"] == "stalled"
+
+    return {
+        "city": city,
+        "timestamp": datetime.now().isoformat(),
+        "total_vehicles": len(vehicles),
+        "vehicles": vehicles,
+    }
+
+
+@app.post("/freight/reroute/{vehicle_id}", tags=["freight"])
+@limiter.limit("10/minute")
+def freight_reroute(
+    request: Request,
+    vehicle_id: str,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Generate a dynamic reroute for a specific vehicle avoiding active
+    construction and incidents.
+    """
+    _assert_city_permitted(auth, city)
+
+    # Build congestion map from latest city data
+    df = app.state.city_dfs.get(city, app.state.df)
+    latest = df.sort_values("timestamp").groupby("zone").last().reset_index()
+    congestion_map = {str(row["zone"]): float(row["congestion_score"]) for _, row in latest.iterrows()}
+
+    # Get active construction zones
+    from src.construction import get_active_construction
+    construction_zones = [z["zone"] for z in get_active_construction(city)]
+
+    # Get active incident zones
+    from src.model import detect_incidents
+    zones = df["zone"].unique()
+    incident_zones = []
+    for zone in zones:
+        result = detect_incidents(df, zone, city=city, log=False)
+        if result["incident_detected"]:
+            incident_zones.append(zone)
+
+    try:
+        reroute = generate_dynamic_reroute(
+            vehicle_id=vehicle_id,
+            city=city,
+            congestion_map=congestion_map,
+            active_construction_zones=construction_zones,
+            active_incident_zones=incident_zones,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return reroute
 
 
 
