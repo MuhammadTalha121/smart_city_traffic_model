@@ -3315,6 +3315,159 @@ def validate_freight_entry(
 
 
 
+def generate_dynamic_reroute(
+    vehicle_id: str,
+    city: str,
+    congestion_map: Dict[str, float],
+    active_construction_zones: List[str],
+    active_incident_zones: List[str],
+) -> Dict:
+    """
+    Compute a new route for a vehicle avoiding active construction and incidents.
+
+    Uses weighted Dijkstra where edge weight = distance / speed * congestion_factor
+    plus penalties for construction (1.5x) and incidents (2.0x).
+
+    Parameters
+    ----------
+    vehicle_id : str
+        The vehicle identifier.
+    city : str
+        City name (for context).
+    congestion_map : Dict[str, float]
+        Mapping of zone -> current congestion score (0-1).
+    active_construction_zones : List[str]
+        Zones with active construction.
+    active_incident_zones : List[str]
+        Zones with active incidents.
+
+    Returns
+    -------
+    dict
+        {
+            "vehicle_id": str,
+            "original_route": List[str],   # from current to destination
+            "new_route": List[str],
+            "avoided_zones": List[str],    # zones skipped
+            "estimated_time_savings_min": float
+        }
+    """
+    from src.config import ZONE_ADJACENCY, ZONE_DISTANCES_KM
+
+    # Get current vehicle position
+    from src.adapters import FleetTelematicsAdapter
+    adapter = FleetTelematicsAdapter()
+    vehicle = adapter.get_vehicle(vehicle_id)
+    if not vehicle:
+        raise ValueError(f"Vehicle {vehicle_id} not found.")
+
+    origin = vehicle["current_zone"]
+    destination = vehicle["destination_zone"]
+
+    if origin == destination:
+        return {
+            "vehicle_id": vehicle_id,
+            "original_route": [origin],
+            "new_route": [origin],
+            "avoided_zones": [],
+            "estimated_time_savings_min": 0.0,
+            "message": "Vehicle already at destination.",
+        }
+
+    # Build a weighted graph with penalties
+    def edge_weight(u: str, v: str) -> float:
+        base_dist = ZONE_DISTANCES_KM.get(tuple(sorted([u, v])), 5.0)
+        # Congestion factor: speed reduction
+        cong = congestion_map.get(v, 0.3)
+        speed_factor = 1.0 - cong * 0.5  # max 50% reduction
+        weight = base_dist / max(speed_factor, 0.1)
+
+        # Construction penalty
+        if v in active_construction_zones:
+            weight *= 1.5
+        # Incident penalty
+        if v in active_incident_zones:
+            weight *= 2.0
+
+        return weight
+
+    # Dijkstra
+    import heapq
+    heap = [(0.0, origin, [origin])]
+    visited = set()
+    best_path = None
+    best_cost = float('inf')
+
+    while heap:
+        cost, node, path = heapq.heappop(heap)
+        if node in visited:
+            continue
+        visited.add(node)
+        if node == destination:
+            best_path = path
+            best_cost = cost
+            break
+        for neighbour in ZONE_ADJACENCY.get(node, []):
+            if neighbour not in visited:
+                ew = edge_weight(node, neighbour)
+                heapq.heappush(heap, (cost + ew, neighbour, path + [neighbour]))
+
+    if best_path is None:
+        return {
+            "vehicle_id": vehicle_id,
+            "original_route": [],
+            "new_route": [],
+            "avoided_zones": [],
+            "estimated_time_savings_min": 0.0,
+            "message": "No route found.",
+        }
+
+    # Original route without penalties (use congestion only)
+    def original_edge_weight(u: str, v: str) -> float:
+        base_dist = ZONE_DISTANCES_KM.get(tuple(sorted([u, v])), 5.0)
+        cong = congestion_map.get(v, 0.3)
+        speed_factor = 1.0 - cong * 0.5
+        return base_dist / max(speed_factor, 0.1)
+
+    # Compute original path (simple BFS or Dijkstra with original weights)
+    heap2 = [(0.0, origin, [origin])]
+    visited2 = set()
+    original_path = None
+    original_cost = float('inf')
+    while heap2:
+        cost, node, path = heapq.heappop(heap2)
+        if node in visited2:
+            continue
+        visited2.add(node)
+        if node == destination:
+            original_path = path
+            original_cost = cost
+            break
+        for neighbour in ZONE_ADJACENCY.get(node, []):
+            if neighbour not in visited2:
+                ew = original_edge_weight(node, neighbour)
+                heapq.heappush(heap2, (cost + ew, neighbour, path + [neighbour]))
+
+    if original_path is None:
+        original_path = best_path  # fallback
+        original_cost = best_cost
+
+    # Determine avoided zones: zones in original but not in new
+    avoided = [z for z in original_path if z not in best_path]
+
+    # Estimate time savings: assume 30 km/h average speed -> minutes
+    # Convert cost (weighted distance) to minutes: cost * (60 / 30) = cost * 2
+    savings = max(0.0, original_cost - best_cost) * 2.0
+
+    return {
+        "vehicle_id": vehicle_id,
+        "original_route": original_path,
+        "new_route": best_path,
+        "avoided_zones": avoided,
+        "estimated_time_savings_min": round(savings, 1),
+        "message": "Route updated." if avoided else "No better route found.",
+    }
+
 
 
 def calculate_evacuation_routes(
