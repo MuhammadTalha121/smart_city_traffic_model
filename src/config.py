@@ -976,3 +976,57 @@ PARKING_CAPACITY_ZONES: Dict[str, int] = {
     "Zone_4": 220,
     "Zone_5": 160,
 }
+
+
+
+
+
+# ── Fleet Telematics ──────────────────────────────
+FLEET_TELEMATICS_ENDPOINT: str = ""  # if empty, use mock
+MOCK_FLEET_POSITIONS: List[Dict] = [
+    {
+        "vehicle_id": "F-1001",
+        "type": "heavy_truck",
+        "current_zone": "Zone_1",
+        "speed_kmh": 45.0,
+        "cargo_tonnes": 12.5,
+        "destination_zone": "Zone_4",
+        "status": "en_route",
+        "eta_minutes": 18,
+        "last_update": "2026-09-08T09:30:00",
+    },
+    {
+        "vehicle_id": "F-1002",
+        "type": "medium_truck",
+        "current_zone": "Zone_3",
+        "speed_kmh": 30.0,
+        "cargo_tonnes": 6.0,
+        "destination_zone": "Zone_2",
+        "status": "stalled",
+        "eta_minutes": None,
+        "last_update": "2026-09-08T09:25:00",
+    },
+    {
+        "vehicle_id": "F-1003",
+        "type": "light_van",
+        "current_zone": "Zone_5",
+        "speed_kmh": 60.0,
+        "cargo_tonnes": 1.2,
+        "destination_zone": "Zone_5",
+        "status": "delivering",
+        "eta_minutes": 4,
+        "last_update": "2026-09-08T09:28:00",
+    },
+    {
+        "vehicle_id": "F-1004",
+        "type": "heavy_truck",
+        "current_zone": "Zone_2",
+        "speed_kmh": 50.0,
+        "cargo_tonnes": 20.0,
+        "destination_zone": "Zone_1",
+        "status": "en_route",
+        "eta_minutes": 12,
+        "last_update": "2026-09-08T09:29:00",
+    },
+]
+FLEET_REFRESH_INTERVAL_SECONDS: int = 60
