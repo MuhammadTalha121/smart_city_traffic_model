@@ -110,6 +110,14 @@
     <p class="no-data">Loading...</p>
   </div>
 
+  <!-- Parking Guidance -->
+<div style="margin-top: 1.5rem;">
+  <p class="section-title" id="parking-label">Available Parking</p>
+  <div id="parking-guidance-portal">
+    <p class="no-data">Loading…</p>
+  </div>
+</div>
+
   <footer id="footer-note">
     Official City of Riyadh Traffic Intelligence System &mdash; Vision 2030
   </footer>
@@ -172,6 +180,7 @@
       document.getElementById("lang-btn").textContent       = L.langBtn;
       document.getElementById("footer-note").textContent    = L.footerNote;
       document.getElementById("advisory-title").textContent = L.advisoryTitle;
+      document.getElementById("parking-label").textContent = L.parkingLabel;
     }
 
     async function loadData() {
@@ -218,6 +227,35 @@
       } catch (e) {
         document.getElementById("incidents-list").innerHTML =
           `<p class="no-data">Could not load incidents.</p>`;
+      }
+
+      // ── Parking Guidance ──────────────────────────
+      try {
+        const res  = await fetch(`/public/parking-guidance?city=${city}&lang=${lang}`);
+        const data = await res.json();
+        const container = document.getElementById('parking-guidance-portal');
+        if (data.total_garages === 0) {
+          container.innerHTML = `<p class="no-data">No parking zones with available spaces right now.</p>`;
+        } else {
+          const top = data.garages.slice(0, 5);
+          let html = `<ul style="list-style:none;padding:0;">`;
+          top.forEach(g => {
+            html += `<li style="background:var(--card);border-radius:0.5rem;padding:0.6rem 1rem;margin-bottom:0.4rem;
+                                display:flex;justify-content:space-between;align-items:center;">
+              <span>${g.zone}</span>
+              <span style="color:var(--green);font-weight:600;">${g.available_spaces} free</span>
+              <span style="font-size:0.75rem;color:var(--muted);">${g.forecast_occupancy_pct_1h}% in 1h</span>
+            </li>`;
+          });
+          html += `</ul>`;
+          if (data.prayer_warning) {
+            html += `<p style="color:var(--red);font-size:0.85rem;">⚠️ ${data.prayer_message}</p>`;
+          }
+          container.innerHTML = html;
+        }
+      } catch (e) {
+        document.getElementById('parking-guidance-portal').innerHTML =
+          `<p class="no-data">Parking information unavailable.</p>`;
       }
 
       // Travel advisory banner
