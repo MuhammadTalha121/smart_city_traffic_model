@@ -965,3 +965,14 @@ UNCERTAINTY_LEVEL_THRESHOLDS: Dict[str, float] = {
     "Medium": 0.25,   # P90 - P10 < 0.25 → Medium uncertainty
                       # else              → High uncertainty
 }
+
+
+
+
+PARKING_CAPACITY_ZONES: Dict[str, int] = {
+    "Zone_1": 200,
+    "Zone_2": 180,
+    "Zone_3": 150,
+    "Zone_4": 220,
+    "Zone_5": 160,
+}
