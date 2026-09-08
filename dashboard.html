@@ -874,6 +874,18 @@
 <!-- Main -->
 <main>
 
+  <!-- Schedule Banner  -->
+  <div id="schedule-banner" style="background:var(--amber-soft);border:1px solid var(--border-accent);
+      border-radius:var(--radius-md);padding:0.6rem 1.2rem;margin-bottom:1rem;
+      display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+    <span style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary);">
+      📅 <span id="schedule-label">Schedule:</span> <strong id="schedule-name" style="color:var(--amber);">—</strong>
+    </span>
+    <span style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted);">
+      Next event: <span id="schedule-next">—</span> (<span id="schedule-days">—</span> days)
+    </span>
+  </div>
+
   <!-- KPI row (always visible) -->
   <div class="kpi-grid" id="kpi-grid">
     <div class="kpi-card">
@@ -1140,7 +1152,22 @@
       </div>
       <div id="drt-wrap"><div class="empty-state"><div class="empty-icon">🚌</div>Loading…</div></div>
     </div>
+    
+    <!-- Parking Guidance (PROMPT 141) -->
+    <div class="card" id="parking-guidance-panel" style="margin-top:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Parking Guidance — Available Zones</span>
+        <span class="card-tag" id="parking-guidance-tag">LOADING…</span>
+      </div>
+      <div id="parking-guidance-wrap">
+        <div class="empty-state"><div class="empty-icon">🅿️</div>Loading available parking…</div>
+      </div>
+    </div>
+
+
   </div>
+
+  
 
   <!-- ══════════════════════════════════════
        TAB 2 — HOURLY PATTERNS
@@ -2491,7 +2518,13 @@ function updateLiveZoneTable(zones) {
    OPERATIONS TAB
 ═══════════════════════════════════════════════════ */
 async function renderOperationsTab() {
-  await Promise.allSettled([loadVSL(), loadVMS(), loadParking(), loadDRT()]);
+  await Promise.allSettled([
+    loadVSL(),
+    loadVMS(),
+    loadParking(),
+    loadDRT(),
+    loadParkingGuidance()   // <-- added
+  ]);
 }
 
 async function loadVSL() {
@@ -2637,6 +2670,57 @@ async function loadDRT() {
   }
 }
 
+
+// ── Parking Guidance ──────────────────────────
+async function loadParkingGuidance() {
+  const wrap = document.getElementById('parking-guidance-wrap');
+  const tag  = document.getElementById('parking-guidance-tag');
+  if (!wrap) return;
+  try {
+    const res = await fetch('/public/parking-guidance?city=Riyadh');
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+    tag.textContent = data.total_garages + ' AVAILABLE';
+    if (data.total_garages === 0) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">🅿️</div>No zones with < 80% occupancy found.</div>`;
+      return;
+    }
+    let html = `<table class="data-table">
+      <thead><tr><th>Zone</th><th>Capacity</th><th>Available</th><th>Occupancy (1h)</th></tr></thead><tbody>`;
+    data.garages.forEach(g => {
+      html += `<tr>
+        <td style="color:var(--text-primary)">${g.zone}</td>
+        <td>${g.capacity}</td>
+        <td style="color:var(--jade);font-weight:600">${g.available_spaces}</td>
+        <td>${g.forecast_occupancy_pct_1h}%</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+    if (data.prayer_warning) {
+      html += `<div style="margin-top:0.75rem;color:var(--rose);font-family:var(--font-mono);font-size:0.8rem">⚠️ ${data.prayer_message}</div>`;
+    }
+    wrap.innerHTML = html;
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>Parking guidance unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+
+async function loadSchedule() {
+  try {
+    const res = await fetch('/schedule/active?city=Riyadh', { headers: { 'X-API-Key': API_KEY } });
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    document.getElementById('schedule-name').textContent = data.schedule;
+    document.getElementById('schedule-next').textContent = data.next_event || 'None';
+    document.getElementById('schedule-days').textContent = data.days_until !== null ? data.days_until : '—';
+  } catch(e) {
+    document.getElementById('schedule-name').textContent = 'standard';
+  }
+}
+
+
 /* ═══════════════════════════════════════════════════
    ANALYTICS TAB
 ═══════════════════════════════════════════════════ */
@@ -2766,6 +2850,7 @@ async function loadTelemetry() {
    INIT
 ═══════════════════════════════════════════════════ */
 populateKPIs();
+loadSchedule();
 loadTollPricing();
 connectWebSocket('Riyadh');
 
