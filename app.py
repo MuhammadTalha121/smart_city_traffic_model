@@ -6207,6 +6207,45 @@ def incidents_history(
 
 
 
+@app.get("/incidents/investigate/{incident_id}", tags=["incidents"])
+@limiter.limit("10/minute")
+def investigate_incident(
+    request: Request,
+    incident_id: int,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Full forensic timeline for a past incident. ADMIN only.
+
+    Returns JSON timeline and generates a markdown report in /reports/.
+    """
+    from src.model import reconstruct_incident_timeline
+
+    try:
+        timeline = reconstruct_incident_timeline(incident_id, city)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Save the markdown report
+    os.makedirs("reports", exist_ok=True)
+    report_path = f"reports/INCIDENT_REPORT_{incident_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(timeline["report_markdown"])
+
+    return {
+        "incident_id": incident_id,
+        "city": city,
+        "report_path": report_path,
+        "timeline": timeline,
+    }
+
+
+
+
+
+
+
 from src.digital_twin import DigitalTwinState, create_twin
 
 # ---- Digital Twin Management ----
