@@ -1030,3 +1030,9 @@ MOCK_FLEET_POSITIONS: List[Dict] = [
     },
 ]
 FLEET_REFRESH_INTERVAL_SECONDS: int = 60
+
+
+
+# ── RWIS thresholds for maintenance rescheduling ──
+RWIS_MOISTURE_RESCHEDULE_THRESHOLD: float = 0.3      # fraction (0-1)
+RWIS_VISIBILITY_RESCHEDULE_THRESHOLD_M: int = 500    # metres
