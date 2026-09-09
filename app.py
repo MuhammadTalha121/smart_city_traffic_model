@@ -616,6 +616,20 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(_scheduled_muroor_sync, "interval", minutes=5)
     print("[Scheduler] Muroor sync scheduled every 5 minutes")
 
+
+    def _scheduled_maintenance_rescheduler():
+        from src.model import check_and_reschedule_maintenance
+        for city in app.state.city_dfs.keys():
+            try:
+                rescheduled = check_and_reschedule_maintenance(city)
+                if rescheduled:
+                    print(f"[Maintenance] Rescheduled {len(rescheduled)} events for {city}")
+            except Exception as e:
+                print(f"[Maintenance] Error for {city}: {e}")
+
+    scheduler.add_job(_scheduled_maintenance_rescheduler, "interval", minutes=15)
+    print("[Scheduler] Maintenance rescheduler scheduled every 15 minutes")
+
     
     # Inside lifespan, after adding all jobs
     if scheduler.state != STATE_RUNNING:
