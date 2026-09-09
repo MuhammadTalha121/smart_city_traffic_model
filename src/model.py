@@ -1,5 +1,8 @@
 import pandas as pd
 import numpy as np
+import os
+from datetime import datetime, timedelta
+
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LinearRegression
@@ -4746,4 +4749,217 @@ def generate_hajj_playbook(
         "total_steps": len(scaled_actions),
         "estimated_resolution_minutes": estimated_resolution,
         "actions": scaled_actions,
+    }
+
+
+
+
+def reconstruct_incident_timeline(incident_id: int, city: str) -> Dict:
+    """
+    Reconstruct the full timeline of a past incident from all logs.
+
+    Parameters
+    ----------
+    incident_id : int
+        Row index (0-based) in incidents_log.csv to investigate.
+    city : str
+        City name to filter logs.
+
+    Returns
+    -------
+    dict
+        {
+            "incident_id": int,
+            "city": str,
+            "incident_timestamp": str,
+            "zone": str,
+            "severity": str,
+            "events": List[dict],
+            "contributing_factors": List[str],
+            "signal_actions": List[dict],
+            "alerts_fired": List[dict],
+            "estimated_human_intervention_time_min": float,
+            "report_markdown": str,
+        }
+    """
+    log_paths = {
+        "incidents": INCIDENTS_LOG_PATH,
+        "predictions": "predictions_log.csv",
+        "signals": "signal_commands_log.csv",
+        "alerts": "alerts_log.csv",
+    }
+
+    # 1. Load the incident record
+    if not os.path.exists(log_paths["incidents"]):
+        raise ValueError("incidents_log.csv not found.")
+
+    incidents_df = pd.read_csv(log_paths["incidents"])
+    if incident_id < 0 or incident_id >= len(incidents_df):
+        raise ValueError(f"Incident id {incident_id} out of range (0-{len(incidents_df)-1}).")
+
+    incident_row = incidents_df.iloc[incident_id]
+    incident_time = pd.to_datetime(incident_row["timestamp"])
+    zone = incident_row["zone"]
+    severity = incident_row["severity"]
+
+    # 2. Define time window: 30 min before to 60 min after
+    start_window = incident_time - timedelta(minutes=30)
+    end_window = incident_time + timedelta(minutes=60)
+
+    # 3. Load predictions log
+    events = []
+    if os.path.exists(log_paths["predictions"]):
+        pred_df = pd.read_csv(log_paths["predictions"])
+        if "timestamp" in pred_df.columns:
+            pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], errors="coerce")
+            mask = (pred_df["timestamp"] >= start_window) & (pred_df["timestamp"] <= end_window)
+            if city and "city" in pred_df.columns:
+                mask &= (pred_df["city"] == city)
+            if zone and "zone" in pred_df.columns:
+                mask &= (pred_df["zone"] == zone)
+            filtered = pred_df[mask].sort_values("timestamp")
+            for _, row in filtered.iterrows():
+                events.append({
+                    "timestamp": row["timestamp"].isoformat(),
+                    "event_type": "prediction",
+                    "zone": row.get("zone"),
+                    "value": row.get("congestion_score"),
+                    "responsible_system": "XGBoost model",
+                    "details": {
+                        "congestion_level": row.get("congestion_level"),
+                        "top_factors": [
+                            row.get("top_factor_1"),
+                            row.get("top_factor_2"),
+                            row.get("top_factor_3"),
+                        ],
+                        "plain_english": row.get("plain_english"),
+                    }
+                })
+
+    # 4. Load signal commands
+    signal_actions = []
+    if os.path.exists(log_paths["signals"]):
+        sig_df = pd.read_csv(log_paths["signals"])
+        if "timestamp" in sig_df.columns:
+            sig_df["timestamp"] = pd.to_datetime(sig_df["timestamp"], errors="coerce")
+            mask = (sig_df["timestamp"] >= start_window) & (sig_df["timestamp"] <= end_window)
+            if zone and "zone" in sig_df.columns:
+                mask &= (sig_df["zone"] == zone)
+            filtered = sig_df[mask].sort_values("timestamp")
+            for _, row in filtered.iterrows():
+                events.append({
+                    "timestamp": row["timestamp"].isoformat(),
+                    "event_type": "signal_command",
+                    "zone": row.get("zone"),
+                    "value": f"cycle={row.get('cycle_seconds')}s, green={row.get('green_seconds')}s",
+                    "responsible_system": "NTCIP stub",
+                    "details": {
+                        "command_id": row.get("command_id"),
+                        "status": row.get("status"),
+                        "purpose": row.get("purpose"),
+                    }
+                })
+                signal_actions.append(row.to_dict())
+
+    # 5. Load alerts
+    alerts_fired = []
+    if os.path.exists(log_paths["alerts"]):
+        alert_df = pd.read_csv(log_paths["alerts"])
+        if "timestamp" in alert_df.columns:
+            alert_df["timestamp"] = pd.to_datetime(alert_df["timestamp"], errors="coerce")
+            mask = (alert_df["timestamp"] >= start_window) & (alert_df["timestamp"] <= end_window)
+            if city and "city" in alert_df.columns:
+                mask &= (alert_df["city"] == city)
+            if zone and "zone" in alert_df.columns:
+                mask &= (alert_df["zone"] == zone)
+            filtered = alert_df[mask].sort_values("timestamp")
+            for _, row in filtered.iterrows():
+                events.append({
+                    "timestamp": row["timestamp"].isoformat(),
+                    "event_type": "alert",
+                    "zone": row.get("zone"),
+                    "value": row.get("alert_type"),
+                    "responsible_system": "Alert scheduler",
+                    "details": {
+                        "severity": row.get("severity"),
+                        "metric": row.get("metric"),
+                        "threshold": row.get("threshold"),
+                    }
+                })
+                alerts_fired.append(row.to_dict())
+
+    # 6. Sort all events chronologically
+    events.sort(key=lambda e: e["timestamp"])
+
+    # 7. Extract contributing factors (SHAP) from predictions around incident
+    contributing_factors = []
+    if events:
+        pred_events = [e for e in events if e["event_type"] == "prediction"]
+        # Get the prediction closest to incident time
+        if pred_events:
+            # Find the prediction with timestamp nearest to incident_time
+            closest = min(pred_events, key=lambda e: abs(
+                pd.to_datetime(e["timestamp"]) - incident_time
+            ))
+            factors = closest.get("details", {}).get("top_factors", [])
+            contributing_factors = [f for f in factors if f]
+
+    # 8. Estimate human intervention time (based on severity)
+    severity_base = {"Minor": 10, "Moderate": 20, "Major": 40, "Critical": 60}
+    intervention_min = severity_base.get(severity, 15)
+
+    # 9. Generate markdown report
+    report_lines = [
+        f"# Incident Report – {incident_id}",
+        f"**City:** {city}",
+        f"**Zone:** {zone}",
+        f"**Severity:** {severity}",
+        f"**Incident Time:** {incident_time.isoformat()}",
+        "",
+        "## Timeline",
+    ]
+    for ev in events:
+        report_lines.append(f"- **{ev['timestamp']}** – {ev['event_type']} – {ev.get('zone', 'N/A')} – {ev.get('value', '')}")
+        if ev.get("details"):
+            report_lines.append(f"  *Details: {ev['details']}*")
+
+    report_lines.append("")
+    report_lines.append("## Contributing Factors")
+    if contributing_factors:
+        for f in contributing_factors:
+            report_lines.append(f"- {f}")
+    else:
+        report_lines.append("- No SHAP factors available.")
+    report_lines.append("")
+    report_lines.append("## Signal Actions")
+    if signal_actions:
+        for act in signal_actions:
+            report_lines.append(f"- {act.get('timestamp')}: {act.get('status')} – cycle {act.get('cycle_seconds')}s, green {act.get('green_seconds')}s")
+    else:
+        report_lines.append("- No signal actions recorded.")
+    report_lines.append("")
+    report_lines.append("## Alerts Fired")
+    if alerts_fired:
+        for al in alerts_fired:
+            report_lines.append(f"- {al.get('timestamp')}: {al.get('alert_type')} – {al.get('severity')}")
+    else:
+        report_lines.append("- No alerts fired.")
+    report_lines.append("")
+    report_lines.append(f"## Estimated Human Intervention Time")
+    report_lines.append(f"~{intervention_min} minutes based on severity.")
+
+    report_md = "\n".join(report_lines)
+
+    return {
+        "incident_id": incident_id,
+        "city": city,
+        "incident_timestamp": incident_time.isoformat(),
+        "zone": zone,
+        "severity": severity,
+        "events": events,
+        "contributing_factors": contributing_factors,
+        "signal_actions": signal_actions,
+        "alerts_fired": alerts_fired,
+        "estimated_human_intervention_time_min": intervention_min,
+        "report_markdown": report_md,
     }
