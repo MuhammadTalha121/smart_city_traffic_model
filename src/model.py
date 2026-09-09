@@ -4963,3 +4963,108 @@ def reconstruct_incident_timeline(incident_id: int, city: str) -> Dict:
         "estimated_human_intervention_time_min": intervention_min,
         "report_markdown": report_md,
     }
+
+
+
+
+import csv
+import os
+from datetime import datetime, timedelta
+from typing import List, Dict
+from src.adapters import RWISAdapter
+from src.config import RWIS_MOISTURE_RESCHEDULE_THRESHOLD, RWIS_VISIBILITY_RESCHEDULE_THRESHOLD_M
+
+# ── Maintenance Rescheduler (PROMPT 144) ──────────────────────────
+
+def notify_maintenance_crew(reschedule_event: Dict) -> None:
+    """
+    Stub for notifying maintenance crew about a rescheduled event.
+    Logs to maintenance_notifications.csv.
+    """
+    log_path = "maintenance_notifications.csv"
+    is_new = not os.path.exists(log_path)
+
+    row = {
+        "timestamp": datetime.now().isoformat(),
+        "zone": reschedule_event.get("zone"),
+        "original_window": reschedule_event.get("original_window"),
+        "new_window": reschedule_event.get("new_window"),
+        "reason": reschedule_event.get("reason"),
+        "notified": "stub",  # real SMS/email would be sent here
+    }
+
+    with open(log_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def check_and_reschedule_maintenance(city: str) -> List[Dict]:
+    """
+    Check current maintenance schedule and reschedule if RWIS conditions are unsafe.
+
+    Reschedule if:
+      - moisture_level > RWIS_MOISTURE_RESCHEDULE_THRESHOLD (default 0.3)
+      - visibility_m < RWIS_VISIBILITY_RESCHEDULE_THRESHOLD_M (default 500)
+
+    Returns a list of rescheduled events with reasons.
+    """
+    from src.model import generate_maintenance_schedule
+    from src.config import RWIS_ENDPOINT, RWIS_MOCK_DATA
+
+    # 1. Get the current maintenance schedule (generates recommendations)
+    schedule = generate_maintenance_schedule(city, planning_horizon_days=7)
+    if not schedule.get("zones"):
+        return []
+
+    # 2. Fetch RWIS conditions
+    rwis = RWISAdapter()
+    # We'll need conditions for each zone; RWISAdapter.fetch_all_zones() exists
+    zones = [z["zone"] for z in schedule["zones"]]
+    conditions = rwis.fetch_all_zones(zones)
+
+    rescheduled = []
+
+    for zone_entry in schedule["zones"]:
+        zone = zone_entry["zone"]
+        cond = conditions.get(zone, {})
+        moisture = cond.get("moisture_level", 0.0)
+        visibility = cond.get("visibility_m", 10000.0)
+
+        reason = None
+        if moisture > RWIS_MOISTURE_RESCHEDULE_THRESHOLD:
+            reason = f"moisture level {moisture:.2f} exceeds threshold {RWIS_MOISTURE_RESCHEDULE_THRESHOLD}"
+        elif visibility < RWIS_VISIBILITY_RESCHEDULE_THRESHOLD_M:
+            reason = f"visibility {visibility:.0f}m below threshold {RWIS_VISIBILITY_RESCHEDULE_THRESHOLD_M}m"
+
+        if reason:
+            # Reschedule: shift by 24 hours (or find next available window)
+            original_window = zone_entry.get("recommended_window")
+            # Use the schedule's recommendation; we'll just shift 24h
+            start = datetime.fromisoformat(original_window["start"])
+            new_start = start + timedelta(days=1)
+            new_end = datetime.fromisoformat(original_window["end"]) + timedelta(days=1)
+
+            reschedule_event = {
+                "zone": zone,
+                "original_window": original_window,
+                "new_window": {
+                    "start": new_start.isoformat(),
+                    "end": new_end.isoformat(),
+                },
+                "reason": reason,
+                "city": city,
+            }
+
+            # Log notification
+            notify_maintenance_crew(reschedule_event)
+
+            # Update the schedule entry (in-memory; we don't persist yet)
+            zone_entry["recommended_window"] = reschedule_event["new_window"]
+            zone_entry["status"] = "rescheduled"
+            zone_entry["reschedule_reason"] = reason
+            rescheduled.append(reschedule_event)
+
+    # Optionally, we could update a persistent schedule file, but not required.
+    return rescheduled
