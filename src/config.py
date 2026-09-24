@@ -1036,3 +1036,22 @@ FLEET_REFRESH_INTERVAL_SECONDS: int = 60
 # ── RWIS thresholds for maintenance rescheduling ──
 RWIS_MOISTURE_RESCHEDULE_THRESHOLD: float = 0.3      # fraction (0-1)
 RWIS_VISIBILITY_RESCHEDULE_THRESHOLD_M: int = 500    # metres
+
+
+
+# ── Fleet Composition & Emission Factors ──────────────────────────
+FLEET_COMPOSITION_RIYADH: Dict[str, float] = {
+    "passenger_car_petrol": 0.65,
+    "passenger_car_hybrid": 0.05,
+    "suv_petrol": 0.20,
+    "heavy_truck": 0.07,
+    "bus": 0.03,
+}
+
+EMISSION_FACTORS_CO2_G_PER_KM: Dict[str, float] = {
+    "passenger_car_petrol": 170.0,
+    "passenger_car_hybrid": 95.0,
+    "suv_petrol": 210.0,
+    "heavy_truck": 650.0,
+    "bus": 800.0,
+}
