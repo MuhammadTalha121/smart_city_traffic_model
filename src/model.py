@@ -5068,3 +5068,118 @@ def check_and_reschedule_maintenance(city: str) -> List[Dict]:
 
     # Optionally, we could update a persistent schedule file, but not required.
     return rescheduled
+
+
+
+
+
+def calculate_zone_emissions(
+    zone: str,
+    city: str,
+    predicted_volume: float,
+    avg_speed_kmh: float,
+    distance_km: float = 1.0,
+) -> Dict:
+    """
+    Calculate per-zone CO₂ and NOx emissions based on congestion and fleet composition.
+
+    Parameters
+    ----------
+    zone : str
+        Zone identifier.
+    city : str
+        City name (for fleet composition lookup).
+    predicted_volume : float
+        Number of vehicles in the zone.
+    avg_speed_kmh : float
+        Average speed in km/h.
+    distance_km : float
+        Average distance travelled per vehicle (default 1 km).
+
+    Returns
+    -------
+    dict
+        {
+            "zone": str,
+            "city": str,
+            "co2_kg": float,
+            "nox_g": float,
+            "efficiency_rating": str,  # A-F based on emissions per vehicle
+            "fleet_composition": dict,
+            "emission_breakdown": dict,
+            "congestion_level": str,   # from speed classification
+        }
+    """
+    from src.config import FLEET_COMPOSITION_RIYADH, EMISSION_FACTORS_CO2_G_PER_KM
+
+    # Determine congestion level from speed (simple heuristic)
+    if avg_speed_kmh >= 60:
+        level = "Low"
+    elif avg_speed_kmh >= 40:
+        level = "Moderate"
+    elif avg_speed_kmh >= 20:
+        level = "High"
+    else:
+        level = "Critical"
+
+    fleet_comp = FLEET_COMPOSITION_RIYADH
+    total_vehicles = predicted_volume
+
+    # Calculate emissions per vehicle type
+    co2_total_g = 0.0
+    nox_total_g = 0.0
+    breakdown = {}
+
+    for vehicle_type, fraction in fleet_comp.items():
+        count = total_vehicles * fraction
+        co2_per_km = EMISSION_FACTORS_CO2_G_PER_KM.get(vehicle_type, 170.0)
+
+        # Apply speed correction: slower speed increases emissions (simplified)
+        speed_factor = max(0.5, min(2.0, 60 / max(avg_speed_kmh, 1)))
+        co2_emitted_g = count * co2_per_km * distance_km * speed_factor
+        # NOx: roughly 10% of CO2 (simplified)
+        nox_emitted_g = co2_emitted_g * 0.10
+
+        co2_total_g += co2_emitted_g
+        nox_total_g += nox_emitted_g
+        breakdown[vehicle_type] = {
+            "count": round(count, 1),
+            "co2_g": round(co2_emitted_g, 2),
+            "nox_g": round(nox_emitted_g, 2),
+        }
+
+    # Convert to kg
+    co2_kg = co2_total_g / 1000.0
+    nox_g = round(nox_total_g, 2)
+
+    # Efficiency rating: CO₂ per vehicle per km
+    co2_per_vehicle_g = co2_total_g / max(total_vehicles, 1)
+    baseline = 170.0  # average petrol car
+    ratio = co2_per_vehicle_g / baseline
+
+    if ratio < 0.5:
+        rating = "A"
+    elif ratio < 0.75:
+        rating = "B"
+    elif ratio < 1.0:
+        rating = "C"
+    elif ratio < 1.5:
+        rating = "D"
+    elif ratio < 2.0:
+        rating = "E"
+    else:
+        rating = "F"
+
+    return {
+        "zone": zone,
+        "city": city,
+        "co2_kg": round(co2_kg, 3),
+        "nox_g": nox_g,
+        "efficiency_rating": rating,
+        "fleet_composition": fleet_comp,
+        "emission_breakdown": breakdown,
+        "congestion_level": level,  # <-- FIXED: use the string directly
+        "avg_speed_kmh": round(avg_speed_kmh, 1),
+        "vehicle_count": round(total_vehicles, 1),
+        "distance_km": distance_km,
+    }
