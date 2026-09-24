@@ -54,7 +54,7 @@ from src.gtfs_rt_export import generate_gtfs_rt_feed
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
                         DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
-                        generate_dynamic_reroute)
+                        generate_dynamic_reroute, calculate_zone_emissions)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -2212,6 +2212,66 @@ def emissions_summary(
         "peak_emission_zone": peak_zone,
         "period_days"       : period_days,
     }
+
+
+
+
+@app.get("/emissions/zone-report", tags=["emissions"])
+@limiter.limit("20/minute")
+def zone_emissions_report(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return per-zone CO₂ and NOx emissions for the last hour.
+
+    Uses the latest congestion score and vehicle count from the city DataFrame,
+    applies fleet composition, and calculates efficiency rating.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    # Get the latest row per zone
+    latest = df.sort_values("timestamp").groupby("zone").last().reset_index()
+
+    results = []
+    for _, row in latest.iterrows():
+        zone = str(row["zone"])
+        volume = float(row.get("vehicle_count", 0))
+        speed = float(row.get("avg_speed", 60))
+        # Default distance: 1 km per vehicle
+        emissions = calculate_zone_emissions(
+            zone=zone,
+            city=city,
+            predicted_volume=volume,
+            avg_speed_kmh=speed,
+            distance_km=1.0,
+        )
+        results.append(emissions)
+
+    # Sort by CO₂ descending (worst first)
+    results.sort(key=lambda x: x["co2_kg"], reverse=True)
+
+    # Add summary
+    total_co2 = sum(r["co2_kg"] for r in results)
+    avg_efficiency = max(set(r["efficiency_rating"] for r in results), key=lambda x: sum(1 for r in results if r["efficiency_rating"] == x))
+
+    return {
+        "city": city,
+        "timestamp": datetime.now().isoformat(),
+        "total_co2_kg": round(total_co2, 2),
+        "avg_efficiency_rating": avg_efficiency,
+        "zones": results,
+    }
+
+
+
+
 
 
 @app.get("/cities/compare", tags=["multi-city"])
