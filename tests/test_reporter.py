@@ -106,3 +106,79 @@ def test_api_doc_package_includes_limitations_section(tmp_path):
     assert match is not None, "Limitations section not found"
     limitations_text = match.group(1)
     assert re.search(r'synthetic', limitations_text, re.IGNORECASE), "Limitations section does not mention 'synthetic'"
+
+
+
+
+
+import os
+os.environ.setdefault("API_KEY", "c50eb575704f5be5c40d6bb821f2cec8ebfee2dab012bf1ffe686f1e75575780")
+TEST_KEY = os.environ["API_KEY"]
+
+
+import os
+import pytest
+from fastapi.testclient import TestClient
+from app import app
+from src.model import generate_sustainability_report, log_emissions_snapshot
+from datetime import datetime
+
+
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as c:
+        yield c
+
+def test_emissions_log_created_by_zone_report_call(client, tmp_path, monkeypatch):
+    """
+    Verify the endpoint creates/updates emissions_log.csv when called.
+    """
+    import os
+    # Ensure we can find the log file after the call, regardless of CWD
+    log_path = os.path.join(os.getcwd(), "emissions_log.csv")
+
+    # Remove existing log to start clean (if present)
+    if os.path.exists(log_path):
+        os.remove(log_path)
+
+    response = client.get(
+        "/emissions/zone-report?city=Riyadh",
+        headers={"X-API-Key": TEST_KEY}
+    )
+    assert response.status_code == 200, f"Got {response.status_code}: {response.text}"
+
+    # Check the log file was created
+    assert os.path.exists(log_path), "emissions_log.csv was not created"
+    
+
+def test_sustainability_report_covers_all_zones(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    # Seed emissions_log.csv with data for multiple zones
+    import csv
+    now = datetime.now()
+    with open("emissions_log.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "timestamp", "city", "zone", "co2_kg", "nox_g",
+            "efficiency_rating", "vehicle_count", "avg_speed_kmh"
+        ])
+        writer.writeheader()
+        for zone in ["Zone_1", "Zone_2", "Zone_3"]:
+            writer.writerow({
+                "timestamp": now.isoformat(),
+                "city": "Riyadh",
+                "zone": zone,
+                "co2_kg": 50.0,
+                "nox_g": 5.0,
+                "efficiency_rating": "C",
+                "vehicle_count": 100,
+                "avg_speed_kmh": 60.0,
+            })
+
+    report = generate_sustainability_report("Riyadh", now.month, now.year)
+
+    assert "Zone_1" in report
+    assert "Zone_2" in report
+    assert "Zone_3" in report
+    assert "Vision 2030" in report
+    assert "Total CO₂" in report
