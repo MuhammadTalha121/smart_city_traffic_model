@@ -54,7 +54,7 @@ from src.gtfs_rt_export import generate_gtfs_rt_feed
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
                         DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
-                        generate_dynamic_reroute, calculate_zone_emissions)
+                        generate_dynamic_reroute, calculate_zone_emissions, log_emissions_snapshot)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -2257,6 +2257,11 @@ def zone_emissions_report(
     # Sort by CO₂ descending (worst first)
     results.sort(key=lambda x: x["co2_kg"], reverse=True)
 
+    try:
+        log_emissions_snapshot(city, results)
+    except Exception as e:
+        print(f"[Emissions] Logging failed: {e}")
+
     # Add summary
     total_co2 = sum(r["co2_kg"] for r in results)
     avg_efficiency = max(set(r["efficiency_rating"] for r in results), key=lambda x: sum(1 for r in results if r["efficiency_rating"] == x))
@@ -3171,6 +3176,46 @@ def reports_latest(
         media_type='application/pdf',
         filename=f'traffic_report_{city.lower()}_weekly.pdf',
     )
+
+
+
+
+
+@app.get("/reports/sustainability", tags=["reports"])
+def sustainability_report(
+    city: str = "Riyadh",
+    month: int = None,
+    year: int = None,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Generate a monthly Vision 2030 sustainability report (Markdown).
+    Defaults to the current month/year. ADMIN only.
+    Returns the report as a downloadable file.
+    """
+    from datetime import datetime
+    now = datetime.now()
+    month = month or now.month
+    year = year or now.year
+
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=422, detail="month must be between 1 and 12.")
+
+    report_md = generate_sustainability_report(city, month, year)
+
+    os.makedirs("reports", exist_ok=True)
+    out_path = f"reports/sustainability_{city.lower()}_{year}_{month:02d}.md"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(report_md)
+
+    return FileResponse(
+        path=out_path,
+        media_type="text/markdown",
+        filename=f"sustainability_{city.lower()}_{year}_{month:02d}.md",
+    )
+
+
+
 
 
 
