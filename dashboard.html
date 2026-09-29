@@ -1400,6 +1400,32 @@
         <div class="empty-state"><div class="empty-icon">📡</div>Loading…</div>
       </div>
     </div>
+    <!-- Emissions Panel (PROMPT 146) -->
+    <div class="card" style="margin-top:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Emissions & Vision 2030</span>
+        <span class="card-tag" id="emissions-tag">LOADING…</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:1.5rem">
+        <div>
+          <div class="kpi-label">Total CO₂ (last hour)</div>
+          <div id="em-total" style="font-family:var(--font-display);font-size:2rem;color:var(--amber);letter-spacing:-0.02em">—</div>
+          <div class="kpi-label" style="margin-top:1rem">City Efficiency Rating</div>
+          <div id="em-rating" style="font-family:var(--font-display);font-size:2rem;color:var(--jade);letter-spacing:-0.02em">—</div>
+        </div>
+        <div>
+          <div class="kpi-label" style="margin-bottom:0.75rem">Per-Zone CO₂ (kg, current hour)</div>
+          <div class="chart-wrap" style="height:180px">
+            <canvas id="chart-emissions"></canvas>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:1rem">
+        <button class="predict-btn" style="width:auto;padding:0.5rem 1rem"
+                onclick="downloadSustainabilityReport()">Generate Monthly Report (Markdown)</button>
+        <span id="report-status" style="margin-left:1rem;font-size:0.75rem;color:var(--text-muted);font-family:var(--font-mono)"></span>
+      </div>
+    </div>
   </div>
 
   <div class="tab-panel" id="tab-training">
@@ -2727,7 +2753,7 @@ async function loadSchedule() {
 let chartEndpoints;
 
 async function renderAnalyticsTab() {
-  await Promise.allSettled([loadQuota(), loadUsage(), loadSLA(), loadTelemetry()]);
+  await Promise.allSettled([loadQuota(), loadUsage(), loadSLA(), loadTelemetry(), loadEmissions()]);
 }
 
 async function loadQuota() {
@@ -2845,6 +2871,81 @@ async function loadTelemetry() {
     tag.textContent = 'OFFLINE';
   }
 }
+
+
+
+
+
+// ── Emissions Panel (PROMPT 146) ──────────────────────────
+let chartEmissions;
+
+async function loadEmissions() {
+  const tag = document.getElementById('emissions-tag');
+  try {
+    const res = await fetch('/emissions/zone-report?city=Riyadh', {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+
+    tag.textContent = 'LIVE';
+    document.getElementById('em-total').textContent = data.total_co2_kg.toFixed(1) + ' kg';
+    document.getElementById('em-rating').textContent = data.avg_efficiency_rating;
+
+    // Bar chart per zone
+    if (chartEmissions) chartEmissions.destroy();
+    const zones = data.zones.map(z => z.zone);
+    const co2 = data.zones.map(z => z.co2_kg);
+    chartEmissions = new Chart(document.getElementById('chart-emissions'), {
+      type: 'bar',
+      data: {
+        labels: zones,
+        datasets: [{
+          data: co2,
+          backgroundColor: co2.map(v => v > 100 ? 'rgba(224,112,112,0.7)' : 'rgba(212,175,100,0.6)'),
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: chartGrid(), ticks: chartTick() },
+          y: { grid: chartGrid(), ticks: chartTick() }
+        }
+      }
+    });
+  } catch (e) {
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+async function downloadSustainabilityReport() {
+  const status = document.getElementById('report-status');
+  status.textContent = 'Generating…';
+  try {
+    const res = await fetch('/reports/sustainability?city=Riyadh', {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sustainability_report.md';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    status.textContent = '✓ Downloaded';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
+}
+
+
+
+
 
 /* ═══════════════════════════════════════════════════
    INIT
