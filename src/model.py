@@ -5183,3 +5183,145 @@ def calculate_zone_emissions(
         "vehicle_count": round(total_vehicles, 1),
         "distance_km": distance_km,
     }
+
+
+
+
+
+def log_emissions_snapshot(city: str, zone_reports: List[Dict]) -> None:
+    """
+    Append an emissions snapshot (per-zone) to emissions_log.csv.
+    Called every time /emissions/zone-report is invoked.
+
+    Parameters
+    ----------
+    city : str
+    zone_reports : List[Dict]
+        Each dict is the output of calculate_zone_emissions().
+    """
+    log_path = "emissions_log.csv"
+    is_new = not os.path.exists(log_path)
+
+    import csv as _csv
+    fields = [
+        "timestamp", "city", "zone", "co2_kg", "nox_g",
+        "efficiency_rating", "vehicle_count", "avg_speed_kmh",
+    ]
+
+    with open(log_path, "a", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fields)
+        if is_new:
+            writer.writeheader()
+        ts = datetime.now().isoformat()
+        for r in zone_reports:
+            writer.writerow({
+                "timestamp": ts,
+                "city": r.get("city"),
+                "zone": r.get("zone"),
+                "co2_kg": r.get("co2_kg"),
+                "nox_g": r.get("nox_g"),
+                "efficiency_rating": r.get("efficiency_rating"),
+                "vehicle_count": r.get("vehicle_count"),
+                "avg_speed_kmh": r.get("avg_speed_kmh"),
+            })
+
+
+
+
+
+
+def generate_sustainability_report(city: str, month: int, year: int) -> str:
+    """
+    Generate a Vision 2030 sustainability report in Markdown format.
+
+    Reads emissions_log.csv, filters to the requested month/year and city,
+    and produces a Markdown document with:
+      - Total CO₂ and NOx
+      - Per-zone breakdown
+      - Peak emission hour
+      - Vision 2030 alignment statement
+
+    Parameters
+    ----------
+    city : str
+    month : int   # 1-12
+    year : int
+
+    Returns
+    -------
+    str
+        Markdown content of the report.
+    """
+    import pandas as pd
+    from datetime import datetime
+
+    log_path = "emissions_log.csv"
+    report_lines = [
+        f"# Vision 2030 Sustainability Report — {city}",
+        f"**Period:** {year}-{month:02d}",
+        f"**Generated:** {datetime.now().isoformat()}",
+        "",
+    ]
+
+    if not os.path.exists(log_path):
+        report_lines.append("_No emissions data recorded for this period._")
+        return "\n".join(report_lines)
+
+    df = pd.read_csv(log_path)
+    if df.empty:
+        report_lines.append("_Emissions log is empty._")
+        return "\n".join(report_lines)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df[(df["timestamp"].dt.year == year) & (df["timestamp"].dt.month == month)]
+    if "city" in df.columns:
+        df = df[df["city"] == city]
+
+    if df.empty:
+        report_lines.append(f"_No emissions data for {city} in {year}-{month:02d}._")
+        return "\n".join(report_lines)
+
+    # Totals
+    total_co2 = df["co2_kg"].sum()
+    total_nox = df["nox_g"].sum()
+
+    report_lines.append("## Summary")
+    report_lines.append(f"- **Total CO₂:** {total_co2:.2f} kg")
+    report_lines.append(f"- **Total NOx:** {total_nox:.2f} g")
+    report_lines.append(f"- **Snapshots recorded:** {len(df)}")
+    report_lines.append("")
+
+    # Per-zone breakdown
+    report_lines.append("## Per-Zone Emissions (kg CO₂)")
+    zone_summary = df.groupby("zone")["co2_kg"].sum().sort_values(ascending=False)
+    for zone, val in zone_summary.items():
+        report_lines.append(f"- **{zone}:** {val:.2f} kg")
+    report_lines.append("")
+
+    # Peak emission hour
+    df["hour"] = df["timestamp"].dt.hour
+    peak_hour = df.groupby("hour")["co2_kg"].sum().idxmax()
+    peak_val = df.groupby("hour")["co2_kg"].sum().max()
+    report_lines.append("## Peak Emission Period")
+    report_lines.append(f"- Peak hour: **{peak_hour:02d}:00** — {peak_val:.2f} kg CO₂")
+    report_lines.append("")
+
+    # Efficiency rating distribution
+    report_lines.append("## Efficiency Rating Distribution")
+    rating_counts = df["efficiency_rating"].value_counts().to_dict()
+    for grade in ["A", "B", "C", "D", "E", "F"]:
+        count = rating_counts.get(grade, 0)
+        report_lines.append(f"- Grade **{grade}:** {count} snapshot(s)")
+    report_lines.append("")
+
+    # Vision 2030 alignment
+    report_lines.append("## Vision 2030 Alignment")
+    report_lines.append(
+        "This report supports the Saudi Vision 2030 sustainability pillar by "
+        "quantifying traffic-attributable CO₂ and NOx emissions at the zone level. "
+        "It provides an auditable baseline for tracking progress against the "
+        "Net Zero 2060 commitment."
+    )
+    report_lines.append("")
+
+    return "\n".join(report_lines)
