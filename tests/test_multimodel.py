@@ -171,3 +171,11 @@ def test_multimodal_status_returns_all_zones(client):
         assert "bottleneck" in z
         assert "alternatives" in z
         assert "components" in z
+
+
+
+
+
+
+
+
