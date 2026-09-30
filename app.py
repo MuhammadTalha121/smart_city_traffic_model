@@ -54,7 +54,8 @@ from src.gtfs_rt_export import generate_gtfs_rt_feed
 from src.edge_simulation import EdgeCabinetSimulator
 from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
                         DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
-                        generate_dynamic_reroute, calculate_zone_emissions, log_emissions_snapshot)
+                        generate_dynamic_reroute, calculate_zone_emissions, log_emissions_snapshot,
+                        generate_operator_briefing)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -1928,6 +1929,43 @@ def signals_adaptive(
         "total_zones": len(results),
         "signals": results,
     }
+
+
+
+@app.get("/briefing/{zone}", tags=["briefing"])
+@limiter.limit("20/minute")
+def get_briefing(
+    request: Request,
+    zone: str,
+    city: str = "Riyadh",
+    language: str = "en",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Generate a plain-language operator briefing for a zone.
+    Supports English ('en') and Arabic ('ar').
+    Role: OPERATOR or ADMIN.
+    """
+    _assert_city_permitted(auth, city)
+
+    if language not in ("en", "ar"):
+        raise HTTPException(status_code=422, detail="language must be 'en' or 'ar'.")
+
+    try:
+        briefing = generate_operator_briefing(zone, city, language)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return {
+        "zone": zone,
+        "city": city,
+        "language": language,
+        "briefing": briefing,
+        "generated_at": datetime.now().isoformat(),
+    }
+
+
+
 
 
 @app.post("/signals/corridor-optimize", tags=["signals"])
