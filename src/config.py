@@ -1055,3 +1055,72 @@ EMISSION_FACTORS_CO2_G_PER_KM: Dict[str, float] = {
     "heavy_truck": 650.0,
     "bus": 800.0,
 }
+
+
+
+
+
+
+# ── Operator Briefing (NLG) ─────────────────────────────
+
+SHAP_FEATURE_NAMES_AR: Dict[str, str] = {
+    "average speed": "متوسط السرعة",
+    "vehicle count": "عدد المركبات",
+    "time of day": "وقت اليوم",
+    "hourly traffic weight": "وزن الساعة المرورية",
+    "rush hour period": "فترة الذروة",
+    "late night activity": "النشاط الليلي المتأخر",
+    "weekend pattern": "نمط نهاية الأسبوع",
+    "weather condition": "حالة الطقس",
+    "road type": "نوع الطريق",
+    "zone location": "موقع المنطقة",
+    "special event": "حدث خاص",
+    "day of week": "يوم الأسبوع",
+    "traffic 1 hour ago": "حركة المرور قبل ساعة",
+    "traffic 2 hours ago": "حركة المرور قبل ساعتين",
+    "congestion 1 hour ago": "الازدحام قبل ساعة",
+    "3-hour traffic average": "متوسط حركة المرور لثلاث ساعات",
+    "traffic volatility": "تقلب حركة المرور",
+}
+
+CONGESTION_LEVELS_AR: Dict[str, str] = {
+    "Low": "منخفض",
+    "Moderate": "متوسط",
+    "High": "مرتفع",
+    "Critical": "حرج",
+}
+
+ACTION_LABELS_AR: Dict[str, str] = {
+    "Low": "لا إجراء مطلوب. الحركة طبيعية.",
+    "Moderate": "راقب المنطقة. قد تحتاج إلى تعديل توقيت الإشارة.",
+    "High": "انشر ضباط المرور. فعل الطرق البديلة.",
+    "Critical": "حالة طوارئ: ازدحام شديد. فعل إدارة المرور الطارئة.",
+}
+
+ACTION_LABELS_EN: Dict[str, str] = {
+    "Low": "No action required. Traffic is normal.",
+    "Moderate": "Monitor the zone. Consider adjusting signal timing.",
+    "High": "Deploy traffic officers. Activate alternate routes.",
+    "Critical": "EMERGENCY: Severe congestion. Initiate emergency traffic management.",
+}
+
+BRIEFING_TEMPLATES: Dict[str, str] = {
+    "en": (
+        "Congestion in {zone} is predicted at {level} for the next {horizon}. "
+        "Primary factors: {factors}. Recommended action: {action}."
+    ),
+    "ar": (
+        "من المتوقع أن يكون الازدحام في {zone} {level} خلال {horizon}. "
+        "العوامل الرئيسية: {factors}. الإجراء الموصى به: {action}."
+    ),
+}
+
+HAJJ_PREFIX: Dict[str, str] = {
+    "en": "Hajj season active. ",
+    "ar": "موسم الحج نشط. ",
+}
+
+RAMADAN_PREFIX: Dict[str, str] = {
+    "en": "Ramadan schedule active. ",
+    "ar": "جدول رمضان نشط. ",
+}
