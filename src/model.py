@@ -585,6 +585,129 @@ def explain_prediction(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
     }
 
 
+
+
+def generate_operator_briefing(zone: str, city: str = "Riyadh", language: str = "en") -> str:
+    """
+    Generate a plain-language operator briefing for a zone.
+
+    Uses the latest data from app.state, computes SHAP explanation,
+    and fills a template with congestion level, top factors, and recommended action.
+    Supports English ('en') and Arabic ('ar').
+    Adds Hajj/Ramadan prefix when active.
+
+    Parameters
+    ----------
+    zone : str
+    city : str
+    language : str  # 'en' or 'ar'
+
+    Returns
+    -------
+    str
+    """
+    import pandas as pd
+    from datetime import date
+    from app import app
+    from src.config import (
+        BRIEFING_TEMPLATES, SHAP_FEATURE_NAMES_AR, CONGESTION_LEVELS_AR,
+        ACTION_LABELS_AR, ACTION_LABELS_EN, HAJJ_PREFIX, HAJJ_DATES,
+    )
+    from src.model import (
+        congestion_level, explain_prediction,
+        WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING,
+    )
+
+    # Get the city dataframe
+    if not hasattr(app.state, "city_dfs") or city not in app.state.city_dfs:
+        df = getattr(app.state, "df", None)
+        if df is None:
+            raise ValueError("No data available for briefing.")
+    else:
+        df = app.state.city_dfs[city]
+
+    zone_df = df[df["zone"] == zone].sort_values("timestamp")
+    if zone_df.empty:
+        raise ValueError(f"No data for zone {zone} in {city}.")
+
+    latest = zone_df.iloc[-1]
+    hour = int(latest["hour"])
+    weather = str(latest["weather"])
+    congestion_score = float(latest["congestion_score"])
+    level = congestion_level(congestion_score)
+
+    # Build X_row for SHAP explanation
+    feature_cols = app.state.feature_cols
+    row = {
+        "vehicle_count": latest["vehicle_count"],
+        "avg_speed": latest["avg_speed"],
+        "hour": hour,
+        "rush_hour": int(latest.get("rush_hour", 0)),
+        "is_weekend": int(latest.get("is_weekend", 0)),
+        "is_late_night": int(latest.get("is_late_night", 0)),
+        "event": int(latest.get("event", 0)),
+        "hour_multiplier": latest.get("hour_multiplier", 1.0),
+        "weather": WEATHER_ENCODING.get(weather, 0),
+        "road_type": ROAD_ENCODING.get(str(latest.get("road_type", "arterial")), 0),
+        "zone": ZONE_ENCODING.get(zone, 0),
+        "day_of_week": DAY_ENCODING.get(date.today().strftime("%A"), 0),
+        "vehicle_count_lag_1h": latest.get("vehicle_count_lag_1h", latest["vehicle_count"]),
+        "vehicle_count_lag_2h": latest.get("vehicle_count_lag_2h", latest["vehicle_count"]),
+        "congestion_lag_1h": latest.get("congestion_lag_1h", 0.0),
+        "rolling_mean_3h": latest.get("rolling_mean_3h", latest["vehicle_count"]),
+        "rolling_std_3h": latest.get("rolling_std_3h", 0.0),
+        "adjacent_congestion_lag_1h": latest.get("adjacent_congestion_lag_1h", latest.get("congestion_score", 0.0)),
+        "adjacent_vehicle_count_lag_1h": latest.get("adjacent_vehicle_count_lag_1h", latest["vehicle_count"]),
+        "adjacent_congestion_lag_2h": latest.get("adjacent_congestion_lag_2h", latest.get("congestion_score", 0.0)),
+        "adjacent_vehicle_count_lag_2h": latest.get("adjacent_vehicle_count_lag_2h", latest["vehicle_count"]),
+    }
+
+    X_row = pd.DataFrame([row])[feature_cols]
+
+    explanation = explain_prediction(app.state.model, X_row, feature_cols)
+    factors_en = [f["factor"] for f in explanation["top_factors"]]
+
+    if language == "ar":
+        factors = [SHAP_FEATURE_NAMES_AR.get(f, f) for f in factors_en]
+    else:
+        factors = factors_en
+
+    factors_str = ", ".join(factors)
+
+    if language == "ar":
+        level_str = CONGESTION_LEVELS_AR.get(level, level)
+        action = ACTION_LABELS_AR.get(level, "لا إجراء محدد.")
+        horizon = "الساعة القادمة"
+    else:
+        level_str = level
+        action = ACTION_LABELS_EN.get(level, "No action required.")
+        horizon = "next hour"
+
+    template = BRIEFING_TEMPLATES.get(language, BRIEFING_TEMPLATES["en"])
+    briefing = template.format(
+        zone=zone,
+        level=level_str,
+        horizon=horizon,
+        factors=factors_str,
+        action=action,
+    )
+
+    today = date.today()
+    year = today.year
+    prefix = ""
+
+    if year in HAJJ_DATES:
+        hajj_start = date.fromisoformat(HAJJ_DATES[year]["start"])
+        hajj_end = date.fromisoformat(HAJJ_DATES[year]["end"])
+        if hajj_start <= today <= hajj_end:
+            prefix += HAJJ_PREFIX.get(language, "")
+
+    return prefix + briefing
+
+
+
+
+
 def compute_accident_risk(
     congestion_score: float,
     weather: str,
