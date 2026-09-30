@@ -1153,7 +1153,7 @@
       <div id="drt-wrap"><div class="empty-state"><div class="empty-icon">🚌</div>Loading…</div></div>
     </div>
     
-    <!-- Parking Guidance (PROMPT 141) -->
+    <!-- Parking Guidance -->
     <div class="card" id="parking-guidance-panel" style="margin-top:1.25rem">
       <div class="card-header">
         <span class="card-title">Parking Guidance — Available Zones</span>
@@ -1167,11 +1167,34 @@
 
   </div>
 
-  
 
-  <!-- ══════════════════════════════════════
-       TAB 2 — HOURLY PATTERNS
-  ══════════════════════════════════════ -->
+  <!-- Operator Briefing (PROMPT 147) -->
+  <div class="card" id="briefing-panel" style="margin-top:1.25rem">
+    <div class="card-header">
+      <span class="card-title">Operator Briefing</span>
+      <div style="display:flex;gap:0.5rem;align-items:center">
+        <select id="briefing-zone" class="field-select" style="width:120px" onchange="loadBriefing()">
+          <option>Zone_1</option><option>Zone_2</option>
+          <option>Zone_3</option><option>Zone_4</option><option>Zone_5</option>
+        </select>
+        <select id="briefing-lang" class="field-select" style="width:80px" onchange="loadBriefing()">
+          <option value="en">EN</option>
+          <option value="ar">عربي</option>
+        </select>
+        <span class="card-tag" id="briefing-tag">LOADING…</span>
+      </div>
+    </div>
+    <div id="briefing-content" style="padding:1rem;background:var(--bg-input);border-radius:var(--radius-md);
+        font-family:var(--font-sans);font-size:0.95rem;line-height:1.6;color:var(--text-primary);min-height:80px">
+      Loading briefing…
+    </div>
+  </div>
+
+    
+
+    <!-- ══════════════════════════════════════
+        TAB 2 — HOURLY PATTERNS
+    ══════════════════════════════════════ -->
   <div class="tab-panel" id="tab-patterns">
     <div class="section-label">Traffic Rhythm · 24-Hour Cycle</div>
     <div class="card">
@@ -2549,7 +2572,8 @@ async function renderOperationsTab() {
     loadVMS(),
     loadParking(),
     loadDRT(),
-    loadParkingGuidance()   // <-- added
+    loadParkingGuidance(),
+    loadBriefing(),
   ]);
 }
 
@@ -2695,6 +2719,30 @@ async function loadDRT() {
     tag.textContent = 'OFFLINE';
   }
 }
+
+
+
+
+async function loadBriefing() {
+  const zone = document.getElementById('briefing-zone').value;
+  const lang = document.getElementById('briefing-lang').value;
+  const tag = document.getElementById('briefing-tag');
+  const content = document.getElementById('briefing-content');
+  try {
+    const res = await fetch(`/briefing/${zone}?city=Riyadh&language=${lang}`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+    content.textContent = data.briefing;
+    tag.textContent = 'LIVE';
+  } catch (e) {
+    content.textContent = 'Briefing unavailable.';
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+
 
 
 // ── Parking Guidance ──────────────────────────
