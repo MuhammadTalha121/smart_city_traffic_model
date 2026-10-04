@@ -869,6 +869,7 @@
   <button class="tab-btn" data-tab="forecast"><span class="tab-icon">🔮</span>Forecasting</button>
   <button class="tab-btn" data-tab="analytics"><span class="tab-icon">📊</span>Analytics</button>
   <button class="tab-btn" data-tab="training"><span class="tab-icon">🎓</span>Training</button>
+  <button class="tab-btn" data-tab="cities"><span class="tab-icon">🌍</span>City Comparison</button>
 </nav>
 
 <!-- Main -->
@@ -1530,6 +1531,55 @@
   </div>
 
 
+  <!-- ══════════════════════════════════════
+     TAB: CITY COMPARISON (PROMPT 148)
+══════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-cities">
+    <div class="section-label">Multi-City KPI Comparison · Vision 2030</div>
+
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <span class="card-title">City Comparison Table</span>
+        <span class="card-tag" id="city-compare-tag">LOADING…</span>
+      </div>
+      <div id="city-compare-table">
+        <div class="empty-state"><div class="empty-icon">🌍</div>Loading…</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">KPI Radar</span>
+          <span class="card-tag">NORMALIZED</span>
+        </div>
+        <div class="chart-wrap" style="height:280px">
+          <canvas id="chart-city-radar"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Avg Congestion Ranking</span>
+          <span class="card-tag">LOWER IS BETTER</span>
+        </div>
+        <div class="chart-wrap" style="height:280px">
+          <canvas id="chart-city-bar"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Export</span>
+      </div>
+      <button class="predict-btn" style="width:auto;padding:0.6rem 1.25rem"
+              onclick="downloadCityComparison()">Download Comparison Report (Markdown)</button>
+      <span id="city-compare-export-status"
+            style="margin-left:1rem;font-size:0.75rem;color:var(--text-muted);font-family:var(--font-mono)"></span>
+    </div>
+  </div>
+
+
 
 </main>
 
@@ -1593,6 +1643,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'insights')  renderInsightsTab();
     if (btn.dataset.tab === 'forecast')  loadForecast();
     if (btn.dataset.tab === 'predict')   loadTollPricing();
+    if (btn.dataset.tab === 'cities') loadCityComparison();
     if (btn.dataset.tab === 'operations') {
       renderOperationsTab();
       clearInterval(_refreshTimer);
@@ -3244,6 +3295,182 @@ document.querySelector('[data-tab="training"]').addEventListener('click', functi
     loadIncidentList();
   }
 });
+
+
+// ── PROMPT 148: City Comparison ──────────────────────
+let chartCityRadar, chartCityBar;
+
+async function loadCityComparison() {
+  const tag = document.getElementById('city-compare-tag');
+  try {
+    const res = await fetch('/analytics/city-comparison?days=7', {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+
+    tag.textContent = `${data.cities.length} CITIES · ${data.period_days}D`;
+    renderCityTable(data.cities);
+    renderCityRadar(data.cities);
+    renderCityBar(data.cities);
+  } catch (e) {
+    tag.textContent = 'OFFLINE';
+    document.getElementById('city-compare-table').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">⚠️</div>City comparison unavailable</div>`;
+  }
+}
+
+function renderCityTable(cities) {
+  const wrap = document.getElementById('city-compare-table');
+  if (!cities.length) {
+    wrap.innerHTML = `<div class="empty-state">No city data.</div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>City</th>
+          <th>Avg Congestion</th>
+          <th>Peak Hour</th>
+          <th>Incidents</th>
+          <th>Incident Rate<br>(per 1000 veh)</th>
+          <th>CO₂ (kg/100 veh)</th>
+          <th>Maintenance Urgency</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${cities.map(c => `
+          <tr>
+            <td style="color:var(--text-primary);font-weight:500">${c.city}</td>
+            <td style="color:${LEVEL_COLORS[congestionLabel(c.avg_congestion_score)] || '#8b9ab0'}">
+              ${c.avg_congestion_score.toFixed(4)}
+            </td>
+            <td>${String(c.peak_hour).padStart(2,'0')}:00</td>
+            <td>${c.incident_count}</td>
+            <td>${c.incident_rate_per_1000_vehicles.toFixed(4)}</td>
+            <td>${c.emissions_co2_kg_per_100_vehicles.toFixed(2)}</td>
+            <td style="color:${c.maintenance_urgency_score > 60 ? 'var(--rose)' : 'var(--jade)'}">
+              ${c.maintenance_urgency_score.toFixed(1)}
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function congestionLabel(score) {
+  if (score <= 0.20) return 'Low';
+  if (score <= 0.40) return 'Moderate';
+  if (score <= 0.60) return 'High';
+  return 'Critical';
+}
+
+function renderCityRadar(cities) {
+  if (chartCityRadar) chartCityRadar.destroy();
+  if (!cities.length) return;
+
+  const metrics = ['avg_congestion_score', 'incident_rate_per_1000_vehicles',
+                   'emissions_co2_kg_per_100_vehicles', 'maintenance_urgency_score'];
+  const maxes = metrics.map(m => Math.max(...cities.map(c => c[m]), 0.0001));
+
+  const palette = ['#d4af64', '#4ecdc4', '#e07070', '#6ba3d6', '#5aaf8a'];
+
+  const datasets = cities.map((c, i) => ({
+    label: c.city,
+    data: metrics.map((m, mi) => c[m] / maxes[mi]),
+    borderColor: palette[i % palette.length],
+    backgroundColor: palette[i % palette.length] + '20',
+    borderWidth: 2,
+    pointRadius: 3,
+  }));
+
+  chartCityRadar = new Chart(document.getElementById('chart-city-radar'), {
+    type: 'radar',
+    data: {
+      labels: ['Congestion', 'Incident Rate', 'CO₂ / 100 veh', 'Maint. Urgency'],
+      datasets,
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: { color: '#8b9ab0', font: { family: 'DM Mono', size: 10 }, boxWidth: 10 },
+        },
+      },
+      scales: {
+        r: {
+          min: 0,
+          max: 1,
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          angleLines: { color: 'rgba(255,255,255,0.06)' },
+          pointLabels: { color: '#8b9ab0', font: { family: 'DM Mono', size: 10 } },
+          ticks: { display: false },
+        },
+      },
+    },
+  });
+}
+
+function renderCityBar(cities) {
+  if (chartCityBar) chartCityBar.destroy();
+  if (!cities.length) return;
+
+  const sorted = [...cities].sort((a,b) => a.avg_congestion_score - b.avg_congestion_score);
+
+  chartCityBar = new Chart(document.getElementById('chart-city-bar'), {
+    type: 'bar',
+    data: {
+      labels: sorted.map(c => c.city),
+      datasets: [{
+        data: sorted.map(c => c.avg_congestion_score),
+        backgroundColor: sorted.map(c =>
+          LEVEL_BG[congestionLabel(c.avg_congestion_score)] || 'rgba(212,175,100,0.4)'
+        ),
+        borderColor: sorted.map(c =>
+          LEVEL_COLORS[congestionLabel(c.avg_congestion_score)] || '#d4af64'
+        ),
+        borderWidth: 1,
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: chartGrid(), ticks: chartTick(), min: 0, max: 1 },
+        y: { grid: { display: false }, ticks: { color: '#8b9ab0', font: { family: 'DM Mono', size: 11 } } },
+      },
+    },
+  });
+}
+
+async function downloadCityComparison() {
+  const status = document.getElementById('city-compare-export-status');
+  status.textContent = 'Generating…';
+  try {
+    const res = await fetch('/reports/city-comparison?days=7', {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'city_comparison_report.md';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    status.textContent = '✓ Downloaded';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
+}
+
 
 
 
