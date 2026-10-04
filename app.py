@@ -686,9 +686,7 @@ app = FastAPI(
         "name" : "Muhammad Talha",
         "url"  : "https://github.com/MuhammadTalha121/smart_city_traffic_model",
     },
-    license_info = {
-        "name": "MIT",
-    },
+    
     docs_url    = "/docs",
     redoc_url   = "/redoc",
     openapi_url = "/openapi.json",
