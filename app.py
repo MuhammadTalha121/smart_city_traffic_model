@@ -671,9 +671,27 @@ templates = Jinja2Templates(
 
 app = FastAPI(
     title       = "Smart City Traffic Intelligence API",
-    description = "Production-ready traffic prediction for Vision 2030 smart cities.",
-    version     = "5.0.0",
+    description = (
+        "Production-ready traffic prediction and control API for Saudi Vision 2030 smart cities.\n\n"
+        "**Cities supported:** Riyadh, Jeddah, Mecca, Medina, Dammam, NEOM, Dubai, Karachi.\n\n"
+        "**Authentication:** Send the `X-API-Key` header with every protected request.\n\n"
+        "**Roles:** READ_ONLY, OPERATOR, ADMIN, AGENCY.\n\n"
+        "**Saudi-specific features:** Hajj mode, Ramadan schedule, Friday prayer windows, "
+        "sandstorm protocols, Vision 2030 KPI tracking."
+    ),
+    version     = "6.0.0",
     lifespan    = lifespan,
+    openapi_version = "3.1.0",
+    contact = {
+        "name" : "Muhammad Talha",
+        "url"  : "https://github.com/MuhammadTalha121/smart_city_traffic_model",
+    },
+    license_info = {
+        "name": "MIT",
+    },
+    docs_url    = "/docs",
+    redoc_url   = "/redoc",
+    openapi_url = "/openapi.json",
 )
 
 app.state.limiter = limiter
@@ -859,7 +877,7 @@ class BatchPredictRequest(BaseModel):
 def root():
     return {
         "service"     : "Smart City Traffic Intelligence API",
-        "version"     : "5.0.0",
+        "version"     : "6.0.0",
         "status"      : "operational",
         "data_source" : app.state.data_source,
         "docs"        : "/docs",
