@@ -3086,6 +3086,115 @@ def analytics_quota(
     }
 
 
+
+@app.get("/analytics/city-comparison", tags=["analytics"])
+@limiter.limit("20/minute")
+def city_comparison(
+    request: Request,
+    days: int = 7,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Multi-city KPI comparison across all configured cities.
+    Returns avg congestion, peak hour, incident rate, emissions,
+    and maintenance urgency for each city.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    from src.model import compute_city_comparison
+
+    try:
+        result = compute_city_comparison(days=days)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
+
+
+
+
+
+
+
+class ABTestStartRequest(BaseModel):
+    name: str = Field(..., description="Human-readable test name")
+    strategy_a: str = Field("current adaptive timing", description="Description of strategy A")
+    strategy_b: str = Field("simulation-optimised", description="Description of strategy B")
+    zones_a: List[str] = Field(..., description="Zones assigned to strategy A")
+    zones_b: List[str] = Field(..., description="Zones assigned to strategy B")
+    duration_hours: int = Field(24, ge=1, le=168, description="Test duration in hours")
+
+
+@app.post("/experiments/signal-ab/start", tags=["experiments"])
+@limiter.limit("10/minute")
+def start_signal_ab_test(
+    request: Request,
+    payload: ABTestStartRequest,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Create a new A/B test between two signal timing strategies.
+    ADMIN only.
+    """
+    from src.ab_testing import start_ab_test
+    try:
+        test_id = start_ab_test(
+            name=payload.name,
+            strategy_a=payload.strategy_a,
+            strategy_b=payload.strategy_b,
+            zones_a=payload.zones_a,
+            zones_b=payload.zones_b,
+            duration_hours=payload.duration_hours,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"status": "created", "test_id": test_id}
+
+
+@app.get("/experiments/signal-ab", tags=["experiments"])
+@limiter.limit("20/minute")
+def list_signal_ab_tests(
+    request: Request,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """List all registered A/B tests."""
+    from src.ab_testing import list_ab_tests
+    tests = list_ab_tests()
+    return {"total": len(tests), "tests": tests}
+
+
+@app.get("/experiments/signal-ab/{test_id}/results", tags=["experiments"])
+@limiter.limit("20/minute")
+def get_signal_ab_results(
+    request: Request,
+    test_id: str,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Evaluate an A/B test using the current city data.
+    Returns metrics for A and B, the winner, and rationale.
+    """
+    from src.ab_testing import evaluate_ab_test
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    try:
+        result = evaluate_ab_test(test_id, df)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return result
+
+
+
+
+
+
+
+
+
 @app.get("/sla/report", tags=["sla"])
 def sla_report(
     days: int  = 30,
@@ -3251,6 +3360,71 @@ def sustainability_report(
         media_type="text/markdown",
         filename=f"sustainability_{city.lower()}_{year}_{month:02d}.md",
     )
+
+
+
+@app.get("/reports/city-comparison", tags=["reports"])
+def city_comparison_report(
+    days: int = 7,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Generate a Markdown city comparison report. ADMIN only.
+    """
+    from src.model import compute_city_comparison
+    from datetime import datetime
+
+    try:
+        result = compute_city_comparison(days=days)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    lines = [
+        "# Multi-City Traffic Comparison Report",
+        f"**Generated:** {result['generated_at']}",
+        f"**Period:** last {result['period_days']} days",
+        "",
+        "## Summary",
+        "",
+        "| City | Avg Congestion | Peak Hour | Incidents | Incident Rate (per 1000 veh) | CO₂ (kg/100 veh) | Maintenance Urgency |",
+        "|------|----------------|-----------|-----------|------------------------------|------------------|---------------------|",
+    ]
+
+    for c in result["cities"]:
+        lines.append(
+            f"| {c['city']} | {c['avg_congestion_score']:.4f} | "
+            f"{c['peak_hour']:02d}:00 | {c['incident_count']} | "
+            f"{c['incident_rate_per_1000_vehicles']:.4f} | "
+            f"{c['emissions_co2_kg_per_100_vehicles']:.2f} | "
+            f"{c['maintenance_urgency_score']:.1f} |"
+        )
+
+    lines.extend([
+        "",
+        "## Vision 2030 Alignment",
+        "",
+        "This report supports Vision 2030 city planning by providing "
+        "side-by-side comparisons of congestion, safety, emissions, and "
+        "infrastructure urgency across Saudi cities.",
+    ])
+
+    report_md = "\n".join(lines)
+
+    os.makedirs("reports", exist_ok=True)
+    out_path = f"reports/city_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(report_md)
+
+    return FileResponse(
+        path=out_path,
+        media_type="text/markdown",
+        filename="city_comparison_report.md",
+    )
+
+
+
+
+
 
 
 
