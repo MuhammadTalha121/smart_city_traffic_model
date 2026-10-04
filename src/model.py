@@ -4139,6 +4139,104 @@ def compute_equity_summary(city: str, days: int = 30) -> Dict:
 
 
 
+def compute_city_comparison(days: int = 7) -> Dict:
+    """
+    Compute per-city KPIs for multi-city comparison.
+
+    Reads the current city DataFrames from app.state and computes:
+      - avg_congestion: mean of congestion_score across all zones/hours
+      - incident_rate: incidents per 1000 vehicles (from incidents_log)
+      - emissions_efficiency: kg CO2 per 100 vehicles (from congestion level)
+      - maintenance_urgency_score: 0-100, from pavement wear and congestion
+      - peak_hour: hour with the highest mean congestion
+
+    Parameters
+    ----------
+    days : int
+        Lookback window for incidents (default 7 days). Other KPIs use live data.
+
+    Returns
+    -------
+    dict
+        {
+            "cities": List[dict],  # sorted by avg_congestion desc
+            "period_days": int,
+            "generated_at": str,
+        }
+    """
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from app import app
+
+    if not hasattr(app.state, "city_dfs") or not app.state.city_dfs:
+        raise ValueError("No city DataFrames available.")
+
+    incidents_by_city: Dict[str, int] = {}
+    if os.path.exists(INCIDENTS_LOG_PATH):
+        try:
+            inc_df = pd.read_csv(INCIDENTS_LOG_PATH)
+            if "timestamp" in inc_df.columns:
+                inc_df["timestamp"] = pd.to_datetime(inc_df["timestamp"], errors="coerce")
+                cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+                inc_df = inc_df[inc_df["timestamp"] >= cutoff]
+            if "city" in inc_df.columns:
+                incidents_by_city = inc_df["city"].value_counts().to_dict()
+        except Exception:
+            incidents_by_city = {}
+
+    from src.config import FUEL_CONSUMPTION_LPH, CO2_KG_PER_LITRE
+
+    results = []
+    for city, df in app.state.city_dfs.items():
+        if df is None or df.empty:
+            continue
+
+        avg_congestion = float(df["congestion_score"].mean())
+
+        hourly = df.groupby("hour")["congestion_score"].mean()
+        peak_hour = int(hourly.idxmax()) if not hourly.empty else 0
+
+        total_vehicles = float(df["vehicle_count"].sum())
+        incident_count = int(incidents_by_city.get(city, 0))
+        incident_rate = round((incident_count / max(total_vehicles, 1)) * 1000, 4)
+
+        avg_score = avg_congestion
+        if avg_score <= 0.2:
+            level = "Low"
+        elif avg_score <= 0.4:
+            level = "Moderate"
+        elif avg_score <= 0.6:
+            level = "High"
+        else:
+            level = "Critical"
+
+        fuel_rate = FUEL_CONSUMPTION_LPH.get(level, FUEL_CONSUMPTION_LPH["Low"])
+        avg_vehicles_per_row = float(df["vehicle_count"].mean())
+        fuel_per_100 = fuel_rate * (avg_vehicles_per_row / 100)
+        co2_per_100_vehicles = round(fuel_per_100 * CO2_KG_PER_LITRE, 3)
+
+        wear_urgency = round(min(100.0, avg_congestion * 60 + (avg_vehicles_per_row / 500) * 40), 2)
+
+        results.append({
+            "city": city,
+            "avg_congestion_score": round(avg_congestion, 4),
+            "peak_hour": peak_hour,
+            "incident_count": incident_count,
+            "incident_rate_per_1000_vehicles": incident_rate,
+            "emissions_co2_kg_per_100_vehicles": co2_per_100_vehicles,
+            "maintenance_urgency_score": wear_urgency,
+        })
+
+    results.sort(key=lambda x: x["avg_congestion_score"], reverse=True)
+
+    return {
+        "cities": results,
+        "period_days": days,
+        "generated_at": datetime.now().isoformat(),
+    }
+
+
+
 
 def compute_hcm_vc_ratio(vehicle_count: float, road_type: str) -> Dict:
     """
