@@ -1124,3 +1124,19 @@ RAMADAN_PREFIX: Dict[str, str] = {
     "en": "Ramadan schedule active. ",
     "ar": "جدول رمضان نشط. ",
 }
+
+
+
+
+
+# ── PROMPT 152: Pedestrian crossing demand ──────────────────────────
+
+PEDESTRIAN_POST_PRAYER_SURGE_MINUTES: int = 15
+PEDESTRIAN_DEMAND_THRESHOLDS: Dict[str, int] = {
+    "Low": 0,
+    "Medium": 30,
+    "High": 80,
+}
+PEDESTRIAN_HIGH_DEMAND_PHASE_EXTENSION_S: int = 8
+PEDESTRIAN_PEAK_HOURS: List[int] = [7, 8, 12, 13, 16, 17, 18]
+PEDESTRIAN_HIGH_FOOTFALL_ZONES: List[str] = ["Zone_1", "Zone_3", "Zone_5"]
