@@ -55,7 +55,7 @@ from src.edge_simulation import EdgeCabinetSimulator
 from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
                         DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
                         generate_dynamic_reroute, calculate_zone_emissions, log_emissions_snapshot,
-                        generate_operator_briefing)
+                        generate_operator_briefing, predict_pedestrian_crossing_demand)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -5008,6 +5008,34 @@ async def crosswalk_timing(
         "schedule": schedule,
         "zones": result,
     }
+
+
+
+
+
+@app.get("/pedestrian/crossing-demand", tags=["pedestrian"])
+@limiter.limit("20/minute")
+def pedestrian_crossing_demand(
+    request: Request,
+    zone: str = "Zone_1",
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Predict pedestrian crossing demand for a zone and recommend
+    pedestrian phase extensions during prayer-time surges.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    _assert_city_permitted(auth, city)
+
+    try:
+        result = predict_pedestrian_crossing_demand(zone=zone, city=city)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
+
+
 
 
 
