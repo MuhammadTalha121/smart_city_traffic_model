@@ -2333,6 +2333,43 @@ def zone_emissions_report(
 
 
 
+@app.get("/reports/pdpl-audit", tags=["reports"])
+def pdpl_audit_report(
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Generate a PDPL compliance audit report (Markdown).
+    ADMIN only. Returns the report as a downloadable file.
+    """
+    from src.model import generate_pdpl_audit_report
+    from datetime import datetime
+
+    try:
+        report_md = generate_pdpl_audit_report()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
+
+    os.makedirs("reports", exist_ok=True)
+    out_path = f"reports/pdpl_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(report_md)
+
+    return FileResponse(
+        path=out_path,
+        media_type="text/markdown",
+        filename="PDPL_COMPLIANCE_REPORT.md",
+    )
+
+
+
+
+
+
+
+
+
+
+
 @app.get("/cities/compare", tags=["multi-city"])
 @limiter.limit("20/minute")
 def cities_compare(
