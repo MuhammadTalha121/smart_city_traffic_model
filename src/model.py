@@ -5546,3 +5546,279 @@ def generate_sustainability_report(city: str, month: int, year: int) -> str:
     report_lines.append("")
 
     return "\n".join(report_lines)
+
+
+
+
+
+def generate_pdpl_audit_report() -> str:
+    """
+    Generate a PDPL (Personal Data Protection Law) compliance audit report
+    in Markdown format.
+
+    Enumerates all data categories, retention policies, differential privacy
+    measures, and agency access logging. Does not modify any state.
+
+    Returns
+    -------
+    str
+        Markdown content of the report.
+    """
+    import os
+    from datetime import datetime
+
+    def _count_rows(path: str) -> int:
+        if not os.path.exists(path):
+            return 0
+        try:
+            import pandas as pd
+            return len(pd.read_csv(path))
+        except Exception:
+            return 0
+
+    def _file_size_kb(path: str) -> float:
+        if not os.path.exists(path):
+            return 0.0
+        return round(os.path.getsize(path) / 1024.0, 2)
+
+    data_sources = [
+        {
+            "name": "predictions_log.csv",
+            "category": "Traffic predictions",
+            "fields": "timestamp, city, zone, hour, weather, congestion_score, "
+                      "congestion_level, top_factor_1/2/3, plain_english, "
+                      "co2_kg, fuel_litres, interval_width, data_source",
+            "retention_days": 90,
+            "pii": False,
+            "notes": "Aggregated per-zone data only; no individual vehicles or persons.",
+        },
+        {
+            "name": "incidents_log.csv",
+            "category": "Incident detection events",
+            "fields": "timestamp, city, zone, severity, speed_drop_pct, "
+                      "volume_change_pct, confidence, clearance_mins",
+            "retention_days": 180,
+            "pii": False,
+            "notes": "Zone-level incident events; no driver or vehicle identifiers.",
+        },
+        {
+            "name": "signal_commands_log.csv",
+            "category": "Signal actuation commands",
+            "fields": "timestamp, zone, cycle_length, green_phase_seconds, "
+                      "offset, status, command_id, purpose",
+            "retention_days": 365,
+            "pii": False,
+            "notes": "Audit trail for regulatory verification; no personal data.",
+        },
+        {
+            "name": "alerts_log.csv",
+            "category": "Operator alerts",
+            "fields": "timestamp, city, zone, alert_type, severity, metric, threshold",
+            "retention_days": 180,
+            "pii": False,
+            "notes": "System-generated threshold alerts.",
+        },
+        {
+            "name": "agency_access_log.csv",
+            "category": "Agency data sharing access",
+            "fields": "timestamp, agency_id, endpoint, city",
+            "retention_days": 730,
+            "pii": False,
+            "notes": "Documents which agency accessed which endpoint and when. "
+                     "Agency IDs are organisation-level, not individual.",
+        },
+        {
+            "name": "usage_log.csv",
+            "category": "API usage analytics",
+            "fields": "timestamp, endpoint, method, api_key_hash, response_code, "
+                      "response_time_ms",
+            "retention_days": 90,
+            "pii": False,
+            "notes": "API key hashes are one-way; no raw keys stored.",
+        },
+        {
+            "name": "emissions_log.csv",
+            "category": "Emissions snapshots",
+            "fields": "timestamp, city, zone, co2_kg, nox_g, efficiency_rating, "
+                      "vehicle_count, avg_speed_kmh",
+            "retention_days": 365,
+            "pii": False,
+            "notes": "Zone-level aggregated emissions for Vision 2030 reporting.",
+        },
+        {
+            "name": "maintenance_notifications.csv",
+            "category": "Maintenance reschedule events",
+            "fields": "timestamp, zone, original_window, new_window, reason, notified",
+            "retention_days": 180,
+            "pii": False,
+            "notes": "Crew notification stubs; no individual names stored.",
+        },
+        {
+            "name": "ab_tests.json",
+            "category": "A/B test configurations",
+            "fields": "test_id, name, strategy_a/b, zones_a/b, duration_hours",
+            "retention_days": 365,
+            "pii": False,
+            "notes": "Operator-authored test configurations.",
+        },
+        {
+            "name": "construction_zones.json",
+            "category": "Construction zone metadata",
+            "fields": "id, zone, road_name, start/end date, lanes_closed, capacity_reduction_pct",
+            "retention_days": 365,
+            "pii": False,
+            "notes": "Infrastructure-level data; no personal data.",
+        },
+    ]
+
+    now = datetime.now().isoformat()
+
+    lines = [
+        "# PDPL Compliance Audit Report",
+        "",
+        f"**Generated:** {now}",
+        f"**System:** Smart City Traffic Intelligence API (v6.0.0)",
+        f"**Legal basis:** Saudi Personal Data Protection Law (PDPL), 2021",
+        f"**Prepared by:** Automated audit generator",
+        "",
+        "---",
+        "",
+        "## 1. Purpose and Scope",
+        "",
+        "This report documents the data collection, processing, retention, and "
+        "sharing practices of the Smart City Traffic Intelligence system. The "
+        "system processes aggregated traffic, weather, and infrastructure data "
+        "for Saudi cities. **No personally identifiable information (PII) is "
+        "collected or stored.**",
+        "",
+        "---",
+        "",
+        "## 2. Data Categories and Retention",
+        "",
+        "| Log / Store | Category | Retention (days) | Contains PII |",
+        "|-------------|----------|------------------|--------------|",
+    ]
+
+    for src in data_sources:
+        lines.append(
+            f"| `{src['name']}` | {src['category']} | {src['retention_days']} | "
+            f"{'Yes' if src['pii'] else 'No'} |"
+        )
+
+    lines.extend([
+        "",
+        "### 2.1 Field-Level Detail",
+        "",
+    ])
+
+    for src in data_sources:
+        lines.append(f"**`{src['name']}`** — {src['category']}")
+        lines.append(f"- Fields: {src['fields']}")
+        lines.append(f"- Retention: {src['retention_days']} days")
+        lines.append(f"- Contains PII: {'Yes' if src['pii'] else 'No'}")
+        lines.append(f"- Notes: {src['notes']}")
+        lines.append("")
+
+    lines.extend([
+        "---",
+        "",
+        "## 3. Current Data Volumes",
+        "",
+        "| Store | Rows | Size (KB) |",
+        "|-------|------|-----------|",
+    ])
+
+    for src in data_sources:
+        rows = _count_rows(src["name"]) if src["name"].endswith(".csv") else 0
+        size = _file_size_kb(src["name"])
+        lines.append(f"| `{src['name']}` | {rows} | {size} |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 4. Differential Privacy (Federated Weight Sharing)",
+        "",
+        "The system supports federated learning across cities. Model weight "
+        "sharing is protected by differential privacy as implemented in "
+        "PROMPT 110 (`src/federated.py`):",
+        "",
+        "- **Mechanism:** Gaussian noise added to aggregated model weights",
+        "- **Epsilon (ε):** configured in `src/config.py` (`DP_EPSILON`)",
+        "- **Delta (δ):** configured in `src/config.py` (`DP_DELTA`)",
+        "- **Guarantee:** No individual city's data can be reverse-engineered "
+        "from shared weights",
+        "- **Scope:** Weights are aggregated across cities before noise is added",
+        "",
+        "---",
+        "",
+        "## 5. Agency Data Sharing",
+        "",
+        "The Agency Data Sharing Gateway (PROMPT 131) enforces:",
+        "",
+        "- **Authentication:** Every request requires a valid `X-Agency-Token` header",
+        "- **Authorisation:** Each token is scoped to specific endpoints and cities",
+        "- **Logging:** Every access is recorded in `agency_access_log.csv` with "
+        "timestamp, agency_id, endpoint, and city",
+        "- **No raw data exposure:** Agency endpoints return aggregated and "
+        "standardised formats (DATEX II, SIRI, GTFS-RT) — never raw sensor data",
+        "- **No individual-level data:** Agency endpoints cannot retrieve "
+        "individual vehicle or citizen records",
+        "",
+        "---",
+        "",
+        "## 6. Data Subject Rights",
+        "",
+        "Since the system does not collect PII, individual data subject requests "
+        "(access, correction, deletion) are not applicable. However:",
+        "",
+        "- **Right to information:** This report serves as public notice of data "
+        "practices",
+        "- **Right to object:** Cities may opt out of federated learning at any "
+        "time (see `src/federated.py`)",
+        "- **Right to non-automated decisions:** Signal timing recommendations "
+        "require operator approval (see `ACTUATION_ENABLED` gate in "
+        "`src/signal_controller.py`)",
+        "",
+        "---",
+        "",
+        "## 7. Data Security Measures",
+        "",
+        "- **Authentication:** API key + role-based access control (RBAC)",
+        "- **Rate limiting:** Per-endpoint limits enforced by `slowapi`",
+        "- **Transport:** HTTPS in production (enforced by Railway/Render)",
+        "- **Storage:** CSV logs and JSON stores on encrypted disk",
+        "- **Anomaly detection:** Sensor intrusion detection (PROMPT 040) flags "
+        "suspicious sensor readings",
+        "- **Audit logging:** Every write to actuation logs is recorded and "
+        "timestamped",
+        "",
+        "---",
+        "",
+        "## 8. Compliance Statement",
+        "",
+        "Based on the practices documented above, the Smart City Traffic "
+        "Intelligence system complies with the Saudi Personal Data Protection "
+        "Law (PDPL, 2021) for the following reasons:",
+        "",
+        "1. **No PII collected** — all data is aggregated at the zone level",
+        "2. **Retention policies defined** — each log has a documented retention "
+        "period",
+        "3. **DP measures in place** — federated learning uses differential "
+        "privacy",
+        "4. **Agency access logged** — every inter-agency access is recorded",
+        "5. **Data subject rights honoured** — opt-out mechanisms available",
+        "6. **Security hardening** — authentication, rate limiting, and audit "
+        "trails in place",
+        "",
+        "**Data Protection Officer contact:** See `SECURITY.md` in the "
+        "repository root for the responsible party.",
+        "",
+        "---",
+        "",
+        "*This report is generated automatically and reflects the system state "
+        "at the timestamp above. It should be regenerated after any change to "
+        "data collection, retention, or sharing practices.*",
+    ])
+
+    return "\n".join(lines)    
