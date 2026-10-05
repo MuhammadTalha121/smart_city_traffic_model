@@ -948,6 +948,18 @@ def compute_adaptive_signal_timing(
             f"— green extended by {extra_green}s"
         )
 
+    pedestrian_demand = predict_pedestrian_crossing_demand(
+        zone=zone,
+        city="Riyadh",
+    )
+    pedestrian_extension = pedestrian_demand["recommended_pedestrian_phase_extension_seconds"]
+
+    if pedestrian_extension > 0:
+        reason = (
+            f"{reason} | pedestrian phase extended by {pedestrian_extension}s "
+            f"({pedestrian_demand['rationale']})"
+        )
+
     return {
         "cycle_seconds":          cycle,
         "green_seconds":          green,
@@ -957,6 +969,8 @@ def compute_adaptive_signal_timing(
         "queue_length_estimate":  round(queue_length_estimate, 3),
         "spillback_risk":         spillback_risk,
         "adaptation_reason":      reason,
+        "pedestrian_demand":      pedestrian_demand["demand_level"],
+        "pedestrian_phase_extension_seconds": pedestrian_extension,
     }
 
 
@@ -2587,6 +2601,126 @@ def compute_crosswalk_timing(
         'schedule_used': schedule,
         'mutcd_compliant': walk_time >= PEDESTRIAN_CLEARANCE_MIN_S,
     }
+
+
+
+
+
+
+
+def predict_pedestrian_crossing_demand(
+    zone: str,
+    city: str = "Riyadh",
+    timestamp: Optional[datetime] = None,
+) -> Dict:
+    """
+    Predict pedestrian crossing demand at a given zone and time.
+
+    Considers:
+      - Time of day (peak hours, prayer times, late night)
+      - Friday prayer window (post-prayer surge)
+      - Zone footfall profile (high-footfall zones)
+      - Ramadan schedule if active
+
+    Parameters
+    ----------
+    zone : str
+        Zone identifier.
+    city : str
+        City name (affects prayer-time logic).
+    timestamp : datetime, optional
+        When to evaluate demand. Defaults to now.
+
+    Returns
+    -------
+    dict
+        {
+            "zone": str,
+            "city": str,
+            "timestamp": str,
+            "demand_level": "Low" | "Medium" | "High",
+            "peak_in_minutes": int,
+            "recommended_pedestrian_phase_extension_seconds": int,
+            "rationale": str,
+        }
+    """
+    from src.config import (
+        FRIDAY_PRAYER_HOURS, SAUDI_CITIES,
+        PEDESTRIAN_POST_PRAYER_SURGE_MINUTES,
+        PEDESTRIAN_DEMAND_THRESHOLDS,
+        PEDESTRIAN_HIGH_DEMAND_PHASE_EXTENSION_S,
+        PEDESTRIAN_PEAK_HOURS,
+        PEDESTRIAN_HIGH_FOOTFALL_ZONES,
+    )
+
+    ts = timestamp or datetime.now()
+    hour = ts.hour
+    minute = ts.minute
+    weekday = ts.weekday()
+    is_friday = weekday == 4
+
+    base_score = 20
+    peak_in_minutes = 0
+    rationale_parts = []
+
+    if hour in PEDESTRIAN_PEAK_HOURS:
+        base_score += 40
+        rationale_parts.append(f"peak hour ({hour:02d}:00)")
+
+    if zone in PEDESTRIAN_HIGH_FOOTFALL_ZONES:
+        base_score += 25
+        rationale_parts.append("high-footfall zone")
+
+    if is_friday and hour in FRIDAY_PRAYER_HOURS:
+        base_score += 60
+        peak_in_minutes = 0
+        rationale_parts.append("Friday prayer in progress")
+    elif is_friday:
+        for prayer_hour in FRIDAY_PRAYER_HOURS:
+            minutes_since = (hour - prayer_hour) * 60 + minute
+            if 0 < minutes_since <= PEDESTRIAN_POST_PRAYER_SURGE_MINUTES:
+                base_score += 50
+                peak_in_minutes = max(0, PEDESTRIAN_POST_PRAYER_SURGE_MINUTES - minutes_since)
+                rationale_parts.append(
+                    f"post-prayer surge (within {minutes_since} min of {prayer_hour:02d}:00)"
+                )
+                break
+
+    if city in SAUDI_CITIES and hour in (21, 22, 23):
+        base_score += 15
+        rationale_parts.append("late-night activity")
+
+    if 2 <= hour <= 5:
+        base_score -= 15
+        rationale_parts.append("pre-dawn lull")
+
+    demand_level = "Low"
+    for level in ("High", "Medium", "Low"):
+        if base_score >= PEDESTRIAN_DEMAND_THRESHOLDS[level]:
+            demand_level = level
+            break
+
+    extension_seconds = (
+        PEDESTRIAN_HIGH_DEMAND_PHASE_EXTENSION_S
+        if demand_level == "High"
+        else 0
+    )
+
+    rationale = "; ".join(rationale_parts) if rationale_parts else "nominal conditions"
+
+    return {
+        "zone": zone,
+        "city": city,
+        "timestamp": ts.isoformat(),
+        "demand_level": demand_level,
+        "demand_score": base_score,
+        "peak_in_minutes": peak_in_minutes,
+        "recommended_pedestrian_phase_extension_seconds": extension_seconds,
+        "rationale": rationale,
+    }
+
+
+
 
 
 
