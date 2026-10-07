@@ -293,3 +293,82 @@ def generate_diversion_advisory(zone: str, city: str = "Riyadh") -> dict:
         "distance_km": round(distance_km, 2),
         "message": f"Active construction in {zone}. Divert traffic via {best_neighbor}."
     }
+
+
+
+
+
+
+
+
+
+
+
+def get_active_school_restrictions(
+    timestamp=None,
+    city: str = "Riyadh",
+) -> List[Dict]:
+    """
+    Return school zone restrictions active at the given timestamp.
+
+    Restrictions apply during the arrival window (arrival_time ±
+    arrival_window_minutes) and departure window (departure_time ±
+    departure_window_minutes) for each configured school zone.
+
+    School zones apply on weekdays (Sunday–Thursday in Saudi Arabia) only.
+
+    Parameters
+    ----------
+    timestamp : datetime, optional
+        Defaults to now.
+    city : str
+        City name (currently all configured school zones apply to all cities).
+
+    Returns
+    -------
+    List[dict]
+        Each entry: {zone, name, restriction_type, reason, speed_limit_kmph,
+                     heavy_vehicle_restricted, active_window}
+    """
+    from src.config import (
+        SCHOOL_ZONES,
+        SCHOOL_ZONE_SPEED_LIMIT_KMPH,
+        SCHOOL_ZONE_HEAVY_VEHICLE_RESTRICTION,
+    )
+    from datetime import datetime as _dt, timedelta
+
+    ts = timestamp or _dt.now()
+    weekday = ts.weekday()
+
+    if weekday in (4, 5):
+        return []
+
+    active = []
+    for school in SCHOOL_ZONES:
+        arr_h, arr_m = map(int, school["arrival_time"].split(":"))
+        dep_h, dep_m = map(int, school["departure_time"].split(":"))
+
+        arrival_start = ts.replace(hour=arr_h, minute=arr_m, second=0, microsecond=0)
+        arrival_end = arrival_start + timedelta(minutes=school["arrival_window_minutes"])
+
+        departure_start = ts.replace(hour=dep_h, minute=dep_m, second=0, microsecond=0)
+        departure_end = departure_start + timedelta(minutes=school["departure_window_minutes"])
+
+        if arrival_start <= ts <= arrival_end:
+            window = "arrival"
+        elif departure_start <= ts <= departure_end:
+            window = "departure"
+        else:
+            continue
+
+        active.append({
+            "zone": school["zone"],
+            "name": school["name"],
+            "restriction_type": "school_zone",
+            "reason": f"{school['name']} {window} window",
+            "speed_limit_kmph": SCHOOL_ZONE_SPEED_LIMIT_KMPH,
+            "heavy_vehicle_restricted": SCHOOL_ZONE_HEAVY_VEHICLE_RESTRICTION,
+            "active_window": window,
+        })
+
+    return active
