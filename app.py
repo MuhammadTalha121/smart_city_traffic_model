@@ -3020,6 +3020,44 @@ def safety_pedestrian(
 
 
 
+@app.get("/safety/school-zones", tags=["safety"])
+@limiter.limit("20/minute")
+def school_zones_status(
+    request: Request,
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return all school zones with their configured restrictions and
+    whether each is currently active.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    from src.config import SCHOOL_ZONES, SCHOOL_ZONE_SPEED_LIMIT_KMPH
+    from src.construction import get_active_school_restrictions
+
+    active = {s["zone"]: s for s in get_active_school_restrictions()}
+
+    zones = []
+    for school in SCHOOL_ZONES:
+        z = school["zone"]
+        zones.append({
+            "zone": z,
+            "name": school["name"],
+            "arrival_time": school["arrival_time"],
+            "departure_time": school["departure_time"],
+            "speed_limit_kmph": SCHOOL_ZONE_SPEED_LIMIT_KMPH,
+            "active": z in active,
+            "active_window": active.get(z, {}).get("active_window"),
+        })
+
+    return {
+        "total": len(zones),
+        "active_count": len(active),
+        "zones": zones,
+    }
+
+
+
+
 @app.post("/reports/api-docs", dependencies=[Depends(require_admin)])
 async def generate_api_docs():
     """
