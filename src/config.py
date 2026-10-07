@@ -1140,3 +1140,33 @@ PEDESTRIAN_DEMAND_THRESHOLDS: Dict[str, int] = {
 PEDESTRIAN_HIGH_DEMAND_PHASE_EXTENSION_S: int = 8
 PEDESTRIAN_PEAK_HOURS: List[int] = [7, 8, 12, 13, 16, 17, 18]
 PEDESTRIAN_HIGH_FOOTFALL_ZONES: List[str] = ["Zone_1", "Zone_3", "Zone_5"]
+
+
+
+
+
+
+# ── PROMPT 153: School Zone Safety Scheduler ──────────────────────
+
+SCHOOL_ZONES: List[Dict] = [
+    {
+        "zone": "Zone_3",
+        "name": "Al-Nakheel School Zone",
+        "arrival_time": "07:00",
+        "departure_time": "14:00",
+        "arrival_window_minutes": 45,
+        "departure_window_minutes": 45,
+    },
+    {
+        "zone": "Zone_5",
+        "name": "King Fahd School Zone",
+        "arrival_time": "07:15",
+        "departure_time": "13:30",
+        "arrival_window_minutes": 30,
+        "departure_window_minutes": 30,
+    },
+]
+
+SCHOOL_ZONE_SPEED_LIMIT_KMPH: int = 30
+SCHOOL_ZONE_HEAVY_VEHICLE_RESTRICTION: bool = True
+SCHOOL_ZONE_HEAVY_VEHICLE_WEIGHT_LIMIT_TONNES: float = 3.5
