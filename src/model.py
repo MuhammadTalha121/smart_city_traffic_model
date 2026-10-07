@@ -1497,6 +1497,19 @@ def optimise_freight_schedule(
             construction_conflict = True
             continue
 
+        from src.construction import get_active_school_restrictions
+        school_conflict = False
+        if school_conflict:
+            school_conflict_flag = True
+            continue
+        for zone_check in (origin_zone, destination_zone):
+            school_hits = get_active_school_restrictions(timestamp=dt, city=city)
+            if any(s["zone"] == zone_check for s in school_hits):
+                school_conflict = True
+                break
+        if school_conflict:
+            continue
+
         if is_prayer_window(dt, city):
             continue
         if is_event_multiplier_high(dt, events):
@@ -1559,6 +1572,7 @@ def optimise_freight_schedule(
         "destination_zone": destination_zone,
         "weight_tonnes": vehicle_weight_tonnes,
         "horizon_hours": horizon_hours,
+        "school_conflict": school_conflict_flag,
         "recommendations": recommendations,
         "construction_conflict": construction_conflict,
         "message": "Top 3 departure windows. These are recommendations, not guarantees."
@@ -2444,6 +2458,7 @@ def compute_vsl_limit(
     weather:        str,
     visibility_m:   float,
     avg_speed_kmph: float,
+    school_zone: bool = False,
 ) -> Dict:
     """
     Recommend a variable speed limit for a highway zone based on
@@ -2474,7 +2489,7 @@ def compute_vsl_limit(
     """
     from src.config import (
         VSL_DEFAULT_SPEED_KMPH, VSL_MINIMUM_SPEED_KMPH, VSL_STEP_SIZE_KMPH,
-        VISIBILITY_CLEAR_THRESHOLD_M,
+        VISIBILITY_CLEAR_THRESHOLD_M, SCHOOL_ZONE_SPEED_LIMIT_KMPH
     )
  
     if weather == 'clear' and visibility_m > VISIBILITY_CLEAR_THRESHOLD_M:
@@ -2495,9 +2510,14 @@ def compute_vsl_limit(
     else:
         recommended = VSL_DEFAULT_SPEED_KMPH
         reason      = 'Visibility within normal range'
- 
-    recommended = (int(recommended) // VSL_STEP_SIZE_KMPH) * VSL_STEP_SIZE_KMPH
-    recommended = max(VSL_MINIMUM_SPEED_KMPH, recommended)
+
+
+    if school_zone:
+        recommended = SCHOOL_ZONE_SPEED_LIMIT_KMPH
+        reason = f'School zone active — speed capped at {SCHOOL_ZONE_SPEED_LIMIT_KMPH} km/h'
+    else:
+        recommended = (int(recommended) // VSL_STEP_SIZE_KMPH) * VSL_STEP_SIZE_KMPH
+        recommended = max(VSL_MINIMUM_SPEED_KMPH, recommended)
  
     reduction                = VSL_DEFAULT_SPEED_KMPH - recommended
     enforcement_recommended  = reduction > 40
@@ -2513,6 +2533,7 @@ def compute_vsl_limit(
         'warning_message'        : warning_message,
         'enforcement_recommended': enforcement_recommended,
         'current_avg_speed_kmph' : round(float(avg_speed_kmph), 1),
+        'school_zone_active'     : school_zone
     }
  
 
