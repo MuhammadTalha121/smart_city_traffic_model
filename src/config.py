@@ -365,6 +365,22 @@ TOLL_CIRCUIT_BREAKER_THRESHOLD: float = 0.90
 TOLL_CIRCUIT_BREAKER_REDUCTION: float = 0.50
 
 
+
+
+
+
+# ── Event-driven toll advisory ─────────────────────────
+
+TOLL_EVENT_MULTIPLIER: float = 1.4
+TOLL_OFF_PEAK_DISCOUNT: float = 0.6
+TOLL_ELASTICITY_DEFAULT: float = -0.35
+TOLL_EVENT_HOURS: List[int] = [16, 17, 18, 19, 20, 21]
+TOLL_OFF_PEAK_HOURS: List[int] = [10, 11, 12, 13, 14, 22, 23, 0, 1, 2, 3, 4, 5]
+
+
+
+
+
 # --- Transit Signal Priority constants  ---
 TSP_GREEN_EXTENSION_MAX_S: int   = 15
 TSP_DETECTION_RANGE_M: float     = 150.0
