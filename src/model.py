@@ -2422,6 +2422,156 @@ def calculate_dynamic_toll_with_ceiling(zone: str, congestion_score: float,
 
 
 
+def recommend_toll_rate(
+    zone: str,
+    city: str = "Riyadh",
+    timestamp: Optional[datetime] = None,
+    event_active: Optional[bool] = None,
+) -> Dict:
+    """
+    Recommend a dynamic toll rate for a zone, considering events and
+    pilgrimage route constraints.
+
+    Hard constraint: during Hajj dates, no toll is applied to any zone
+    listed in HAJJ_ROUTE_ZONES, regardless of congestion or events.
+
+    Parameters
+    ----------
+    zone : str
+    city : str
+    timestamp : datetime, optional
+    event_active : bool, optional
+        If None, inferred from the event calendar.
+
+    Returns
+    -------
+    dict
+        {
+            "zone": str,
+            "city": str,
+            "timestamp": str,
+            "recommended_rate_sar": float,
+            "baseline_rate_sar": float,
+            "rationale": str,
+            "demand_reduction_forecast_pct": float,
+            "hajj_exempt": bool,
+            "event_active": bool,
+        }
+    """
+    from src.config import (
+        TOLLED_ZONES,
+        TOLL_EVENT_MULTIPLIER,
+        TOLL_OFF_PEAK_DISCOUNT,
+        TOLL_ELASTICITY_DEFAULT,
+        TOLL_EVENT_HOURS,
+        TOLL_OFF_PEAK_HOURS,
+        HAJJ_ROUTE_ZONES,
+        HAJJ_DATES,
+        BASE_TOLL_RATE_SAR,
+        MAX_DYNAMIC_TOLL_SAR,
+    )
+    from app import app
+    from datetime import date
+
+    ts = timestamp or datetime.now()
+    hour = ts.hour
+    today = ts.date()
+
+    hajj_exempt = False
+    year = today.year
+    if year in HAJJ_DATES and zone in HAJJ_ROUTE_ZONES:
+        hajj_start = date.fromisoformat(HAJJ_DATES[year]["start"])
+        hajj_end = date.fromisoformat(HAJJ_DATES[year]["end"])
+        if hajj_start <= today <= hajj_end:
+            hajj_exempt = True
+
+    if hajj_exempt:
+        return {
+            "zone": zone,
+            "city": city,
+            "timestamp": ts.isoformat(),
+            "recommended_rate_sar": 0.0,
+            "baseline_rate_sar": 0.0,
+            "rationale": "Hajj pilgrimage route — tolling suspended per religious access obligation.",
+            "demand_reduction_forecast_pct": 0.0,
+            "hajj_exempt": True,
+            "event_active": False,
+        }
+
+    if zone not in TOLLED_ZONES:
+        return {
+            "zone": zone,
+            "city": city,
+            "timestamp": ts.isoformat(),
+            "recommended_rate_sar": 0.0,
+            "baseline_rate_sar": 0.0,
+            "rationale": f"{zone} is not a tolled zone.",
+            "demand_reduction_forecast_pct": 0.0,
+            "hajj_exempt": False,
+            "event_active": False,
+        }
+
+    if event_active is None:
+        try:
+            from src.data import get_active_events
+            events = get_active_events(city, today)
+            event_active = len(events) > 0
+        except Exception:
+            event_active = False
+
+    baseline_rate = BASE_TOLL_RATE_SAR
+
+    df = None
+    if hasattr(app.state, "city_dfs") and city in app.state.city_dfs:
+        df = app.state.city_dfs[city]
+    elif hasattr(app.state, "df"):
+        df = app.state.df
+
+    congestion_score = 0.3
+    if df is not None and not df.empty:
+        zone_df = df[df["zone"] == zone]
+        if not zone_df.empty:
+            congestion_score = float(zone_df["congestion_score"].mean())
+
+    multiplier = 1.0
+    rationale_parts = []
+
+    if event_active and hour in TOLL_EVENT_HOURS:
+        multiplier *= TOLL_EVENT_MULTIPLIER
+        rationale_parts.append(f"peak event hour ({hour:02d}:00)")
+
+    if hour in TOLL_OFF_PEAK_HOURS:
+        multiplier *= TOLL_OFF_PEAK_DISCOUNT
+        rationale_parts.append(f"off-peak incentive ({hour:02d}:00)")
+
+    multiplier *= (1.0 + congestion_score)
+
+    recommended = baseline_rate * multiplier
+    recommended = min(recommended, MAX_DYNAMIC_TOLL_SAR)
+    recommended = max(recommended, 0.0)
+    recommended = round(recommended, 2)
+
+    if not rationale_parts:
+        rationale_parts.append(f"congestion-responsive pricing (score {congestion_score:.2f})")
+
+    elasticity = TOLL_ELASTICITY_DEFAULT
+    price_delta_pct = (recommended - baseline_rate) / baseline_rate if baseline_rate > 0 else 0.0
+    demand_reduction_pct = round(price_delta_pct * elasticity * 100.0, 2)
+    demand_reduction_pct = max(-25.0, min(25.0, demand_reduction_pct))
+
+    return {
+        "zone": zone,
+        "city": city,
+        "timestamp": ts.isoformat(),
+        "recommended_rate_sar": recommended,
+        "baseline_rate_sar": round(baseline_rate, 2),
+        "rationale": "; ".join(rationale_parts),
+        "demand_reduction_forecast_pct": demand_reduction_pct,
+        "hajj_exempt": False,
+        "event_active": bool(event_active),
+    }
+
+
 
 def evaluate_transit_priority(bus_distance_m: float,
                                current_green_remaining_s: float,
