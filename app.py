@@ -55,7 +55,7 @@ from src.edge_simulation import EdgeCabinetSimulator
 from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
                         DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
                         generate_dynamic_reroute, calculate_zone_emissions, log_emissions_snapshot,
-                        generate_operator_briefing, predict_pedestrian_crossing_demand)
+                        generate_operator_briefing, predict_pedestrian_crossing_demand, recommend_toll_rate)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -2158,6 +2158,8 @@ def signals_optimise(
 # Tidal flow control endpoints — authenticated
 # ---------------------------------------------------------------------------
 
+from src.config import TIDAL_ELIGIBLE_ZONES
+
 @app.get("/control/tidal-reversals", tags=["control"])
 def tidal_reversals(
     city: str = "Riyadh",
@@ -3416,7 +3418,7 @@ def reports_latest(
     )
 
 
-
+from src.model import generate_sustainability_report
 
 
 @app.get("/reports/sustainability", tags=["reports"])
@@ -4138,6 +4140,8 @@ def public_weather(
     }
 
 
+from src.config import ZONE_DISTANCES_KM, FRIDAY_PRAYER_HOURS
+
 @app.get("/public/parking-guidance", tags=["public"])
 @limiter.limit("10/minute")
 def public_parking_guidance(
@@ -4204,7 +4208,7 @@ def public_parking_guidance(
         })
 
     # 2. Filter to those with forecast occupancy < 80%
-    available_garages = [g for g in garages if g["forecast_occupancy_pct"] < 80]
+    available_garages = [g for g in garages if g["forecast_occupancy_pct_1h"] < 80]
 
     # 3. Sort by walking distance from target_zone (or city centre)
     if target_zone and target_zone in PARKING_CAPACITY_ZONES:
@@ -4701,6 +4705,51 @@ def toll_estimate(payload: dict, api_key: str = Depends(require_api_key)):
         'total_ceiling_applied': total_ceiling_applied,
         'congestion_level'     : congestion_level(max(origin_score, dest_score)),
     }
+
+
+
+
+
+@app.get("/tolls/recommendation", tags=["tolls"])
+@limiter.limit("20/minute")
+def tolls_recommendation(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Event-aware dynamic toll recommendations for all tolled zones.
+    Zones on Hajj pilgrimage routes return zero toll during Hajj dates.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    from src.config import TOLLED_ZONES
+    from src.model import recommend_toll_rate
+
+    _assert_city_permitted(auth, city)
+
+    results = []
+    for zone in TOLLED_ZONES:
+        try:
+            rec = recommend_toll_rate(zone=zone, city=city)
+        except Exception as e:
+            rec = {"zone": zone, "error": str(e)}
+        results.append(rec)
+
+    results.sort(key=lambda x: x.get("recommended_rate_sar", 0.0), reverse=True)
+
+    hajj_exempt_count = sum(1 for r in results if r.get("hajj_exempt"))
+    event_active_count = sum(1 for r in results if r.get("event_active"))
+
+    return {
+        "city": city,
+        "timestamp": datetime.now().isoformat(),
+        "total_tolled_zones": len(results),
+        "hajj_exempt_zones": hajj_exempt_count,
+        "event_active_zones": event_active_count,
+        "recommendations": results,
+    }
+
+
 
 
 
