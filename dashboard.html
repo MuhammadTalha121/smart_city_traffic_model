@@ -1164,6 +1164,16 @@
         <div class="empty-state"><div class="empty-icon">🅿️</div>Loading available parking…</div>
       </div>
     </div>
+    <!-- Event-Driven Toll Advisory (PROMPT 154) -->
+    <div class="card" id="toll-advisory-panel" style="margin-top:1.25rem">
+      <div class="card-header">
+        <span class="card-title">Event-Driven Toll Advisory</span>
+        <span class="card-tag" id="toll-advisory-tag">LOADING…</span>
+      </div>
+      <div id="toll-advisory-wrap">
+        <div class="empty-state"><div class="empty-icon">💰</div>Loading toll recommendations…</div>
+      </div>
+    </div>
 
 
   </div>
@@ -2625,6 +2635,7 @@ async function renderOperationsTab() {
     loadDRT(),
     loadParkingGuidance(),
     loadBriefing(),
+    loadTollAdvisory(),
   ]);
 }
 
@@ -2830,6 +2841,65 @@ async function loadParkingGuidance() {
     tag.textContent = 'OFFLINE';
   }
 }
+
+
+
+async function loadTollAdvisory() {
+  const wrap = document.getElementById('toll-advisory-wrap');
+  const tag  = document.getElementById('toll-advisory-tag');
+  if (!wrap) return;
+  try {
+    const res = await fetch('/tolls/recommendation?city=Riyadh', {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+
+    tag.textContent = `${data.total_tolled_zones} ZONES`;
+
+    if (!data.recommendations.length) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">💰</div>No tolled zones configured.</div>`;
+      return;
+    }
+
+    let html = `<table class="data-table">
+      <thead><tr>
+        <th>Zone</th><th>Rate (SAR)</th><th>Baseline</th>
+        <th>Demand Δ</th><th>Status</th><th>Rationale</th>
+      </tr></thead><tbody>`;
+
+    data.recommendations.forEach(r => {
+      const deltaColor = r.demand_reduction_forecast_pct < 0 ? 'var(--jade)' : 'var(--high)';
+      const status = r.hajj_exempt
+        ? '<span class="severity-badge sev-normal">Hajj Exempt</span>'
+        : r.event_active
+          ? '<span class="severity-badge sev-elevated">Event</span>'
+          : '<span class="severity-badge sev-normal">Normal</span>';
+      html += `<tr>
+        <td style="color:var(--text-primary)">${r.zone}</td>
+        <td style="color:var(--amber);font-weight:600">${r.recommended_rate_sar.toFixed(2)}</td>
+        <td>${r.baseline_rate_sar.toFixed(2)}</td>
+        <td style="color:${deltaColor}">${r.demand_reduction_forecast_pct.toFixed(1)}%</td>
+        <td>${status}</td>
+        <td style="font-size:0.7rem;color:var(--text-muted)">${r.rationale}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+
+    if (data.hajj_exempt_zones > 0) {
+      html += `<div style="margin-top:0.75rem;color:var(--jade);font-family:var(--font-mono);font-size:0.8rem">
+        ✓ ${data.hajj_exempt_zones} pilgrimage route zone(s) exempt from tolling (Hajj active)
+      </div>`;
+    }
+
+    wrap.innerHTML = html;
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>Toll advisory unavailable</div>`;
+    tag.textContent = 'OFFLINE';
+  }
+}
+
+
 
 
 async function loadSchedule() {
