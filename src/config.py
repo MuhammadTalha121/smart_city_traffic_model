@@ -1186,3 +1186,24 @@ SCHOOL_ZONES: List[Dict] = [
 SCHOOL_ZONE_SPEED_LIMIT_KMPH: int = 30
 SCHOOL_ZONE_HEAVY_VEHICLE_RESTRICTION: bool = True
 SCHOOL_ZONE_HEAVY_VEHICLE_WEIGHT_LIMIT_TONNES: float = 3.5
+
+
+
+
+
+
+# ── PROMPT 155: Drone traffic monitoring ───────────────────────────
+
+DRONE_API_ENDPOINT: str = ""
+DRONE_DEFAULT_ALTITUDE_M: int = 120
+DRONE_DEFAULT_COVERAGE_RADIUS_M: int = 400
+DRONE_MOCK_CONFIDENCE_BASE: float = 0.85
+DRONE_WEATHER_CONFIDENCE_PENALTY: Dict[str, float] = {
+    "clear": 1.00,
+    "humid": 0.95,
+    "dust": 0.70,
+    "rain": 0.60,
+    "fog": 0.50,
+    "sandstorm": 0.25,
+}
+SENSOR_FUSION_MIN_CONFIDENCE: float = 0.10
