@@ -900,6 +900,20 @@ RL_PEAK_HOURS: List[int] = [7, 8, 17, 18]
 
 
 
+
+# ── PPO signal control agent ──────────────────────────
+
+RL_PPO_DEFAULT_TIMESTEPS: int = 100_000
+RL_PPO_CHECKPOINT_FREQ: int = 10_000
+RL_PPO_LEARNING_RATE: float = 3e-4
+RL_PPO_N_STEPS: int = 2048
+RL_PPO_BATCH_SIZE: int = 64
+RL_PPO_N_EPOCHS: int = 10
+RL_PPO_GAMMA: float = 0.99
+RL_PPO_MODEL_DIR: str = "models/ppo_signal_agent"
+RL_EVAL_EPISODES: int = 10
+
+
 # ── Construction Zone Data Model───────────
 CONSTRUCTION_ZONES_FILE: str = "construction_zones.json"
 CONSTRUCTION_MIN_CAPACITY_FRACTION: float = 0.10  # never drop below 10% of base capacity
