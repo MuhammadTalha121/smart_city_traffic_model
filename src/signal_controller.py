@@ -1,5 +1,5 @@
 """
-NTCIP 1202 Signal Controller Interface (Stub) — PROMPT 121.
+NTCIP 1202 Signal Controller Interface (Stub).
 Actuator Feedback Loop & Confirmation —.
 
 Implements a standards-shaped stub interface for sending signal timing
@@ -36,7 +36,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import uuid
 
 from src.config import (
@@ -206,6 +206,194 @@ class NTCIPStubController:
         timing OIDs, compared to expected_plan.
         """
         return True
+
+
+
+
+
+
+class SPaTBroadcaster:
+    """
+    Stub broadcaster for SPaT (Signal Phase and Timing) messages.
+
+    Produces DSRC/C-V2X-shaped JSON messages describing current phase state
+    and predicted phase end times. Real broadcast requires an RSU (Roadside
+    Unit) with spectrum allocation — this class only writes to a log and
+    exposes the message via the API.
+
+    Message format follows SAE J2735 loosely. Not certified against the
+    full standard.
+    """
+
+    def __init__(self, protocol: Optional[str] = None):
+        from src.config import SPAT_PROTOCOL
+        self.protocol = protocol or SPAT_PROTOCOL
+
+    def _intersection_id(self, zone: str) -> str:
+        """Build a standard intersection ID from a zone name."""
+        from src.config import SPAT_INTERSECTION_PREFIX
+        return f"{SPAT_INTERSECTION_PREFIX}-{zone.replace('_', '')}"
+
+    def generate_spat_message(
+        self,
+        zone: str,
+        current_phase: str,
+        time_remaining_s: int,
+        cycle_seconds: Optional[int] = None,
+        green_seconds: Optional[int] = None,
+        yellow_seconds: Optional[int] = None,
+    ) -> Dict:
+        """
+        Build a SPaT-shaped message dict for a single intersection.
+
+        Parameters
+        ----------
+        zone : str
+            Zone identifier, e.g. 'Zone_1'.
+        current_phase : str
+            One of 'green', 'yellow', 'red'.
+        time_remaining_s : int
+            Seconds remaining in the current phase.
+        cycle_seconds : int, optional
+            Overrides SPAT_DEFAULT_CYCLE_SECONDS.
+        green_seconds : int, optional
+            Overrides the green duration used to compute next-state timings.
+        yellow_seconds : int, optional
+            Overrides SPAT_YELLOW_SECONDS.
+
+        Returns
+        -------
+        dict
+            SPaT-shaped message.
+        """
+        from src.config import (
+            SPAT_DEFAULT_CYCLE_SECONDS,
+            SPAT_YELLOW_SECONDS,
+            SPAT_ALL_RED_SECONDS,
+        )
+
+        cycle = cycle_seconds or SPAT_DEFAULT_CYCLE_SECONDS
+        yellow = yellow_seconds if yellow_seconds is not None else SPAT_YELLOW_SECONDS
+        green = green_seconds if green_seconds is not None else (cycle - yellow - SPAT_ALL_RED_SECONDS)
+
+        now_ms = int(datetime.now().timestamp() * 1000)
+        likely_end_ms = now_ms + int(time_remaining_s * 1000)
+
+        phase_state_map = {
+            "green": "protected-Movement-Allowed",
+            "yellow": "protected-clearance",
+            "red": "stop-And-Remain",
+        }
+        phase_state = phase_state_map.get(current_phase, "stop-And-Remain")
+
+        # Minimal two-phase description: current phase + the opposing one
+        phases = [
+            {
+                "phase_id": 1,
+                "phase_state": phase_state,
+                "start_time_ms": now_ms,
+                "min_end_time_ms": now_ms + 1000,
+                "max_end_time_ms": likely_end_ms + 2000,
+                "likely_end_time_ms": likely_end_ms,
+                "duration_s": time_remaining_s,
+            },
+            {
+                "phase_id": 2,
+                "phase_state": "stop-And-Remain" if current_phase != "red" else "protected-Movement-Allowed",
+                "start_time_ms": now_ms,
+                "min_end_time_ms": likely_end_ms,
+                "max_end_time_ms": likely_end_ms + 3000,
+                "likely_end_time_ms": likely_end_ms + int(yellow * 1000),
+                "duration_s": cycle - time_remaining_s if time_remaining_s < cycle else 0,
+            },
+        ]
+
+        return {
+            "protocol": self.protocol,
+            "intersection_id": self._intersection_id(zone),
+            "zone": zone,
+            "timestamp_ms": now_ms,
+            "cycle_seconds": cycle,
+            "phases": phases,
+            "broadcast_mode": "stub",
+            "note": "Real DSRC/C-V2X broadcast requires RSU hardware and CITC spectrum allocation.",
+        }
+
+    def broadcast_spat(
+        self,
+        zone: str,
+        current_phase: str,
+        time_remaining_s: int,
+        log_path: Optional[str] = None,
+    ) -> Dict:
+        """
+        Generate a SPaT message and append a record to the broadcast log.
+
+        Returns the generated message.
+        """
+        from src.config import SPAT_BROADCAST_LOG_PATH
+
+        log_path = log_path or SPAT_BROADCAST_LOG_PATH
+        message = self.generate_spat_message(zone, current_phase, time_remaining_s)
+
+        is_new = not os.path.exists(log_path)
+        with open(log_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if is_new:
+                writer.writerow([
+                    "timestamp", "zone", "intersection_id",
+                    "current_phase", "time_remaining_s", "protocol",
+                ])
+            writer.writerow([
+                datetime.now().isoformat(),
+                zone,
+                message["intersection_id"],
+                current_phase,
+                time_remaining_s,
+                message["protocol"],
+            ])
+
+        return message
+
+    def get_current_phase_for_zone(self, zone: str) -> Dict:
+        """
+        Read the current phase for a zone from the city DataFrame, if available.
+
+        Returns a dict with keys: current_phase, time_remaining_s.
+        Defaults to a neutral state if no data is available.
+        """
+        try:
+            from app import app
+            from src.config import SPAT_DEFAULT_CYCLE_SECONDS
+
+            df = None
+            if hasattr(app.state, "city_dfs") and "Riyadh" in app.state.city_dfs:
+                df = app.state.city_dfs["Riyadh"]
+            elif hasattr(app.state, "df"):
+                df = app.state.df
+
+            if df is None or df.empty:
+                return {"current_phase": "green", "time_remaining_s": 30}
+
+            zone_df = df[df["zone"] == zone]
+            if zone_df.empty:
+                return {"current_phase": "green", "time_remaining_s": 30}
+
+            latest = zone_df.sort_values("timestamp").iloc[-1]
+            hour = int(latest.get("hour", datetime.now().hour))
+            cycle = SPAT_DEFAULT_CYCLE_SECONDS
+            seconds_into_cycle = (hour * 3600 + datetime.now().minute * 60 + datetime.now().second) % cycle
+
+            if seconds_into_cycle < 45:
+                return {"current_phase": "green", "time_remaining_s": 45 - seconds_into_cycle}
+            if seconds_into_cycle < 48:
+                return {"current_phase": "yellow", "time_remaining_s": 48 - seconds_into_cycle}
+            return {"current_phase": "red", "time_remaining_s": cycle - seconds_into_cycle}
+        except Exception:
+            return {"current_phase": "green", "time_remaining_s": 30}
+
+
+
 
 
 # ---------------------------------------------------------------------------
