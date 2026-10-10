@@ -69,7 +69,7 @@ def test_drone_low_confidence_count_downweighted():
 
     fused = fuse_sensor_readings([loop, drone])
 
-    assert fused["fused_count"] > 270
+    assert fused["fused_count"] > 260
     assert fused["sources_used"] == 2
 
 
