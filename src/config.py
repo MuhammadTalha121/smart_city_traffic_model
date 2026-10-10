@@ -883,6 +883,23 @@ SUMO_CONFIG_FILE: str = "riyadh_5zones.sumocfg"
 
 
 
+# ── RL Environment for signal control ─────────────────
+
+RL_NUM_ZONES: int = 5
+RL_EPISODE_LENGTH_STEPS: int = 200
+RL_GREEN_STEP_SECONDS: int = 5
+RL_MIN_GREEN_SECONDS: int = 10
+RL_MAX_GREEN_SECONDS: int = 70
+RL_INITIAL_GREEN_SECONDS: int = 30
+RL_QUEUE_NORMALIZATION: float = 500.0
+RL_SPEED_NORMALIZATION_KMPH: float = 120.0
+RL_ILLEGAL_ACTION_PENALTY: float = 0.05
+RL_THROUGHPUT_BONUS_WEIGHT: float = 0.10
+RL_PRAYER_HOURS: List[int] = [12, 13]
+RL_PEAK_HOURS: List[int] = [7, 8, 17, 18]
+
+
+
 # ── Construction Zone Data Model───────────
 CONSTRUCTION_ZONES_FILE: str = "construction_zones.json"
 CONSTRUCTION_MIN_CAPACITY_FRACTION: float = 0.10  # never drop below 10% of base capacity
