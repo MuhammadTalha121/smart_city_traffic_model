@@ -31,3 +31,4 @@ locust>=2.20.0
 fastapi-cache2>=0.2.0
 redis>=5.0.0
 portalocker>=2.8.0
+gymnasium>=0.29.0
