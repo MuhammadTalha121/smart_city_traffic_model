@@ -4572,6 +4572,44 @@ def cooperative_route(
 
 
 
+@app.get("/v2x/spat/{zone}", tags=["v2x"])
+@limiter.limit("30/minute")
+def v2x_spat(
+    request: Request,
+    zone: str,
+    city: str = "Riyadh",
+):
+    """
+    Return the current SPaT (Signal Phase and Timing) message for a zone.
+
+    No authentication required — V2X messages are public broadcasts by design,
+    exactly as they would be over DSRC/C-V2X radio.
+
+    This is a stub. Real broadcast requires RSU hardware and CITC spectrum
+    allocation.
+    """
+    from src.signal_controller import SPaTBroadcaster
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    broadcaster = SPaTBroadcaster()
+    phase_info = broadcaster.get_current_phase_for_zone(zone)
+
+    message = broadcaster.broadcast_spat(
+        zone=zone,
+        current_phase=phase_info["current_phase"],
+        time_remaining_s=phase_info["time_remaining_s"],
+    )
+
+    return {
+        "city": city,
+        "message": message,
+    }
+
+
+
+
 def _estimate_route_travel_time(from_zone: str, to_zone: str, city: str) -> dict:
     """
     Estimate travel time between two zones using ZONE_ADJACENCY BFS
