@@ -621,7 +621,7 @@ class DroneMonitoringAdapter(BaseAdapter):
             weather = "clear"
 
         zone_seed = sum(ord(c) for c in zone)
-        capacity = ZONE_ROAD_CAPACITY_VPH.get(zone, 1600)
+        capacity = ZONE_ROAD_CAPACITY_VPH
         base_count = int(capacity * 0.3) + (zone_seed % 50)
         jitter = random.Random(zone_seed + _dt.now().hour).randint(-25, 25)
         vehicle_count = max(0, base_count + jitter)
