@@ -55,7 +55,8 @@ from src.edge_simulation import EdgeCabinetSimulator
 from src.model import (WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING,
                         DAY_ENCODING, estimate_noise_level, predict_parking_occupancy,
                         generate_dynamic_reroute, calculate_zone_emissions, log_emissions_snapshot,
-                        generate_operator_briefing, predict_pedestrian_crossing_demand, recommend_toll_rate)
+                        generate_operator_briefing, predict_pedestrian_crossing_demand, recommend_toll_rate,
+                        fuse_sensor_readings)
 from src.reporter import generate_weekly_report
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -5573,6 +5574,79 @@ def sensor_registry(
     sensors = list_registered_sensors()
     return {"total": len(sensors), "sensors": sensors}
 
+
+
+
+
+@app.get("/sensors/drone-status", tags=["sensors"])
+@limiter.limit("20/minute")
+def drone_status(
+    request: Request,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return the latest drone readings for all zones in a city.
+    Includes confidence values and weather at capture time.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    from src.adapters import DroneMonitoringAdapter
+
+    _assert_city_permitted(auth, city)
+    adapter = DroneMonitoringAdapter()
+    readings = adapter.fetch_all_zones(city)
+
+    return {
+        "city": city,
+        "timestamp": datetime.now().isoformat(),
+        "total_zones": len(readings),
+        "readings": readings.to_dict(orient="records"),
+    }
+
+
+@app.get("/sensors/fused-count", tags=["sensors"])
+@limiter.limit("20/minute")
+def fused_sensor_count(
+    request: Request,
+    zone: str = "Zone_1",
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    Return a confidence-weighted vehicle count for a zone, fusing
+    loop detector data (from the city DataFrame) with drone readings.
+    Role: OPERATOR or ADMIN. Rate limit: 20 req/min.
+    """
+    from src.adapters import DroneMonitoringAdapter
+    from src.model import fuse_sensor_readings
+
+    _assert_city_permitted(auth, city)
+
+    df = app.state.city_dfs.get(city, app.state.df)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    zone_df = df[df["zone"] == zone]
+    if zone_df.empty:
+        raise HTTPException(status_code=404, detail=f"Zone '{zone}' not found in {city}.")
+
+    latest = zone_df.sort_values("timestamp").iloc[-1]
+    loop_reading = {
+        "source": "loop_detector",
+        "vehicle_count": float(latest["vehicle_count"]),
+        "confidence": 0.90,
+    }
+
+    drone_reading = DroneMonitoringAdapter().fetch_drone_counts(zone, city)
+
+    fused = fuse_sensor_readings([loop_reading, drone_reading])
+
+    return {
+        "city": city,
+        "zone": zone,
+        "timestamp": datetime.now().isoformat(),
+        "fused": fused,
+    }
 
 
 
