@@ -99,3 +99,8 @@ API_SPEC_v2.json
 reports/pdpl_audit_*.md
 PDPL_COMPLIANCE_REPORT.md
 rl_checkpoints/
+
+
+models/
+rl_performance.json
+rl_checkpoints/
