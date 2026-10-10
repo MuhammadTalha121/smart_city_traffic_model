@@ -6127,3 +6127,64 @@ def generate_pdpl_audit_report() -> str:
     ])
 
     return "\n".join(lines)    
+
+
+
+
+def fuse_sensor_readings(readings: List[Dict]) -> Dict:
+    """
+    Combine multiple sensor readings into a single confidence-weighted estimate.
+
+    Each reading must have a "vehicle_count" and "confidence" key.
+    Readings with confidence below SENSOR_FUSION_MIN_CONFIDENCE are discarded.
+
+    Formula:
+        fused = sum(count_i * confidence_i) / sum(confidence_i)
+
+    Parameters
+    ----------
+    readings : List[dict]
+
+    Returns
+    -------
+    dict
+        {
+            "fused_count": float,
+            "total_confidence": float,
+            "sources_used": int,
+            "sources_discarded": int,
+            "individual": List[dict],
+        }
+    """
+    from src.config import SENSOR_FUSION_MIN_CONFIDENCE
+
+    valid = [r for r in readings if r.get("confidence", 0.0) >= SENSOR_FUSION_MIN_CONFIDENCE]
+    discarded = len(readings) - len(valid)
+
+    if not valid:
+        return {
+            "fused_count": 0.0,
+            "total_confidence": 0.0,
+            "sources_used": 0,
+            "sources_discarded": discarded,
+            "individual": [],
+        }
+
+    numerator = sum(float(r["vehicle_count"]) * float(r["confidence"]) for r in valid)
+    denominator = sum(float(r["confidence"]) for r in valid)
+    fused = numerator / denominator if denominator > 0 else 0.0
+
+    return {
+        "fused_count": round(fused, 2),
+        "total_confidence": round(denominator, 3),
+        "sources_used": len(valid),
+        "sources_discarded": discarded,
+        "individual": [
+            {
+                "source": r.get("source", "unknown"),
+                "vehicle_count": r["vehicle_count"],
+                "confidence": r["confidence"],
+            }
+            for r in valid
+        ],
+    }
