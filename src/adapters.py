@@ -580,6 +580,82 @@ class RWISAdapter:
 
 
 
+
+
+
+
+class DroneMonitoringAdapter(BaseAdapter):
+    """
+    Adapter for UAV/drone-based traffic monitoring.
+
+    Returns overhead vehicle count readings with a confidence score
+    derived from weather conditions. When DRONE_API_ENDPOINT is set,
+    real integration would occur here — currently the class produces
+    deterministic mock readings.
+    """
+
+    def fetch(self, city: str = "Riyadh") -> pd.DataFrame:
+        """Return a DataFrame of drone readings for all zones."""
+        return self.fetch_all_zones(city)
+
+    def fetch_drone_counts(self, zone: str, city: str = "Riyadh") -> Dict:
+        """Return a single drone reading for one zone."""
+        from src.config import (
+            DRONE_API_ENDPOINT,
+            DRONE_DEFAULT_ALTITUDE_M,
+            DRONE_DEFAULT_COVERAGE_RADIUS_M,
+            DRONE_MOCK_CONFIDENCE_BASE,
+            DRONE_WEATHER_CONFIDENCE_PENALTY,
+            ZONE_ROAD_CAPACITY_VPH,
+        )
+        from datetime import datetime as _dt
+        import random
+
+        weather = "clear"
+        try:
+            from src.adapters import get_adapter
+            w_df = get_adapter("weather").fetch(city)
+            if not w_df.empty:
+                weather = str(w_df["weather"].iloc[0])
+        except Exception:
+            weather = "clear"
+
+        zone_seed = sum(ord(c) for c in zone)
+        capacity = ZONE_ROAD_CAPACITY_VPH.get(zone, 1600)
+        base_count = int(capacity * 0.3) + (zone_seed % 50)
+        jitter = random.Random(zone_seed + _dt.now().hour).randint(-25, 25)
+        vehicle_count = max(0, base_count + jitter)
+
+        weather_factor = DRONE_WEATHER_CONFIDENCE_PENALTY.get(weather, 0.75)
+        confidence = round(DRONE_MOCK_CONFIDENCE_BASE * weather_factor, 3)
+        confidence = max(confidence, 0.05)
+
+        return {
+            "zone": zone,
+            "city": city,
+            "vehicle_count": vehicle_count,
+            "timestamp": _dt.now().isoformat(),
+            "altitude_m": DRONE_DEFAULT_ALTITUDE_M,
+            "coverage_radius_m": DRONE_DEFAULT_COVERAGE_RADIUS_M,
+            "confidence": confidence,
+            "weather_at_capture": weather,
+            "source": "drone_real" if DRONE_API_ENDPOINT else "drone_mock",
+        }
+
+    def fetch_all_zones(self, city: str = "Riyadh") -> pd.DataFrame:
+        """Return drone readings for all zones as a DataFrame."""
+        zones = ["Zone_1", "Zone_2", "Zone_3", "Zone_4", "Zone_5"]
+        rows = [self.fetch_drone_counts(z, city) for z in zones]
+        return pd.DataFrame(rows)
+
+
+
+
+
+
+
+
+
 class EmergencyVehicleFeed:
     """
     Emergency vehicle feed adapter (PROMPT 130).
@@ -749,7 +825,8 @@ def get_adapter(source: str) -> BaseAdapter:
         'rwis'          : RWISAdapter,
         'emergency_feed'   : EmergencyVehicleFeed,
         'muroor'           : MuroorAdapter,
-    }
+        "drone"         : DroneMonitoringAdapter,
+                }
     cls = adapters.get(source)
     if cls is None:
         raise ValueError(f"Unknown source '{source}'. Choose from: {list(adapters.keys())}")
