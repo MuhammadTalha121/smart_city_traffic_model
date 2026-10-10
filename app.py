@@ -6188,6 +6188,75 @@ def simulation_run(
 
 
 
+@app.get("/rl/agent-performance", tags=["rl"])
+@limiter.limit("20/minute")
+def rl_agent_performance(
+    request: Request,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Return the latest PPO evaluation results versus the heuristic baseline.
+    ADMIN only.
+    """
+    from src.rl_agent import load_latest_performance
+
+    perf = load_latest_performance()
+    if perf is None:
+        return {
+            "status": "no_evaluation",
+            "message": "No PPO evaluation has been run yet.",
+            "how_to_run": "Call evaluate_rl_agent() or POST /rl/evaluate",
+        }
+    return {"status": "ok", "performance": perf}
+
+
+@app.post("/rl/evaluate", tags=["rl"])
+@limiter.limit("5/minute")
+def rl_evaluate(
+    request: Request,
+    n_episodes: int = 10,
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Run a fresh PPO vs heuristic evaluation. ADMIN only.
+    Requires a previously trained PPO model.
+    """
+    from src.rl_agent import evaluate_rl_agent
+
+    try:
+        result = evaluate_rl_agent(n_episodes=n_episodes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {e}")
+    return {"status": "ok", "performance": result}
+
+
+@app.post("/rl/recommend-timing/{zone}", tags=["rl"])
+@limiter.limit("20/minute")
+def rl_recommend_timing_endpoint(
+    request: Request,
+    zone: str,
+    city: str = "Riyadh",
+    auth: Dict = Depends(require_admin),
+):
+    """
+    Use the trained PPO agent to recommend a timing action for a zone.
+    EXPERIMENTAL — actuation requires ACTUATION_ENABLED=True and is
+    routed through the PROMPT 121 interface. ADMIN only.
+    """
+    from src.rl_agent import rl_recommend_timing
+
+    _assert_city_permitted(auth, city)
+
+    try:
+        result = rl_recommend_timing(zone=zone, city=city)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RL recommendation failed: {e}")
+    return result
+
+
+
+
+
 @app.get("/pipeline/hpo-history", tags=["pipeline"])
 async def hpo_history(
     limit: int = 10,
