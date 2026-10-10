@@ -104,3 +104,5 @@ rl_checkpoints/
 models/
 rl_performance.json
 rl_checkpoints/
+
+spat_broadcast_log.csv
