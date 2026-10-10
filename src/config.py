@@ -341,6 +341,19 @@ SCENARIO_SPEED_CLIP_MAX         = 120.0
 
 
 
+
+# ──  V2X SPaT message broadcaster ──────────────────────
+
+SPAT_BROADCAST_LOG_PATH: str = "spat_broadcast_log.csv"
+SPAT_DEFAULT_CYCLE_SECONDS: int = 90
+SPAT_YELLOW_SECONDS: int = 3
+SPAT_ALL_RED_SECONDS: int = 2
+SPAT_PROTOCOL: str = "J2735"  # or "ETSI"
+SPAT_INTERSECTION_PREFIX: str = "RUH"
+
+
+
+
 # --- EV charging constants  ---
 
 EV_FAST_CHARGING_STATIONS: Dict[str, Dict] = {
