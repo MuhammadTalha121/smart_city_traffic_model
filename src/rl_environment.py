@@ -31,6 +31,10 @@ except ImportError:
         spaces = None
         _GYM_ENGINE = None
 
+if gym is not None:
+    _BaseEnv = gym.Env
+else:
+    _BaseEnv = object
 
 def _step_result(obs, reward, terminated, truncated, info):
     """Normalize step() output to a 5-tuple regardless of gym vs gymnasium."""
@@ -42,7 +46,7 @@ def _reset_result(obs, info):
     return (obs, info)
 
 
-class RiyadhTrafficEnv:
+class RiyadhTrafficEnv(_BaseEnv):
     """
     Gymnasium-compatible RL environment for Riyadh signal control.
 
