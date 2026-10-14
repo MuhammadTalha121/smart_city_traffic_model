@@ -1,4 +1,4 @@
-"""Tests for the What-If Scenario Simulator (PROMPT 096)."""
+"""Tests for the What-If Scenario Simulator."""
 
 from app import app
 from src.simulator import apply_scenario, run_scenario
@@ -80,6 +80,7 @@ class TestApplyScenario:
         pd.testing.assert_series_equal(df["weather"], original_weather)
 
     def test_zone_closure_increases_adjacent_zone_congestion(self):
+        from src.config import SCENARIO_VEHICLE_COUNT_CLIP_MAX
         df = app.state.city_dfs["Riyadh"].copy()
         scenario = {"zone_closures": ["Zone_1"], "demand_shifts": {"Zone_2": 1.5}}
 
@@ -88,7 +89,20 @@ class TestApplyScenario:
         zone_2 = result[result["zone"] == "Zone_2"]
         baseline_zone_2 = df[df["zone"] == "Zone_2"]
 
-        assert (zone_2["vehicle_count"] > baseline_zone_2["vehicle_count"]).all()
+        below_ceiling = baseline_zone_2["vehicle_count"] < SCENARIO_VEHICLE_COUNT_CLIP_MAX
+        assert below_ceiling.any(), (
+            "Every Zone_2 baseline row is at or above the scenario clip ceiling — "
+            "the 1.5x demand-shift multiplier cannot produce a strict increase anywhere. "
+            "This test's assumption is broken by the current data distribution."
+        )
+        assert (
+            zone_2.loc[below_ceiling, "vehicle_count"].values
+            > baseline_zone_2.loc[below_ceiling, "vehicle_count"].values
+        ).all(), "Every Zone_2 row below the clip ceiling must strictly increase under 1.5x demand shift"
+
+        assert zone_2["vehicle_count"].mean() > baseline_zone_2["vehicle_count"].mean(), (
+            "Aggregate Zone_2 vehicle count must increase under 1.5x demand shift"
+        )
 
 
 class TestRunScenario:
