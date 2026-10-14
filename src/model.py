@@ -1485,6 +1485,7 @@ def optimise_freight_schedule(
         return False
 
     # Score each window
+    school_conflict_flag = False
     candidates = []
     for idx, (dt, events) in enumerate(all_events):
         hour = dt.hour
@@ -1503,10 +1504,12 @@ def optimise_freight_schedule(
             school_conflict_flag = True
             continue
         for zone_check in (origin_zone, destination_zone):
+            from src.construction import get_active_school_restrictions
+
             school_hits = get_active_school_restrictions(timestamp=dt, city=city)
-            if any(s["zone"] == zone_check for s in school_hits):
-                school_conflict = True
-                break
+            if any(s["zone"] in (origin_zone, destination_zone) for s in school_hits):
+                school_conflict_flag = True
+                continue
         if school_conflict:
             continue
 
