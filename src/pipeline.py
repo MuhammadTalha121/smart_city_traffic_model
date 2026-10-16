@@ -986,3 +986,201 @@ def list_registry_keys(registry_path: str = KEY_REGISTRY_PATH) -> list:
         }
         for entry in keys
     ]
+
+
+
+
+
+
+
+import threading
+from datetime import datetime, timedelta
+from typing import Optional
+
+INCIDENTS_LOG_PATH = "incidents_log.csv"
+
+SEVERITY_LADDER = ["Minor", "Moderate", "Major", "Critical"]
+
+
+class IncidentEscalationTracker:
+    """
+    Tracks active incidents and escalates severity when clearance is
+    not achieved within 1.5x the estimated clearance time.
+
+    Thread-safe. Instantiated once in the lifespan and stored on
+    app.state.escalation_tracker. Escalation is idempotent per level:
+    an incident that has already escalated to Moderate will not
+    re-escalate to Moderate on the next scheduler tick.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._incidents: dict = {}
+
+    def register_incident(
+        self,
+        incident_id: str,
+        zone: str,
+        city: str,
+        severity: str,
+        estimated_clearance_mins: float,
+        detected_at: datetime,
+        speed_drop_pct: float = 0.0,
+        volume_change_pct: float = 0.0,
+        confidence: str = "Medium",
+    ) -> None:
+        """
+        Register a newly confirmed incident. If the same city+zone already
+        has an unresolved incident within the last hour, refresh its
+        estimate rather than registering a duplicate.
+        """
+        with self._lock:
+            for existing in self._incidents.values():
+                if (
+                    existing["city"] == city
+                    and existing["zone"] == zone
+                    and existing["resolved_at"] is None
+                ):
+                    age_seconds = (detected_at - existing["detected_at"]).total_seconds()
+                    if age_seconds < 3600:
+                        existing["estimated_clearance_mins"] = float(estimated_clearance_mins)
+                        existing["last_seen_at"] = detected_at
+                        return
+
+            self._incidents[incident_id] = {
+                "incident_id": incident_id,
+                "zone": zone,
+                "city": city,
+                "original_severity": severity,
+                "current_severity": severity,
+                "estimated_clearance_mins": float(estimated_clearance_mins),
+                "detected_at": detected_at,
+                "last_seen_at": detected_at,
+                "escalation_count": 0,
+                "resolved_at": None,
+                "speed_drop_pct": float(speed_drop_pct),
+                "volume_change_pct": float(volume_change_pct),
+                "confidence": str(confidence),
+            }
+
+    def resolve_incident(self, incident_id: str) -> None:
+        """Mark an incident as resolved. No-op if already resolved or unknown."""
+        with self._lock:
+            entry = self._incidents.get(incident_id)
+            if entry is not None and entry["resolved_at"] is None:
+                entry["resolved_at"] = datetime.now()
+
+    def check_escalations(self, now: Optional[datetime] = None) -> list:
+        """
+        Evaluate all active incidents and return escalation alerts in the
+        same dict schema used by check_thresholds().
+
+        The escalation threshold for the Nth escalation is
+        (N + 1) * 1.5 * estimated_clearance_mins from detection. This
+        makes escalation idempotent: calling this method twice within the
+        same tick yields a single escalation per incident.
+        """
+        if now is None:
+            now = datetime.now()
+
+        alerts = []
+        with self._lock:
+            for entry in self._incidents.values():
+                if entry["resolved_at"] is not None:
+                    continue
+
+                elapsed_mins = (now - entry["detected_at"]).total_seconds() / 60.0
+                timeout_mins = 1.5 * entry["estimated_clearance_mins"]
+                required_elapsed = timeout_mins * (entry["escalation_count"] + 1)
+                if elapsed_mins < required_elapsed:
+                    continue
+
+                current_idx = SEVERITY_LADDER.index(entry["current_severity"])
+                if current_idx >= len(SEVERITY_LADDER) - 1:
+                    continue
+
+                new_severity = SEVERITY_LADDER[current_idx + 1]
+                entry["current_severity"] = new_severity
+                entry["escalation_count"] += 1
+                entry["last_escalation_at"] = now
+
+                alert = {
+                    "zone": entry["zone"],
+                    "city": entry["city"],
+                    "metric": "incident_escalation",
+                    "value": entry["escalation_count"],
+                    "threshold": round(timeout_mins, 2),
+                    "severity": new_severity,
+                    "incident_id": entry["incident_id"],
+                    "original_severity": entry["original_severity"],
+                    "current_severity": new_severity,
+                    "minutes_since_detection": round(elapsed_mins, 2),
+                    "estimated_clearance_mins": entry["estimated_clearance_mins"],
+                }
+
+                if new_severity == "Critical":
+                    alert["preemption_plan"] = self._build_preemption_plan(entry)
+
+                alerts.append(alert)
+                self._append_escalation_to_log(entry, new_severity, now)
+
+        return alerts
+
+    def get_escalated_incidents(self) -> list:
+        """Return all currently escalated, unresolved incidents."""
+        with self._lock:
+            escalated = []
+            now = datetime.now()
+            for entry in self._incidents.values():
+                if entry["resolved_at"] is not None:
+                    continue
+                if entry["escalation_count"] == 0:
+                    continue
+                minutes_since = (now - entry["detected_at"]).total_seconds() / 60.0
+                escalated.append({
+                    "incident_id": entry["incident_id"],
+                    "zone": entry["zone"],
+                    "city": entry["city"],
+                    "original_severity": entry["original_severity"],
+                    "current_severity": entry["current_severity"],
+                    "detected_at": entry["detected_at"].isoformat(),
+                    "minutes_since_detection": round(minutes_since, 2),
+                    "estimated_clearance_mins": entry["estimated_clearance_mins"],
+                    "escalation_count": entry["escalation_count"],
+                })
+
+        escalated.sort(
+            key=lambda x: SEVERITY_LADDER.index(x["current_severity"]),
+            reverse=True,
+        )
+        return escalated
+
+    def _build_preemption_plan(self, entry: dict) -> Optional[dict]:
+        try:
+            from src.model import generate_preemption_plan
+            vehicle = {
+                "id": entry["incident_id"],
+                "type": "emergency",
+                "current_zone": entry["zone"],
+                "destination_zone": entry["zone"],
+            }
+            return generate_preemption_plan(vehicle, entry["city"])
+        except Exception:
+            return None
+
+    def _append_escalation_to_log(self, entry: dict, new_severity: str, now: datetime) -> None:
+        try:
+            from src.model import _log_incident
+            _log_incident({
+                "timestamp": now.isoformat(),
+                "city": entry["city"],
+                "zone": entry["zone"],
+                "severity": new_severity,
+                "speed_drop_pct": entry["speed_drop_pct"],
+                "volume_change_pct": entry["volume_change_pct"],
+                "confidence": entry["confidence"],
+                "clearance_mins": entry["estimated_clearance_mins"],
+                "status": "ESCALATED",
+            })
+        except Exception:
+            pass

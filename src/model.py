@@ -4644,7 +4644,9 @@ INCIDENTS_LOG_PATH = "incidents_log.csv"
 _INCIDENTS_FIELDS = [
     "timestamp", "city", "zone", "severity",
     "speed_drop_pct", "volume_change_pct", "confidence", "clearance_mins",
+    "status",
 ]
+_INCIDENT_FIELD_DEFAULTS = {"status": "ACTIVE"}
 
 _SEVERITY_ORDER = {"Minor": 1, "Moderate": 2, "Major": 3, "Critical": 4}
 
@@ -4661,7 +4663,7 @@ def _log_incident(record: dict) -> None:
         writer = _incident_csv.DictWriter(f, fieldnames=_INCIDENTS_FIELDS)
         if is_new:
             writer.writeheader()
-        writer.writerow({k: record.get(k, "") for k in _INCIDENTS_FIELDS})
+        writer.writerow({k: record.get(k, _INCIDENT_FIELD_DEFAULTS.get(k, "")) for k in _INCIDENTS_FIELDS})
         portalocker.unlock(f)
 
     
@@ -4713,6 +4715,7 @@ def detect_incidents(
     city: str = "Riyadh",
     log: bool = True,
     police_incidents: list = None,
+    tracker = None,
 ) -> dict:
     """
     Detect likely incidents distinct from general congestion.
@@ -4867,10 +4870,9 @@ def detect_incidents(
         "zone": zone,
         "city": city,
         "timestamp": _incident_dt.now().isoformat(),
-        "source"            : "muroor" if muroor_source else "model",
+        "source": "muroor" if muroor_source else "model",
     }
 
-    # --- Log ---
     if log:
         _log_incident({
             "timestamp": result["timestamp"],
@@ -4882,6 +4884,19 @@ def detect_incidents(
             "confidence": confidence,
             "clearance_mins": clearance_mins,
         })
+
+    if tracker is not None:
+        tracker.register_incident(
+            incident_id=f"{city}_{zone}_{_incident_dt.now().strftime('%Y%m%d%H')}",
+            zone=zone,
+            city=city,
+            severity=severity,
+            estimated_clearance_mins=clearance_mins,
+            detected_at=_incident_dt.now(),
+            speed_drop_pct=speed_drop_pct,
+            volume_change_pct=volume_change_pct,
+            confidence=confidence,
+        )
 
     return result
 

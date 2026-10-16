@@ -464,6 +464,8 @@ async def lifespan(app: FastAPI):
 
         # Deduplication cache for alerts: key -> last_sent_timestamp
     app.state._last_alert_sent = {}
+    from src.pipeline import IncidentEscalationTracker
+    app.state.escalation_tracker = IncidentEscalationTracker()
 
     def _scheduled_alerts():
         from src.pipeline import check_incident_alerts
@@ -478,6 +480,10 @@ async def lifespan(app: FastAPI):
             # --- Combine and deduplicate ---
             all_alerts = congestion_alerts + incident_alerts
             fresh_alerts = []
+
+            tracker = getattr(app.state, "escalation_tracker", None)
+            if tracker is not None:
+                all_alerts.extend(tracker.check_escalations())
 
             for alert in all_alerts:
                 alert_type = alert.get("alert_type", "congestion")
@@ -509,6 +515,9 @@ async def lifespan(app: FastAPI):
                 print(f"[Alert] {len(fresh_alerts)} alert(s) fired for {city} "
                       f"({len(payload['congestion_alerts'])} congestion, "
                       f"{len(payload['incident_alerts'])} incident)")
+                
+
+        
 
         # --- SLA breach alerts (separate loop, no dedup needed) ---
         sla_alerts = check_sla_breach_alerts(days=1)
@@ -6797,7 +6806,7 @@ def incidents_active(
  
     active = []
     for zone in zones:
-        result = detect_incidents(df, zone=zone, city=city, log=True)
+        result = detect_incidents(df, zone, tracker=app.state.escalation_tracker)
         if result["incident_detected"]:
             active.append(result)
  
@@ -6851,8 +6860,7 @@ def incidents_history(
             "note": "No incidents logged yet.",
         }
  
-    log_df = pd.read_csv(log_path)
- 
+    log_df = pd.read_csv(log_path, engine="python", on_bad_lines="skip") 
     # --- Time filter ---
     if "timestamp" in log_df.columns:
         log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], errors="coerce")
@@ -6920,6 +6928,15 @@ def investigate_incident(
         "timeline": timeline,
     }
 
+
+
+@app.get("/incidents/escalated")
+@limiter.limit("20/minute")
+def get_escalated_incidents(request: Request, _=Depends(require_api_key)):
+    tracker = getattr(app.state, "escalation_tracker", None)
+    if tracker is None:
+        return []
+    return tracker.get_escalated_incidents()
 
 
 
