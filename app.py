@@ -41,7 +41,7 @@ from src.calibration import (
 from src.config import (CALIBRATION_FACTORS_PATH, ACTUATION_COOLDOWN_SECONDS, CACHE_TTL_PREDICT,
     CACHE_TTL_INCIDENTS,
     CACHE_TTL_WEATHER_NOWCAST,
-    PARKING_CAPACITY_ZONES,)
+    PARKING_CAPACITY_ZONES, MARKETPLACE_EXPORTS_LOG)
 from src.signal_controller import NTCIPStubController, schedule_confirmation
 
 from src.cache import init_cache, cached
@@ -138,6 +138,9 @@ from src.pipeline import read_predictions_log, compute_sla_trend, check_sla_brea
 from src.auth import validate_key, create_key, deactivate_key, rotate_key, init_auth_db
 
 from sklearn.model_selection import train_test_split
+
+
+from src.data_marketplace import DataMarketplaceExport
 
 load_dotenv()
 
@@ -3901,6 +3904,56 @@ def muroor_status(
         "police_confirmed_incidents": len(incidents),
         "incidents"               : incidents,
     }
+
+
+
+
+# ── Data Marketplace Export ────────────────────────────────────
+
+
+@app.post("/marketplace/export-request", tags=["marketplace"])
+@limiter.limit("10/minute")
+def marketplace_export_request(
+    request: Request,
+    city: str = "Riyadh",
+    date_from: str = "2026-01-01",
+    date_to: str = "2026-01-31",
+    granularity_minutes: int = 15,
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """Request an anonymised historical export (AGENCY role, PDPL-validated)."""
+    assert_agency_city_permitted(credentials, city)
+    log_agency_access(_get_agency_token(request), "/marketplace/export-request", city)
+
+    exporter = DataMarketplaceExport()
+    result = exporter.generate_anonymised_export(
+        city=city,
+        date_from=date_from,
+        date_to=date_to,
+        granularity_minutes=granularity_minutes,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
+    return result
+
+
+@app.get("/marketplace/export/{request_id}", tags=["marketplace"])
+@limiter.limit("20/minute")
+def marketplace_download_export(
+    request: Request,
+    request_id: str,
+    credentials: Dict = Depends(validate_agency_token),
+):
+    """Return the file path of a previously generated export."""
+    token = _get_agency_token(request)
+    log_agency_access(token, "/marketplace/export", "all")
+
+    for line in open(MARKETPLACE_EXPORTS_LOG, encoding="utf-8"):
+        if request_id in line:
+            parts = line.strip().split(",")
+            return {"request_id": request_id, "path": parts[-1]}
+
+    raise HTTPException(status_code=404, detail=f"Export '{request_id}' not found.")
 
 
 
