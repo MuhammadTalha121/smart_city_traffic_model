@@ -6206,3 +6206,189 @@ def fuse_sensor_readings(readings: List[Dict]) -> Dict:
             for r in valid
         ],
     }
+
+
+
+
+
+
+def calculate_v2030_kpi_status(city: str = "Riyadh") -> Dict:
+    """
+    Compute Vision 2030 KPI status for a city from tracked metrics .
+
+    Each of the three KPIs is returned with an explicit data_source or
+    derivation_note so a reviewer can see what is measured vs inferred.
+
+    - road_fatality_reduction: No fatality feed integrated. Returns proxy
+      metrics (incident counts, avg clearance mins) labelled
+      status="Data Not Available".
+    - emissions_reduction: Measured from emissions_log.csv as compliance
+      against GREEN_INITIATIVE_CO2_THRESHOLD_KG. Not a reduction-vs-baseline
+      calculation because no counterfactual baseline exists.
+    - smart_city_index: Derived composite from uptime, congestion, emissions
+      compliance, and incident response. Explicitly NOT the official Saudi
+      Smart City Index score.
+
+    Returns
+    -------
+    dict with keys: city, period_days, generated_at, kpis (list).
+    """
+    from src.config import (
+        VISION_2030_KPIS,
+        KPI_MONITORING_WINDOW_DAYS,
+        SMART_CITY_INDEX_WEIGHTS,
+        GREEN_INITIATIVE_CO2_THRESHOLD_KG,
+    )
+
+    generated_at = _incident_dt.now().isoformat()
+    days         = KPI_MONITORING_WINDOW_DAYS
+    cutoff       = _incident_dt.now() - timedelta(days=days)
+
+    # ---- KPI 1: Road fatality reduction (no data source) ----
+    incident_count = 0
+    critical_count = 0
+    avg_clearance_mins = None
+    if _incident_os.path.exists(INCIDENTS_LOG_PATH):
+        try:
+            inc_df = pd.read_csv(INCIDENTS_LOG_PATH, engine="python", on_bad_lines="skip")
+            if "timestamp" in inc_df.columns and "severity" in inc_df.columns:
+                inc_df["timestamp"] = pd.to_datetime(inc_df["timestamp"], errors="coerce")
+                inc_df = inc_df.dropna(subset=["timestamp"])
+                inc_df = inc_df[inc_df["timestamp"] >= cutoff]
+                if "city" in inc_df.columns:
+                    inc_df = inc_df[inc_df["city"] == city]
+                incident_count = int(len(inc_df))
+                critical_count = int((inc_df["severity"] == "Critical").sum())
+                if "clearance_mins" in inc_df.columns and len(inc_df) > 0:
+                    avg_clearance_mins = round(float(inc_df["clearance_mins"].mean()), 2)
+        except Exception:
+            pass
+
+    kpi_fatality = {
+        "name": "road_fatality_reduction",
+        "target_pct": VISION_2030_KPIS["road_fatality_reduction_target_pct"],
+        "current_pct": None,
+        "status": "Data Not Available",
+        "data_source": "No injury/fatality data feed integrated",
+        "proxy_metrics": {
+            "incidents_logged": incident_count,
+            "critical_incidents": critical_count,
+            "avg_clearance_mins": avg_clearance_mins,
+            "note": (
+                "Incident count and clearance time are tracked as a proxy for "
+                "safety performance. True fatality reduction requires an external "
+                "injury/fatality data feed which is not yet integrated."
+            ),
+        },
+    }
+
+    # ---- KPI 2: Emissions reduction (measured as compliance) ----
+    weekly_co2_kg = 0.0
+    efficiency_dist: Dict[str, int] = {g: 0 for g in ["A", "B", "C", "D", "E", "F"]}
+    if _incident_os.path.exists("emissions_log.csv"):
+        try:
+            em_df = pd.read_csv("emissions_log.csv", engine="python", on_bad_lines="skip")
+            if "timestamp" in em_df.columns:
+                em_df["timestamp"] = pd.to_datetime(em_df["timestamp"], errors="coerce")
+                em_df = em_df.dropna(subset=["timestamp"])
+                em_df = em_df[em_df["timestamp"] >= cutoff]
+                if "city" in em_df.columns:
+                    em_df = em_df[em_df["city"] == city]
+                if "co2_kg" in em_df.columns:
+                    total_co2 = float(em_df["co2_kg"].sum())
+                    weekly_co2_kg = round(total_co2 * 7 / max(days, 1), 2)
+                if "efficiency_rating" in em_df.columns:
+                    for grade, count in em_df["efficiency_rating"].value_counts().items():
+                        if grade in efficiency_dist:
+                            efficiency_dist[grade] = int(count)
+        except Exception:
+            pass
+
+    weekly_threshold = GREEN_INITIATIVE_CO2_THRESHOLD_KG
+    emissions_compliant = weekly_co2_kg <= weekly_threshold
+    compliance_pct = round(
+        min(100.0, (1.0 - (weekly_co2_kg / weekly_threshold)) * 100 + 100)
+        if weekly_threshold > 0 else 100.0,
+        2
+    ) if weekly_co2_kg <= weekly_threshold else round(
+        max(0.0, (weekly_threshold / max(weekly_co2_kg, 1e-9)) * 100), 2
+    )
+
+    kpi_emissions = {
+        "name": "emissions_reduction",
+        "target_pct": VISION_2030_KPIS["emissions_reduction_target_pct"],
+        "current_co2_kg_per_week": weekly_co2_kg,
+        "threshold_kg_per_week": weekly_threshold,
+        "compliance": "COMPLIANT" if emissions_compliant else "EXCEEDS_THRESHOLD",
+        "efficiency_grade_distribution": efficiency_dist,
+        "data_source": "emissions_log.csv",
+        "note": (
+            "Measured as compliance against GREEN_INITIATIVE_CO2_THRESHOLD_KG. "
+            "Reduction-vs-counterfactual-baseline is not computed because no "
+            "counterfactual data source exists."
+        ),
+    }
+
+    # ---- KPI 3: Smart City Index (derived composite) ----
+    api_uptime_pct = 100.0
+    if _incident_os.path.exists("usage_log.csv"):
+        try:
+            use_df = pd.read_csv("usage_log.csv", engine="python", on_bad_lines="skip")
+            if "timestamp" in use_df.columns and "response_code" in use_df.columns:
+                use_df["timestamp"] = pd.to_datetime(use_df["timestamp"], errors="coerce")
+                use_df = use_df.dropna(subset=["timestamp"])
+                use_df = use_df[use_df["timestamp"] >= cutoff]
+                if len(use_df) > 0:
+                    successes = int((use_df["response_code"] < 500).sum())
+                    api_uptime_pct = round(successes / len(use_df) * 100, 2)
+        except Exception:
+            pass
+
+    avg_congestion = 0.0
+    try:
+        from app import app
+        if hasattr(app.state, "city_dfs") and city in app.state.city_dfs:
+            avg_congestion = round(float(app.state.city_dfs[city]["congestion_score"].mean()), 4)
+    except Exception:
+        pass
+
+    congestion_performance = round(max(0.0, 1.0 - avg_congestion) * 100, 2)
+    incident_response_score = round(
+        max(0.0, 100.0 - (avg_clearance_mins or 0)) if avg_clearance_mins else 50.0,
+        2
+    )
+
+    w = SMART_CITY_INDEX_WEIGHTS
+    smart_city_score = round(
+        api_uptime_pct          * w["api_uptime"]
+        + congestion_performance * w["congestion_performance"]
+        + compliance_pct         * w["emissions_compliance"]
+        + incident_response_score * w["incident_response"],
+        2
+    )
+
+    kpi_smart_city = {
+        "name": "smart_city_index",
+        "target": VISION_2030_KPIS["smart_city_index_target"],
+        "current_score": smart_city_score,
+        "status": "Derived Composite",
+        "components": {
+            "api_uptime_pct": api_uptime_pct,
+            "congestion_performance": congestion_performance,
+            "emissions_compliance_pct": compliance_pct,
+            "incident_response_score": incident_response_score,
+        },
+        "weights": w,
+        "derivation_note": (
+            "This is a system-derived composite of tracked metrics. It is NOT "
+            "the official Saudi Smart City Index score and should be presented "
+            "as an internal performance indicator only."
+        ),
+    }
+
+    return {
+        "city": city,
+        "period_days": days,
+        "generated_at": generated_at,
+        "kpis": [kpi_fatality, kpi_emissions, kpi_smart_city],
+    }
