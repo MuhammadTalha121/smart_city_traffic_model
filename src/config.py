@@ -973,6 +973,10 @@ AGENCY_TOKENS: Dict[str, dict] = {
 }
 
 
+MARKETPLACE_EXPORTS_LOG = "marketplace_exports_log.csv"
+MARKETPLACE_MIN_AGGREGATION_MINUTES = 15
+
+
 
 # ── Muroor Integration ───────────────────────────────
 MUROOR_API_ENDPOINT: str = ""  # empty = use mock
