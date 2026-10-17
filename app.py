@@ -3958,7 +3958,33 @@ def marketplace_download_export(
 
 
 
-# ── Citizen Traveller Information API (PROMPT 133) ────────────────────────────
+
+
+
+
+# ── Vision 2030 KPI Dashboard (PROMPT 161) ───────────────────────────────────
+
+
+@app.get("/kpi/vision-2030", tags=["kpi"])
+@limiter.limit("20/minute")
+def kpi_vision_2030(
+    request: Request,
+    city: str = "Riyadh",
+    _=Depends(require_api_key),
+    credentials: Dict = Depends(require_api_key),
+):
+    if credentials.get("role") != "ADMIN":
+        raise HTTPException(status_code=403, detail="ADMIN role required.")
+    """Vision 2030 KPI status for a city. ADMIN-authenticated."""
+    from src.model import calculate_v2030_kpi_status
+    return calculate_v2030_kpi_status(city=city)
+
+
+
+
+
+
+# ── Citizen Traveller Information API ────────────────────────────
 
 
 @app.get("/public/traffic-status", tags=["public"])
