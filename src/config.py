@@ -1122,6 +1122,20 @@ EMISSION_FACTORS_CO2_G_PER_KM: Dict[str, float] = {
 
 
 
+# ── Vision 2030 KPI Targets  ─────────────────────────
+VISION_2030_KPIS: Dict[str, float] = {
+    "road_fatality_reduction_target_pct": 50.0,
+    "emissions_reduction_target_pct": 30.0,
+    "smart_city_index_target": 80.0,
+}
+KPI_MONITORING_WINDOW_DAYS: int = 30
+SMART_CITY_INDEX_WEIGHTS: Dict[str, float] = {
+    "api_uptime": 0.30,
+    "congestion_performance": 0.30,
+    "emissions_compliance": 0.25,
+    "incident_response": 0.15,
+}
+
 
 
 
