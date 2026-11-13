@@ -1166,6 +1166,10 @@ SHAP_FEATURE_NAMES_AR: Dict[str, str] = {
     "congestion 1 hour ago": "الازدحام قبل ساعة",
     "3-hour traffic average": "متوسط حركة المرور لثلاث ساعات",
     "traffic volatility": "تقلب حركة المرور",
+    "adjacent zone congestion 1 hour ago": "الازدحام في المنطقة المجاورة قبل ساعة",
+    "adjacent zone traffic 1 hour ago": "المركبات في المنطقة المجاورة قبل ساعة",
+    "adjacent zone congestion 2 hours ago": "الازدحام في المنطقة المجاورة قبل ساعتين",
+    "adjacent zone traffic 2 hours ago": "المركبات في المنطقة المجاورة قبل ساعتين",
 }
 
 CONGESTION_LEVELS_AR: Dict[str, str] = {
