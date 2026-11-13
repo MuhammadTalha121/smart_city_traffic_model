@@ -558,7 +558,11 @@ def explain_prediction(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
         'vehicle_count_lag_2h' : 'traffic 2 hours ago',
         'congestion_lag_1h'    : 'congestion 1 hour ago',
         'rolling_mean_3h'      : '3-hour traffic average',
-        'rolling_std_3h'       : 'traffic volatility'
+        'rolling_std_3h'       : 'traffic volatility',
+        'adjacent_congestion_lag_1h'       : 'adjacent zone congestion 1 hour ago',
+        'adjacent_vehicle_count_lag_1h'    : 'adjacent zone traffic 1 hour ago',
+        'adjacent_congestion_lag_2h'       : 'adjacent zone congestion 2 hours ago',
+        'adjacent_vehicle_count_lag_2h'    : 'adjacent zone traffic 2 hours ago',
     }
 
     factors = []
@@ -6391,4 +6395,38 @@ def calculate_v2030_kpi_status(city: str = "Riyadh") -> Dict:
         "period_days": days,
         "generated_at": generated_at,
         "kpis": [kpi_fatality, kpi_emissions, kpi_smart_city],
+    }
+
+
+
+
+def explain_prediction_arabic(model, X_row: pd.DataFrame, feature_names: list) -> Dict:
+    """
+    PROMPT 163 — SHAP explanation with Arabic feature labels.
+
+    Same return shape as explain_prediction() with one addition:
+    each factor dict gains a 'label_ar' field. If a feature is missing
+    from SHAP_FEATURE_NAMES_AR, label_ar falls back to the English label
+    and the factor dict gains 'untranslated': True so the caller can
+    surface a data gap rather than ship a silent English leak.
+    """
+    from src.config import SHAP_FEATURE_NAMES_AR
+
+    english_result = explain_prediction(model, X_row, feature_names)
+    arabic_factors = []
+
+    for f in english_result["top_factors"]:
+        arabic_label = SHAP_FEATURE_NAMES_AR.get(f["factor"])
+        arabic_factors.append({
+            "factor":        f["factor"],
+            "label_ar":      arabic_label or f["factor"],
+            "direction":     f["direction"],
+            "impact":        f["impact"],
+            "untranslated":  arabic_label is None,
+        })
+
+    return {
+        "top_factors":     arabic_factors,
+        "plain_english":   english_result["plain_english"],
+        "untranslated_count": sum(1 for f in arabic_factors if f["untranslated"]),
     }
