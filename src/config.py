@@ -65,6 +65,13 @@ HOURLY_MULTIPLIERS: Dict[str, Dict[int, float]] = {
 }
 
 
+
+
+# NOTE: The Saudi calendar invariant suite (tests/test_saudi_calendar_invariants.py)
+# must be re-run whenever HAJJ_DATES or Ramadan start dates are updated for
+# a new Hijri year. Run: make test-saudi-calendar
+
+
 RAMADAN_IFTAR_HOUR = 18
 RAMADAN_PROGRESSION_FACTOR = 0.015
 
