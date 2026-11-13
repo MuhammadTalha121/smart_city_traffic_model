@@ -10,3 +10,9 @@ test:
 
 validate-standards:
 	py -m pytest tests/test_standards_compliance.py -v
+
+
+
+
+test-saudi-calendar:
+	py -m pytest tests/test_saudi_calendar_invariants.py -v

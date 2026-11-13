@@ -106,3 +106,7 @@ rl_performance.json
 rl_checkpoints/
 
 spat_broadcast_log.csv
+
+
+marketplace_exports/
+marketplace_exports_log.csv
