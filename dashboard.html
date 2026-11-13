@@ -547,6 +547,12 @@
     transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
   }
 
+  .rtl-active {
+    direction: rtl;
+    text-align: right;
+  }
+
+
   .recommendation-box {
     background: var(--bg-input);
     border: 1px solid var(--border);
@@ -2797,6 +2803,7 @@ async function loadBriefing() {
     if (!res.ok) throw new Error('Failed');
     const data = await res.json();
     content.textContent = data.briefing;
+    content.classList.toggle('rtl-active', lang === 'ar');
     tag.textContent = 'LIVE';
   } catch (e) {
     content.textContent = 'Briefing unavailable.';
