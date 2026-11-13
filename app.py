@@ -1995,6 +1995,74 @@ def get_briefing(
 
 
 
+@app.get("/briefing/shap/{zone}", tags=["briefing"])
+@limiter.limit("20/minute")
+def get_briefing_shap(
+    request: Request,
+    zone: str,
+    city: str = "Riyadh",
+    auth: Dict = Depends(role_required(["OPERATOR", "ADMIN"])),
+):
+    """
+    PROMPT 163 — SHAP breakdown with Arabic feature labels.
+
+    Returns the top contributing factors for the zone's latest prediction,
+    with both the English business label and the Arabic translation.
+    Fields with untranslated=True indicate a missing label in
+    SHAP_FEATURE_NAMES_AR — a data gap, not an error.
+    Role: OPERATOR or ADMIN.
+    """
+    from src.model import explain_prediction_arabic
+    from src.model import WEATHER_ENCODING, ROAD_ENCODING, ZONE_ENCODING, DAY_ENCODING
+    from datetime import date
+    import pandas as pd
+
+    _assert_city_permitted(auth, city)
+
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+    df = app.state.city_dfs[city]
+    zone_df = df[df["zone"] == zone].sort_values("timestamp")
+    if zone_df.empty:
+        raise HTTPException(status_code=404, detail=f"Zone '{zone}' not found in {city}.")
+
+    latest   = zone_df.iloc[-1]
+    features = app.state.feature_cols
+
+    row = {
+        "vehicle_count":                 latest["vehicle_count"],
+        "avg_speed":                     latest["avg_speed"],
+        "hour":                          int(latest["hour"]),
+        "rush_hour":                     int(latest.get("rush_hour", 0)),
+        "is_weekend":                    int(latest.get("is_weekend", 0)),
+        "is_late_night":                 int(latest.get("is_late_night", 0)),
+        "event":                         int(latest.get("event", 0)),
+        "hour_multiplier":               latest.get("hour_multiplier", 1.0),
+        "weather":                       WEATHER_ENCODING.get(str(latest["weather"]), 0),
+        "road_type":                     ROAD_ENCODING.get(str(latest.get("road_type", "arterial")), 0),
+        "zone":                          ZONE_ENCODING.get(zone, 0),
+        "day_of_week":                   DAY_ENCODING.get(date.today().strftime("%A"), 0),
+        "vehicle_count_lag_1h":          latest.get("vehicle_count_lag_1h", latest["vehicle_count"]),
+        "vehicle_count_lag_2h":          latest.get("vehicle_count_lag_2h", latest["vehicle_count"]),
+        "congestion_lag_1h":             latest.get("congestion_lag_1h", 0.0),
+        "rolling_mean_3h":               latest.get("rolling_mean_3h", latest["vehicle_count"]),
+        "rolling_std_3h":                latest.get("rolling_std_3h", 0.0),
+        "adjacent_congestion_lag_1h":    latest.get("adjacent_congestion_lag_1h", latest.get("congestion_score", 0.0)),
+        "adjacent_vehicle_count_lag_1h": latest.get("adjacent_vehicle_count_lag_1h", latest["vehicle_count"]),
+        "adjacent_congestion_lag_2h":    latest.get("adjacent_congestion_lag_2h", latest.get("congestion_score", 0.0)),
+        "adjacent_vehicle_count_lag_2h": latest.get("adjacent_vehicle_count_lag_2h", latest["vehicle_count"]),
+    }
+    X_row = pd.DataFrame([row])[features]
+
+    result = explain_prediction_arabic(app.state.model, X_row, features)
+    result["zone"]         = zone
+    result["city"]         = city
+    result["generated_at"] = datetime.now().isoformat()
+    return result
+
+
+
+
 
 
 @app.post("/signals/corridor-optimize", tags=["signals"])
