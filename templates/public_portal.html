@@ -82,6 +82,51 @@
     }
     .refresh-note { color: var(--muted); font-size: 0.75rem; margin-bottom: 1rem; }
 
+        /* Journey Planner */
+    .journey-form {
+      display: flex; gap: 0.5rem; flex-wrap: wrap;
+      align-items: center; margin-bottom: 1rem;
+    }
+    .journey-form label {
+      display: flex; gap: 0.4rem; align-items: center;
+      font-size: 0.85rem; color: var(--muted);
+    }
+    .journey-select, .journey-btn {
+      background: var(--card); border: 1px solid #334155;
+      color: var(--text); padding: 0.45rem 0.75rem;
+      border-radius: 0.5rem; font-size: 0.9rem;
+    }
+    .journey-btn {
+      cursor: pointer; background: var(--blue); border-color: var(--blue);
+      font-weight: 600; color: white;
+    }
+    .journey-btn:hover { opacity: 0.88; }
+    .journey-leg {
+      background: var(--card); border-radius: 0.5rem;
+      padding: 0.65rem 1rem; margin-bottom: 0.4rem;
+      display: flex; justify-content: space-between;
+      align-items: center; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .journey-leg-recommended {
+      border-left: 3px solid var(--green);
+    }
+    .precision-badge {
+      font-size: 0.7rem; font-weight: 600;
+      padding: 0.15rem 0.5rem; border-radius: 9999px;
+      background: #713f12; color: #fde68a;
+      display: inline-block; margin-top: 0.3rem;
+    }
+    .journey-assumption {
+      font-size: 0.75rem; color: var(--muted);
+      margin-top: 0.35rem; font-style: italic;
+      line-height: 1.4;
+    }
+
+    /* RTL overrides for journey planner */
+    [dir="rtl"] .journey-leg-recommended {
+      border-left: none; border-right: 3px solid var(--green);
+    }
+
     /* RTL overrides */
     [dir="rtl"] .advisory-banner { border-left: none; border-right: 4px solid var(--red); }
     [dir="rtl"] header { flex-direction: row-reverse; }
@@ -118,6 +163,32 @@
   </div>
 </div>
 
+  <!-- Journey Planner (PROMPT 164) -->
+  <div style="margin-top: 1.5rem;">
+    <p class="section-title" id="journey-label">Plan a Journey</p>
+    <div class="journey-form">
+      <label>
+        <span id="journey-from-label">From</span>
+        <select id="journey-from" class="journey-select">
+          <option>Zone_1</option><option>Zone_2</option>
+          <option>Zone_3</option><option>Zone_4</option>
+          <option>Zone_5</option>
+        </select>
+      </label>
+      <label>
+        <span id="journey-to-label">To</span>
+        <select id="journey-to" class="journey-select">
+          <option>Zone_5</option><option>Zone_4</option>
+          <option>Zone_3</option><option>Zone_2</option>
+          <option>Zone_1</option>
+        </select>
+      </label>
+      <button class="journey-btn" onclick="loadJourneyPlan()" id="journey-btn">Plan Journey</button>
+    </div>
+    <div id="journey-result"></div>
+  </div>
+
+
   <footer id="footer-note">
     Official City of Riyadh Traffic Intelligence System &mdash; Vision 2030
   </footer>
@@ -144,6 +215,16 @@
         footerNote   : "Official City of Riyadh Traffic Intelligence System — Vision 2030",
         langBtn      : "عربي",
         statuses     : { Normal:"Normal", Slow:"Slow", Congested:"Congested", Incident:"Incident" },
+        journeyLabel : "Plan a Journey",
+        journeyFrom  : "From",
+        journeyTo    : "To",
+        journeyBtn   : "Plan Journey",
+        journeyApprox: "Approximate",
+        journeyRecommended: "Fastest",
+        journeyMins  : "min",
+        journeyNoResult: "Select origin and destination to plan.",
+        journeyError : "Could not plan journey.",
+        journeyPrecisionNote: "Approximate legs use fixed assumptions, not live schedules.",
       },
       ar: {
         title        : "🚦 حركة الرياض — الحالة الآنية",
@@ -156,7 +237,17 @@
         advisoryTitle: "⚠ تنبيه السفر",
         footerNote   : "نظام ذكاء المرور الرسمي لمدينة الرياض — رؤية 2030",
         langBtn      : "English",
-        statuses     : { Normal:"طبيعي", Slow:"بطيء", Congested:"مزدحم", Incident:"حادث" },
+                statuses     : { Normal:"طبيعي", Slow:"بطيء", Congested:"مزدحم", Incident:"حادث" },
+        journeyLabel : "خطط لرحلتك",
+        journeyFrom  : "من",
+        journeyTo    : "إلى",
+        journeyBtn   : "خطط الرحلة",
+        journeyApprox: "تقريبي",
+        journeyRecommended: "الأسرع",
+        journeyMins  : "دقيقة",
+        journeyNoResult: "اختر نقطة البداية والوجهة للتخطيط.",
+        journeyError : "لم نتمكن من تخطيط الرحلة.",
+        journeyPrecisionNote: "الأرجل التقريبية تستخدم افتراضات ثابتة، ليست جداول حية.",
       },
     };
 
@@ -169,6 +260,9 @@
       html.setAttribute("dir", lang === "ar" ? "rtl" : "ltr");
       applyLabels();
       loadData();
+      if (lastJourneyParams) {
+        loadJourneyPlan();
+      }
     }
 
     function applyLabels() {
@@ -180,7 +274,11 @@
       document.getElementById("lang-btn").textContent       = L.langBtn;
       document.getElementById("footer-note").textContent    = L.footerNote;
       document.getElementById("advisory-title").textContent = L.advisoryTitle;
-      document.getElementById("parking-label").textContent = L.parkingLabel;
+      document.getElementById("parking-label").textContent = L.parkingLabel || "Available Parking";
+      document.getElementById("journey-label").textContent = L.journeyLabel;
+      document.getElementById("journey-from-label").textContent = L.journeyFrom;
+      document.getElementById("journey-to-label").textContent = L.journeyTo;
+      document.getElementById("journey-btn").textContent = L.journeyBtn;
     }
 
     async function loadData() {
@@ -282,6 +380,76 @@
     loadData();
     // Auto-refresh every 60 seconds
     setInterval(loadData, 60000);
+
+        // ---- Journey Planner (PROMPT 164) ----
+    let lastJourneyParams = null;
+
+    async function loadJourneyPlan() {
+      const L = LABELS[lang];
+      const city = "Riyadh";
+      const fromZone = document.getElementById("journey-from").value;
+      const toZone = document.getElementById("journey-to").value;
+      const resultBox = document.getElementById("journey-result");
+
+      if (fromZone === toZone) {
+        resultBox.innerHTML = `<p class="no-data">Origin and destination must differ.</p>`;
+        return;
+      }
+
+      lastJourneyParams = { fromZone, toZone };
+      resultBox.innerHTML = `<p class="no-data">Loading…</p>`;
+
+      try {
+        const res = await fetch(`/public/journey-plan?city=${city}&from_zone=${fromZone}&to_zone=${toZone}&lang=${lang}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (!data.legs || data.legs.length === 0) {
+          resultBox.innerHTML = `<p class="no-data">${L.journeyNoResult}</p>`;
+          return;
+        }
+
+        let html = "";
+        for (const leg of data.legs) {
+          const isRecommended = leg.mode === data.selected_mode;
+          const mins = Math.round(leg.estimated_minutes);
+          const precisionBadge = leg.precision === "approximate"
+            ? `<span class="precision-badge">${L.journeyApprox}</span>`
+            : "";
+          const modeLabel = leg.mode.replace(/_/g, " ");
+          const recommendedTag = isRecommended
+            ? `<span style="font-size:0.7rem;color:var(--green);font-weight:600;margin-inline-start:0.5rem;">★ ${L.journeyRecommended}</span>`
+            : "";
+          const assumption = leg.assumption
+            ? `<div class="journey-assumption">${leg.assumption}</div>`
+            : "";
+
+          html += `
+            <div class="journey-leg ${isRecommended ? 'journey-leg-recommended' : ''}">
+              <div style="flex:1;min-width:120px;">
+                <div style="font-weight:600;text-transform:capitalize;">${modeLabel}${recommendedTag}</div>
+                ${assumption}
+              </div>
+              <div style="text-align:end;flex-shrink:0;">
+                <div style="font-weight:700;">${mins} ${L.journeyMins}</div>
+                ${precisionBadge}
+              </div>
+            </div>`;
+        }
+
+        if (data.prayer_window_warning) {
+          html += `<p style="color:var(--amber);font-size:0.85rem;margin-top:0.75rem;">⚠ ${L.advisoryTitle}</p>`;
+        }
+
+        if (data.precision_summary && data.precision_summary.approximate_legs > 0) {
+          html += `<p style="color:var(--muted);font-size:0.75rem;margin-top:0.5rem;">${L.journeyPrecisionNote}</p>`;
+        }
+
+        resultBox.innerHTML = html;
+      } catch (e) {
+        resultBox.innerHTML = `<p class="no-data">${L.journeyError}</p>`;
+      }
+    }
   </script>
 </body>
 </html>
