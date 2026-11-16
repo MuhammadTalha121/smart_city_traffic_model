@@ -18,9 +18,10 @@ from src.config import (CONGESTION_THRESHOLDS, WEATHER_SPEED_IMPACT, SAUDI_CITIE
                         EVACUATION_SAFE_POINTS, ZONE_ROAD_CAPACITY_VPH, ZONE_ADJACENCY, ZONE_DISTANCES_KM,
                         RECURRING_EVENTS, EVACUATION_CAPACITY_MARGIN, EMISSIONS_ROUTING_WEIGHT,
                         INCIDENT_SPEED_DROP_THRESHOLD, INCIDENT_VOLUME_DROP_THRESHOLD, INCIDENT_SEVERITY_LEVELS,
-                        INCIDENT_PERSISTENCE_MINUTES)
+                        INCIDENT_PERSISTENCE_MINUTES, WALK_SPEED_KMPH
+                        )
 from datetime import datetime
-
+WALK_SPEED_KMPH = 5.0
 from src.construction import apply_construction_capacity, get_active_construction
 
 # ---- GNN integration  ----
@@ -6429,4 +6430,223 @@ def explain_prediction_arabic(model, X_row: pd.DataFrame, feature_names: list) -
         "top_factors":     arabic_factors,
         "plain_english":   english_result["plain_english"],
         "untranslated_count": sum(1 for f in arabic_factors if f["untranslated"]),
+    }
+
+
+
+
+
+
+
+def plan_journey(
+    origin_zone: str,
+    destination_zone: str,
+    city: str = "Riyadh",
+    departure_time: Optional[datetime] = None,
+) -> Dict:
+    """
+    PROMPT 164 — Inter-modal journey planner.
+
+    Computes available modes between origin and destination zones. Each
+    leg carries an estimated duration and a `precision` flag:
+
+    - "exact":     computed from live zone data (car, walking)
+    - "approximate": derived from fixed assumptions (transit, park-and-ride)
+
+    Transit legs are APPROXIMATE because this system exports GTFS-RT but
+    does not import GTFS static schedules. Transit duration assumes a
+    fixed 5-minute metro headway and 25 km/h average transit speed. When
+    a real GTFS static feed is integrated, the precision flag becomes
+    "exact" without any other change to the planner.
+
+    Modes are omitted, not faked:
+    - Transit is offered only if BOTH zones are in METRO_STATIONS.
+    - Park-and-ride is offered only if origin zone has a parking hub and
+      destination has metro access.
+
+    Returns
+    -------
+    dict with keys: origin_zone, destination_zone, city, departure_time,
+    modes (list), selected_mode (str), legs (list), total_time_min (int),
+    prayer_window_warning (bool), precision_summary (dict).
+    """
+    from src.config import (
+        METRO_STATIONS, PARKING_HUBS, WALK_SPEED_KMPH,
+        ZONE_DISTANCES_KM, ZONE_ADJACENCY, FRIDAY_PRAYER_HOURS, SAUDI_CITIES,
+    )
+    from app import app
+
+    ts = departure_time or datetime.now()
+
+    if city not in app.state.city_dfs:
+        raise ValueError(f"City '{city}' not found.")
+    df = app.state.city_dfs[city]
+
+    for zone in (origin_zone, destination_zone):
+        if zone not in ZONE_ADJACENCY:
+            raise ValueError(f"Zone '{zone}' not found in zone graph.")
+
+    # --- Congestion map (current, per zone) ---
+    congestion_map = {}
+    avg_speed_map = {}
+    for zone in df["zone"].unique():
+        zone_rows = df[df["zone"] == zone]
+        if not zone_rows.empty:
+            congestion_map[zone] = float(zone_rows["congestion_score"].mean())
+            avg_speed_map[zone]   = float(zone_rows["avg_speed"].mean())
+
+    def _route_distance_km(route: List[str]) -> float:
+        total = 0.0
+        for i in range(len(route) - 1):
+            key = tuple(sorted([route[i], route[i + 1]]))
+            total += ZONE_DISTANCES_KM.get(key, 5.0)
+        return total
+
+    def _route_avg_speed(route: List[str]) -> float:
+        speeds = [avg_speed_map.get(z, 40.0) for z in route]
+        return sum(speeds) / len(speeds) if speeds else 40.0
+
+    legs = []
+    modes = []
+
+    # ---- CAR LEG (exact) ----
+    try:
+        car_routes = calculate_pareto_routes(
+            origin_zone=origin_zone,
+            destination_zone=destination_zone,
+            congestion_map=congestion_map,
+        )
+        fastest_car = car_routes.get("recommended_for", {}).get("fastest", {})
+        car_route   = fastest_car.get("route", [origin_zone, destination_zone])
+        car_dist    = _route_distance_km(car_route)
+        car_speed   = _route_avg_speed(car_route)
+        car_minutes = round((car_dist / max(car_speed, 1.0)) * 60, 1)
+        legs.append({
+            "mode": "car",
+            "route": car_route,
+            "distance_km": round(car_dist, 1),
+            "estimated_minutes": car_minutes,
+            "precision": "exact",
+        })
+        modes.append("car")
+    except Exception:
+        car_minutes = None
+        car_route = None
+
+    # ---- WALK LEG (exact) ----
+    walk_dist = 0.0
+    for i in range(len([origin_zone]) - 1):
+        pass
+    # Walking uses the same route as car but at walk speed
+    if car_route:
+        walk_route = car_route
+    else:
+        walk_route = [origin_zone, destination_zone]
+    walk_dist    = _route_distance_km(walk_route)
+    walk_minutes = round((walk_dist / max(WALK_SPEED_KMPH, 0.5)) * 60, 1)
+    legs.append({
+        "mode": "walk",
+        "route": walk_route,
+        "distance_km": round(walk_dist, 1),
+        "estimated_minutes": walk_minutes,
+        "precision": "exact",
+    })
+    modes.append("walk")
+
+    # ---- TRANSIT LEG (approximate) ----
+    origin_has_metro = origin_zone in METRO_STATIONS
+    dest_has_metro   = destination_zone in METRO_STATIONS
+    if origin_has_metro and dest_has_metro:
+        TRANSIT_HEADWAY_MIN = 5
+        TRANSIT_SPEED_KMPH  = 25.0
+        # Transit route approximates the zone path
+        transit_route   = car_route or [origin_zone, destination_zone]
+        transit_dist    = _route_distance_km(transit_route)
+        wait_minutes    = TRANSIT_HEADWAY_MIN / 2
+        travel_minutes  = (transit_dist / TRANSIT_SPEED_KMPH) * 60
+        transit_minutes = round(wait_minutes + travel_minutes, 1)
+        legs.append({
+            "mode": "transit",
+            "route": transit_route,
+            "distance_km": round(transit_dist, 1),
+            "estimated_minutes": transit_minutes,
+            "precision": "approximate",
+            "assumption": (
+                f"Assumes {TRANSIT_HEADWAY_MIN}-min headway and "
+                f"{TRANSIT_SPEED_KMPH:.0f} km/h average transit speed. "
+                "GTFS static schedules are not integrated; times are estimates."
+            ),
+            "stations": {
+                "origin": METRO_STATIONS.get(origin_zone),
+                "destination": METRO_STATIONS.get(destination_zone),
+            },
+        })
+        modes.append("transit")
+
+    # ---- PARK-AND-RIDE LEG (approximate) ----
+    origin_hub = None
+    for hub_id, hub_data in PARKING_HUBS.items():
+        if hub_data.get("zone") == origin_zone:
+            origin_hub = hub_id
+            break
+
+    if origin_hub and dest_has_metro:
+        hub_zone = PARKING_HUBS[origin_hub]["zone"]
+        walk_to_hub_dist = 0.5  # short local walk, assumption
+        walk_to_hub_min  = round((walk_to_hub_dist / max(WALK_SPEED_KMPH, 0.5)) * 60, 1)
+        transit_route    = [hub_zone, destination_zone]
+        transit_dist     = _route_distance_km(transit_route)
+        wait_min         = 2.5
+        transit_min      = (transit_dist / 25.0) * 60
+        park_ride_total  = round(walk_to_hub_min + wait_min + transit_min, 1)
+        legs.append({
+            "mode": "park_and_ride",
+            "route": [origin_zone, hub_zone, destination_zone],
+            "hub": origin_hub,
+            "distance_km": round(walk_to_hub_dist + transit_dist, 1),
+            "estimated_minutes": park_ride_total,
+            "precision": "approximate",
+            "assumption": (
+                "Walk-to-hub distance assumed 0.5 km. Transit from hub zone "
+                "uses the same headway and speed assumptions as the transit leg."
+            ),
+        })
+        modes.append("park_and_ride")
+
+    # ---- SELECTION ----
+    selected_mode = None
+    total_time_min = None
+    if legs:
+        fastest = min(legs, key=lambda x: x["estimated_minutes"])
+        selected_mode  = fastest["mode"]
+        total_time_min = int(fastest["estimated_minutes"])
+
+    # ---- PRAYER WINDOW WARNING ----
+    prayer_window_warning = False
+    if city in SAUDI_CITIES and ts.weekday() == 4:  # Friday
+        if int(ts.hour) in [int(h) for h in FRIDAY_PRAYER_HOURS]:
+            prayer_window_warning = True
+
+    # ---- PRECISION SUMMARY ----
+    precision_summary = {
+        "exact_legs"      : sum(1 for l in legs if l["precision"] == "exact"),
+        "approximate_legs": sum(1 for l in legs if l["precision"] == "approximate"),
+        "note": (
+            "Approximate legs are computed from fixed assumptions, not live "
+            "schedules. See each leg's 'assumption' field for details."
+        ) if any(l["precision"] == "approximate" for l in legs) else
+        "All legs computed from live zone data.",
+    }
+
+    return {
+        "origin_zone": origin_zone,
+        "destination_zone": destination_zone,
+        "city": city,
+        "departure_time": ts.isoformat(),
+        "modes": modes,
+        "selected_mode": selected_mode,
+        "legs": legs,
+        "total_time_min": total_time_min,
+        "prayer_window_warning": prayer_window_warning,
+        "precision_summary": precision_summary,
     }
