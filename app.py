@@ -4247,6 +4247,49 @@ def public_route_status(
     return {"city": city, "from_zone": from_zone, "to_zone": to_zone, **route}
 
 
+
+
+
+@app.get("/public/journey-plan", tags=["public"])
+@limiter.limit("10/minute")
+def public_journey_plan(
+    request: Request,
+    from_zone: str = "Zone_1",
+    to_zone: str = "Zone_5",
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    PROMPT 164 — Inter-modal journey planner for citizens.
+
+    Computes available modes (car, walk, transit, park-and-ride) between
+    origin and destination zones. Transit legs are approximate because
+    GTFS static schedules are not integrated; see each leg's 'precision'
+    and 'assumption' fields.
+
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    if city not in app.state.city_dfs:
+        raise HTTPException(status_code=404, detail=f"City '{city}' not found.")
+
+    from src.model import plan_journey
+    try:
+        result = plan_journey(
+            origin_zone=from_zone,
+            destination_zone=to_zone,
+            city=city,
+            departure_time=datetime.now(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    result["lang"] = lang
+    return result
+
+
+
+
+
 @app.get("/public/weather", tags=["public"])
 @limiter.limit("10/minute")
 def public_weather(
