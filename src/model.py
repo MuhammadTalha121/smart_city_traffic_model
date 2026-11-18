@@ -56,6 +56,8 @@ DAY_ENCODING      = {
 }
 
 
+_CALIBRATED_TOLL_ELASTICITY: Optional[Dict[str, float]] = None
+
 
 
 
@@ -2562,7 +2564,10 @@ def recommend_toll_rate(
     if not rationale_parts:
         rationale_parts.append(f"congestion-responsive pricing (score {congestion_score:.2f})")
 
-    elasticity = TOLL_ELASTICITY_DEFAULT
+    if _CALIBRATED_TOLL_ELASTICITY is not None and zone in _CALIBRATED_TOLL_ELASTICITY:
+        elasticity = _CALIBRATED_TOLL_ELASTICITY[zone]
+    else:
+        elasticity = TOLL_ELASTICITY_DEFAULT
     price_delta_pct = (recommended - baseline_rate) / baseline_rate if baseline_rate > 0 else 0.0
     demand_reduction_pct = round(price_delta_pct * elasticity * 100.0, 2)
     demand_reduction_pct = max(-25.0, min(25.0, demand_reduction_pct))
@@ -6650,3 +6655,133 @@ def plan_journey(
         "prayer_window_warning": prayer_window_warning,
         "precision_summary": precision_summary,
     }
+
+
+
+
+
+def set_calibrated_toll_elasticity(elasticity_by_zone: Dict[str, float]) -> None:
+    """
+    PROMPT 165 — Store calibrated toll elasticities for use by
+    recommend_toll_rate(). Called after calibrate_toll_elasticity()
+    produces results, or by an operator-triggered calibration workflow.
+
+    Passing an empty dict clears the cache and reverts to
+    TOLL_ELASTICITY_DEFAULT for all zones.
+    """
+    global _CALIBRATED_TOLL_ELASTICITY
+    _CALIBRATED_TOLL_ELASTICITY = dict(elasticity_by_zone) if elasticity_by_zone else None
+
+
+def calibrate_toll_elasticity(historical_df: pd.DataFrame) -> Dict:
+    """
+    PROMPT 165 — Estimate toll price elasticity of demand per zone.
+
+    Uses log-log regression of vehicle_count (quantity) against a proxy
+    price derived from congestion_score via calculate_dynamic_toll().
+
+    IMPORTANT LIMITATIONS (documented in the return value too):
+
+    1. PROXY, NOT REVEALED-PREFERENCE
+       True price elasticity requires observed demand response to actual
+       price changes. This function uses a congestion-derived price as a
+       proxy because the system does not charge tolls to a live
+       population. Real calibration requires integration with an
+       operating toll system.
+
+        2. CIRCULARITY
+       The proxy price is a function of congestion, which is a function
+       of vehicle_count. Empirically, this produces a POSITIVE regression
+       slope — the price and demand rise together, contrary to the true
+       causal relationship. The implementation detects this and falls back
+       to TOLL_ELASTICITY_DEFAULT rather than reporting a zero or positive
+       elasticity. In practice, calibration succeeds only on data where
+       independent variation in price exceeds the congestion correlation.
+       Synthetic data does not typically satisfy this condition; real
+       toll system data would. Do not present any reported elasticity as
+       policy-grade without baseline comparison against
+       TOLL_ELASTICITY_DEFAULT.
+
+    3. SYNTHETIC DATA
+       predictions_log.csv does not carry vehicle_count. Calibration
+       must be run against the synthetic training DataFrame
+       (generate_traffic_data + apply_hourly_patterns). Results reflect
+       the synthetic data generation assumptions, not real Riyadh
+       demand.
+
+    Parameters
+    ----------
+    historical_df : pd.DataFrame
+        Must have columns: zone, vehicle_count, congestion_score.
+        Typically the output of generate_traffic_data(city=...) +
+        apply_hourly_patterns(df, city=...).
+
+    Returns
+    -------
+    dict with:
+      calibrated         : bool
+      elasticity_by_zone : Dict[zone -> float]  (clipped to [-1.5, 0])
+      method             : str
+      sample_sizes       : Dict[zone -> int]
+      limitations        : List[str]
+    """
+    from src.config import TOLLED_ZONES, TOLL_ELASTICITY_DEFAULT
+
+    result = {
+        "calibrated": False,
+        "elasticity_by_zone": {z: TOLL_ELASTICITY_DEFAULT for z in TOLLED_ZONES},
+        "method": "log_log_proxy_regression",
+        "sample_sizes": {},
+        "limitations": [
+            "Proxy price derived from congestion, not actual toll transactions",
+            "Circularity: price depends on congestion, which depends on demand",
+            "Calibrated on synthetic data, not revealed preference",
+            "Zones with < 30 observations fall back to TOLL_ELASTICITY_DEFAULT",
+        ],
+    }
+
+    if historical_df is None or historical_df.empty:
+        return result
+
+    required = {"zone", "vehicle_count", "congestion_score"}
+    if not required.issubset(historical_df.columns):
+        return result
+
+    for zone in TOLLED_ZONES:
+        zone_df = historical_df[historical_df["zone"] == zone].copy()
+        zone_df = zone_df.dropna(subset=["vehicle_count", "congestion_score"])
+        zone_df = zone_df[zone_df["vehicle_count"] > 0]
+
+        result["sample_sizes"][zone] = int(len(zone_df))
+
+        if len(zone_df) < 30:
+            continue
+
+        zone_df["proxy_price"] = zone_df["congestion_score"].apply(
+            lambda c: calculate_dynamic_toll(zone, float(c))
+        )
+        zone_df = zone_df[zone_df["proxy_price"] > 0]
+
+        if len(zone_df) < 30:
+            continue
+
+        try:
+            log_q = np.log(zone_df["vehicle_count"].values.astype(float))
+            log_p = np.log(zone_df["proxy_price"].values.astype(float))
+            raw_slope = float(np.polyfit(log_p, log_q, 1)[0])
+
+            # Circularity guard: a positive slope means the proxy price is
+            # positively correlated with demand (the artifact described in
+            # the docstring). A slope very close to zero means the
+            # regression found no signal. Both cases mean: do not report
+            # this zone's result — the default elasticity is more honest.
+            if raw_slope >= 0.0 or abs(raw_slope) < 0.01:
+                continue
+
+            slope = max(-1.5, raw_slope)
+            result["elasticity_by_zone"][zone] = round(slope, 3)
+            result["calibrated"] = True
+        except Exception:
+            continue
+
+    return result
