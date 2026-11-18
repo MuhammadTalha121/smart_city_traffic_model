@@ -491,7 +491,13 @@ HEAT_RISK_THRESHOLDS = {
 }
 
 
-
+# ─ Pedestrian Heat Stress (WBGT) ─────────────────────
+WBGT_MODERATE_THRESHOLD_C: float   = 28.0
+WBGT_HIGH_THRESHOLD_C: float       = 32.0
+WBGT_EXTREME_THRESHOLD_C: float    = 35.0
+HEAT_STRESS_MONTHS: List[int]      = [6, 7, 8, 9]
+WIND_COOLING_FACTOR_PER_KMPH: float = 0.02
+HEAT_STRESS_ASSUMED_HUMIDITY_PCT: float = 30.0
 
 
 
