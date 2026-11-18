@@ -4340,6 +4340,60 @@ def public_weather(
     }
 
 
+
+
+@app.get("/public/heat-stress-advisory", tags=["public"])
+@limiter.limit("10/minute")
+def public_heat_stress_advisory(
+    request: Request,
+    city: str = "Riyadh",
+    lang: str = "en",
+):
+    """
+    Heat stress risk for pedestrians and outdoor workers.
+
+    Computes WBGT from current weather (temperature + humidity + wind)
+    and classifies risk per Saudi labour thresholds. WBGT uses the
+    indoor approximation — see src.model.calculate_heat_stress_index
+    docstring for full limitations.
+
+    No authentication required. Rate limit: 10 req/min per IP.
+    """
+    from src.model import calculate_heat_stress_index
+    from src.config import (
+        HEAT_STRESS_MONTHS,
+        HEAT_STRESS_ASSUMED_HUMIDITY_PCT,
+    )
+
+    current_month = datetime.now().month
+    in_summer     = current_month in HEAT_STRESS_MONTHS
+
+    try:
+        weather_df = get_adapter("weather").fetch(city)
+        row        = weather_df.iloc[0]
+        temp_c       = float(row.get("temperature", row.get("temperature_2m", 0.0)))
+        humidity_pct = float(row.get(
+            "humidity",
+            row.get("relative_humidity", row.get("relative_humidity_2m",
+                HEAT_STRESS_ASSUMED_HUMIDITY_PCT)),
+        ))
+        wind_speed   = float(row.get("wind_speed", row.get("wind_speed_10m", 0.0)))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Weather data unavailable: {e}")
+
+    result = calculate_heat_stress_index(temp_c, humidity_pct, wind_speed)
+    result["city"]             = city
+    result["in_summer_season"] = in_summer
+    result["lang"]             = lang
+    return result
+
+
+
+
+
+
+
+
 from src.config import ZONE_DISTANCES_KM, FRIDAY_PRAYER_HOURS
 
 @app.get("/public/parking-guidance", tags=["public"])
