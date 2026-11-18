@@ -6785,3 +6785,112 @@ def calibrate_toll_elasticity(historical_df: pd.DataFrame) -> Dict:
             continue
 
     return result
+
+
+
+
+
+def calculate_heat_stress_index(
+    temp_c: float,
+    humidity_pct: float,
+    wind_speed_kmh: float = 0.0,
+) -> Dict:
+    """
+    — Estimate Wet Bulb Globe Temperature (WBGT) for
+    pedestrian and outdoor worker heat stress.
+
+    Method
+    ------
+    Indoor WBGT approximation: WBGT = 0.7 * Tw + 0.3 * Ta
+    where Tw is computed via Stull's (2011) wet-bulb formula from
+    dry-bulb temperature and relative humidity.
+
+    LIMITATIONS — read before using the number
+    ------------------------------------------
+    1. NO SOLAR RADIATION TERM. The full outdoor WBGT includes a
+       globe-temperature component that captures direct sun load.
+       This system does not have a solar radiation feed (the
+       implementation note for PROMPT 045 explicitly removed
+       solar_radiation from WeatherAdapter). Result under-estimates
+       heat stress in direct sun; appropriate for shaded pedestrian
+       zones and covered work areas.
+
+    2. NO GLOBE TEMPERATURE. No instrumented globe thermometer is
+       integrated. The 0.7/0.3 split is the indoor WBGT standard
+       formula, not a measurement.
+
+    3. WIND IS A HEURISTIC ADJUSTMENT. Wind is not in the WBGT
+       equation. A small cooling subtraction is applied for wind
+       speeds above 10 km/h as a documented heuristic, not a
+       physics-derived term. Do not present the wind term as
+       part of WBGT.
+
+    Parameters
+    ----------
+    temp_c : float
+        Air temperature in Celsius.
+    humidity_pct : float
+        Relative humidity in percent (5–99% valid range for Stull).
+    wind_speed_kmh : float
+        Wind speed in km/h (default 0).
+
+    Returns
+    -------
+    dict with wbgt_c, dry_bulb_c, wet_bulb_c, humidity_pct,
+    wind_speed_kmh, risk_level, recommended_action, method,
+    limitations.
+    """
+    import math
+    from src.config import (
+        WBGT_MODERATE_THRESHOLD_C,
+        WBGT_HIGH_THRESHOLD_C,
+        WBGT_EXTREME_THRESHOLD_C,
+        WIND_COOLING_FACTOR_PER_KMPH,
+    )
+
+    ta = float(temp_c)
+    rh = max(5.0, min(99.0, float(humidity_pct)))
+
+    tw = (
+        ta * math.atan(0.151977 * math.sqrt(rh + 8.313659))
+        + math.atan(ta + rh)
+        - math.atan(rh - 1.676331)
+        + 0.00391838 * (rh ** 1.5) * math.atan(0.023101 * rh)
+        - 4.686035
+    )
+
+    wbgt = 0.7 * tw + 0.3 * ta
+
+    wind = float(wind_speed_kmh)
+    if wind > 10.0:
+        wbgt -= (wind - 10.0) * WIND_COOLING_FACTOR_PER_KMPH
+    wbgt = round(wbgt, 1)
+
+    if wbgt < WBGT_MODERATE_THRESHOLD_C:
+        risk = "Low"
+        action = "Normal outdoor activity. Stay hydrated."
+    elif wbgt < WBGT_HIGH_THRESHOLD_C:
+        risk = "Moderate"
+        action = "Limit prolonged outdoor exertion. Take breaks in shade."
+    elif wbgt < WBGT_EXTREME_THRESHOLD_C:
+        risk = "High"
+        action = "Avoid outdoor work 11:00–15:00. Increase hydration."
+    else:
+        risk = "Extreme"
+        action = "Stop outdoor work. Postpone non-essential outdoor activity."
+
+    return {
+        "wbgt_c": wbgt,
+        "dry_bulb_c": round(ta, 1),
+        "wet_bulb_c": round(tw, 1),
+        "humidity_pct": round(rh, 1),
+        "wind_speed_kmh": round(wind, 1),
+        "risk_level": risk,
+        "recommended_action": action,
+        "method": "indoor_wbgt_approximation",
+        "limitations": [
+            "No solar radiation term — under-estimates direct-sun exposure",
+            "No globe temperature measurement — 0.7/0.3 split is standard formula",
+            "Wind applied as heuristic cooling adjustment, not WBGT physics",
+        ],
+    }
